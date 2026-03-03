@@ -1,0 +1,197 @@
+{
+  "identity": {
+    "name": "Multi Mile Tracker",
+    "persona": "The Performance Pro - Mileage Intelligence",
+    "vibe": "Dark, Kinetic, Tactical, High-Contrast",
+    "description": "A premium, dark-mode-first mileage and expense tracking app that feels like a cockpit. Beats MileIQ by being faster, darker, and smarter.",
+    "emotional_tone": "Precision, Control, Speed, Wealth"
+  },
+  "tech_stack": {
+    "framework": "React Native Expo SDK 54",
+    "router": "expo-router (File-based routing)",
+    "styling": "React Native StyleSheet (NO Tailwind)",
+    "icons": "@expo/vector-icons (Feather, Ionicons, MaterialCommunityIcons)",
+    "charts": "react-native-chart-kit (Recommended) or Custom View-based bars",
+    "maps": "react-native-maps (Recommended) or Image placeholders for MVP",
+    "auth": "Firebase/Supabase (Conceptual)",
+    "payments": "Stripe (Conceptual UI)"
+  },
+  "design_system": {
+    "colors": {
+      "background": {
+        "primary": "#09090B",
+        "secondary": "#18181B",
+        "tertiary": "#27272A",
+        "overlay": "rgba(0,0,0,0.8)"
+      },
+      "text": {
+        "primary": "#FAFAFA",
+        "secondary": "#A1A1AA",
+        "tertiary": "#71717A",
+        "inverse": "#09090B"
+      },
+      "brand": {
+        "primary": "#10B981",
+        "primary_dim": "rgba(16, 185, 129, 0.2)",
+        "secondary": "#3B82F6",
+        "accent": "#F43F5E",
+        "warning": "#F59E0B"
+      },
+      "status": {
+        "success": "#10B981",
+        "error": "#EF4444",
+        "info": "#3B82F6",
+        "business": "#10B981",
+        "personal": "#3B82F6"
+      },
+      "border": "#27272A"
+    },
+    "typography": {
+      "font_family_headings": "System (iOS: San Francisco, Android: Roboto) - Weight: 700/900",
+      "font_family_body": "System (iOS: San Francisco, Android: Roboto) - Weight: 400/500",
+      "sizes": {
+        "xs": 12,
+        "sm": 14,
+        "base": 16,
+        "lg": 18,
+        "xl": 20,
+        "2xl": 24,
+        "3xl": 30,
+        "4xl": 36,
+        "5xl": 48
+      }
+    },
+    "spacing": {
+      "xs": 4,
+      "sm": 8,
+      "md": 12,
+      "lg": 16,
+      "xl": 24,
+      "2xl": 32,
+      "3xl": 48,
+      "screen_padding": 16
+    },
+    "borderRadius": {
+      "sm": 4,
+      "md": 8,
+      "lg": 12,
+      "xl": 16,
+      "full": 9999
+    }
+  },
+  "components": {
+    "Button": {
+      "variants": {
+        "primary": {
+          "bg": "#10B981",
+          "text": "#09090B",
+          "radius": 12,
+          "height": 56
+        },
+        "secondary": {
+          "bg": "#27272A",
+          "text": "#FAFAFA",
+          "radius": 12,
+          "height": 56
+        },
+        "ghost": {
+          "bg": "transparent",
+          "text": "#10B981"
+        },
+        "fab": {
+          "bg": "#3B82F6",
+          "radius": 32,
+          "size": 64,
+          "icon_color": "#FFFFFF",
+          "position": "absolute bottom-6 right-6"
+        }
+      }
+    },
+    "Card": {
+      "bg": "#18181B",
+      "border": "#27272A",
+      "radius": 16,
+      "padding": 16,
+      "shadow": "0px 4px 12px rgba(0,0,0,0.5)"
+    },
+    "TripItem": {
+      "height": 80,
+      "layout": "row",
+      "left": "Map Icon/Time",
+      "center": "Route (From -> To)",
+      "right": "Value ($/Mi)",
+      "actions": "Swipeable (Left: Personal, Right: Business)"
+    }
+  },
+  "screens": {
+    "onboarding": {
+      "bg_image": "https://images.unsplash.com/photo-1620431858013-7d4e878ae026?auto=format&fit=crop&w=800&q=80",
+      "title": "Drive Smarter.",
+      "subtitle": "AI-powered mileage tracking that saves you thousands.",
+      "cta": "Get Started"
+    },
+    "auth": {
+      "bg": "Dark",
+      "layout": "Vertical stack",
+      "social_buttons": ["Google", "Email"]
+    },
+    "dashboard": {
+      "header": "Current Month Miles & Deductions",
+      "widgets": [
+        "Active Trip (Live GPS)",
+        "Quick Actions (Add Trip, Scan Receipt)",
+        "Recent Drives List",
+        "Savings Graph"
+      ],
+      "fab": "AI Assistant"
+    },
+    "trip_list": {
+      "layout": "SectionList (By Month/Week)",
+      "item_component": "TripCard",
+      "search_bar": "Top sticky"
+    },
+    "ai_assistant": {
+      "interface": "Chat Bubble + Voice Waveform",
+      "suggestions": ["Classify last 5 trips", "Show tax estimate", "Start a drive"]
+    },
+    "subscription": {
+      "tiers": [
+        {"name": "Free", "price": "$0", "features": ["40 Drives/mo", "Basic Reports"]},
+        {"name": "Pro", "price": "$9.99", "features": ["Unlimited Drives", "AI Auto-Classify", "Tax Optimizer"]},
+        {"name": "Business", "price": "$19.99", "features": ["Team Mgmt", "Priority Support"]}
+      ]
+    }
+  },
+  "assets": {
+    "images": {
+      "hero_tunnel": "https://images.unsplash.com/photo-1620431858013-7d4e878ae026?auto=format&fit=crop&w=800&q=80",
+      "car_night": "https://images.unsplash.com/photo-1629014568784-4c7a8bae70e0?auto=format&fit=crop&w=800&q=80",
+      "map_dark": "https://images.unsplash.com/photo-1639060015191-9d83063eab2a?auto=format&fit=crop&w=800&q=80",
+      "receipt_scan": "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?auto=format&fit=crop&w=800&q=80",
+      "user_avatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=200&q=80"
+    }
+  },
+  "layout_guidelines": {
+    "safe_area": "Always wrap screen content in SafeAreaView (except full-screen maps/images)",
+    "padding": "Use 16px horizontal padding for standard screens",
+    "typography": "Use pure white for primary text, zinc-400 for secondary. Avoid pure black backgrounds for cards; use zinc-900."
+  },
+  "instructions_to_main_agent": [
+    "Use 'react-native' components: View, Text, StyleSheet, Pressable, ScrollView, FlatList, Image, SafeAreaView, Modal, TextInput.",
+    "Use 'expo-router' for navigation (Stack and Tabs).",
+    "Use '@expo/vector-icons' for icons.",
+    "Do NOT use 'div', 'span', 'className'. This is React Native.",
+    "Implement 'StyleSheet.create' for all styles.",
+    "For the 'Map', use a placeholder Image if 'react-native-maps' is complex to set up in this environment, but prefer the real map if possible.",
+    "Ensure 'StatusBar' is set to 'light-content'.",
+    "Create a 'components' folder for reusable UI (Button, Input, Card).",
+    "Create a 'constants/theme.js' file to export colors and spacing."
+  ],
+  "universal_guidelines": [
+    "Always use flex: 1 for root containers.",
+    "Touch targets must be at least 44x44 points.",
+    "Text must not scale indefinitely; consider using 'maxFontSizeMultiplier'.",
+    "Images should use 'contentFit=\"cover\"' (expo-image) or 'resizeMode=\"cover\"' (react-native Image).",
+    "Use 'KeyboardAvoidingView' for forms."
+  ]
+}
