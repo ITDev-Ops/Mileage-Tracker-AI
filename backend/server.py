@@ -264,7 +264,9 @@ async def get_trips(
     query = {"user_id": current_user["user_id"]}
     if classification and classification != "all":
         query["classification"] = classification
-    trips = await db.trips.find(query, {"_id": 0}).sort("start_time", -1).skip(skip).limit(limit).to_list(limit)
+    # Optimized with field projection
+    trip_projection = {"_id": 0, "trip_id": 1, "start_time": 1, "end_time": 1, "distance": 1, "start_address": 1, "end_address": 1, "classification": 1, "deduction_value": 1, "is_active": 1, "notes": 1, "purpose": 1, "ai_confidence": 1}
+    trips = await db.trips.find(query, trip_projection).sort("start_time", -1).skip(skip).limit(limit).to_list(limit)
     return trips
 
 @api_router.post("/trips")
@@ -354,7 +356,9 @@ async def delete_trip(trip_id: str, current_user: dict = Depends(get_current_use
 
 @api_router.get("/expenses")
 async def get_expenses(current_user: dict = Depends(get_current_user)):
-    expenses = await db.expenses.find({"user_id": current_user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    # Optimized with field projection and limit
+    expense_projection = {"_id": 0, "expense_id": 1, "trip_id": 1, "merchant": 1, "amount": 1, "category": 1, "notes": 1, "created_at": 1, "ai_extracted": 1}
+    expenses = await db.expenses.find({"user_id": current_user["user_id"]}, expense_projection).sort("created_at", -1).limit(200).to_list(200)
     return expenses
 
 @api_router.post("/expenses")
@@ -428,7 +432,9 @@ async def scan_receipt(data: dict = Body(...), current_user: dict = Depends(get_
 async def ai_chat(data: ChatMessage, current_user: dict = Depends(get_current_user)):
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
-        trips = await db.trips.find({"user_id": current_user["user_id"]}, {"_id": 0}).sort("start_time", -1).limit(20).to_list(20)
+        # Optimized with field projection
+        chat_trip_projection = {"_id": 0, "distance": 1, "deduction_value": 1, "classification": 1, "start_address": 1, "end_address": 1}
+        trips = await db.trips.find({"user_id": current_user["user_id"]}, chat_trip_projection).sort("start_time", -1).limit(20).to_list(20)
         total_miles = sum(t.get("distance", 0) for t in trips)
         total_deductions = sum(t.get("deduction_value", 0) for t in trips)
         session_id = data.session_id or f"chat_{current_user['user_id']}"
@@ -569,7 +575,9 @@ async def get_ai_insights(current_user: dict = Depends(get_current_user)):
         from emergentintegrations.llm.chat import LlmChat, UserMessage
         now = datetime.now(timezone.utc)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        trips = await db.trips.find({"user_id": current_user["user_id"], "start_time": {"$gte": month_start}}, {"_id": 0}).to_list(200)
+        # Optimized with field projection and limit
+        insight_projection = {"_id": 0, "distance": 1, "classification": 1, "deduction_value": 1}
+        trips = await db.trips.find({"user_id": current_user["user_id"], "start_time": {"$gte": month_start}}, insight_projection).limit(200).to_list(200)
         total_miles = sum(t.get("distance", 0) for t in trips)
         business_miles = sum(t.get("distance", 0) for t in trips if t.get("classification") == "business")
         total_deductions = sum(t.get("deduction_value", 0) for t in trips)
@@ -601,10 +609,12 @@ async def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
 
-    monthly_trips = await db.trips.find({"user_id": current_user["user_id"], "start_time": {"$gte": month_start}}, {"_id": 0}).to_list(500)
-    yearly_trips = await db.trips.find({"user_id": current_user["user_id"], "start_time": {"$gte": year_start}}, {"_id": 0}).to_list(2000)
-    active_trip = await db.trips.find_one({"user_id": current_user["user_id"], "is_active": True}, {"_id": 0})
-    recent_trips = await db.trips.find({"user_id": current_user["user_id"], "is_active": False}, {"_id": 0}).sort("start_time", -1).limit(5).to_list(5)
+    # Optimized queries with projections and limits
+    trip_projection = {"_id": 0, "trip_id": 1, "distance": 1, "classification": 1, "deduction_value": 1, "is_active": 1, "start_time": 1}
+    monthly_trips = await db.trips.find({"user_id": current_user["user_id"], "start_time": {"$gte": month_start}}, trip_projection).limit(500).to_list(500)
+    yearly_trips = await db.trips.find({"user_id": current_user["user_id"], "start_time": {"$gte": year_start}}, trip_projection).limit(1000).to_list(1000)
+    active_trip = await db.trips.find_one({"user_id": current_user["user_id"], "is_active": True}, {"_id": 0, "trip_id": 1, "start_time": 1, "start_address": 1, "distance": 1})
+    recent_trips = await db.trips.find({"user_id": current_user["user_id"], "is_active": False}, {"_id": 0, "trip_id": 1, "start_time": 1, "start_address": 1, "end_address": 1, "distance": 1, "classification": 1, "deduction_value": 1}).sort("start_time", -1).limit(5).to_list(5)
 
     monthly_miles = sum(t.get("distance", 0) for t in monthly_trips if not t.get("is_active"))
     monthly_deductions = sum(t.get("deduction_value", 0) for t in monthly_trips)
