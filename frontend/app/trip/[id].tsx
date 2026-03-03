@@ -8,6 +8,7 @@ import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
+import TripMapView from '../../components/TripMapView';
 import { Colors, FontSize, Spacing, Radius, ClassificationColor } from '../../constants/theme';
 
 const CLASSIFICATIONS = [
@@ -215,6 +216,17 @@ export default function TripDetailScreen() {
         ) : (
           /* View Mode */
           <View style={styles.section}>
+            {/* Route Map */}
+            <TripMapView
+              startLat={trip.start_lat}
+              startLng={trip.start_lng}
+              endLat={trip.end_lat}
+              endLng={trip.end_lng}
+              startAddress={trip.start_address}
+              endAddress={trip.end_address}
+              height={200}
+            />
+
             {/* Route */}
             <View style={styles.routeCard}>
               <View style={styles.routeRow}>

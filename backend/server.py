@@ -485,6 +485,84 @@ Return ONLY JSON: {{"classification": "business|personal|medical|charity", "conf
         logger.error(f"Classify trip error: {e}")
         return {"classification": "personal", "confidence": 0.3, "purpose": "Classification failed", "client_name": None}
 
+@api_router.post("/ai/classify-all")
+async def classify_all_trips(current_user: dict = Depends(get_current_user)):
+    """Bulk classify all unclassified trips using AI"""
+    unclassified = await db.trips.find(
+        {"user_id": current_user["user_id"], "classification": "unclassified", "is_active": False},
+        {"_id": 0}
+    ).to_list(50)  # Limit to 50 trips per batch
+    
+    if not unclassified:
+        return {"classified": 0, "results": [], "message": "No unclassified trips found"}
+    
+    results = []
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        
+        # Get user's trip history for context
+        history = await db.trips.find(
+            {"user_id": current_user["user_id"], "classification": {"$nin": ["unclassified"]}},
+            {"_id": 0}
+        ).limit(20).to_list(20)
+        history_text = "\n".join([f"- {t.get('start_address','?')} → {t.get('end_address','?')}: {t.get('classification')} ({t.get('purpose','N/A')})" for t in history[:10]])
+        
+        for trip in unclassified:
+            try:
+                chat = LlmChat(
+                    api_key=EMERGENT_LLM_KEY,
+                    session_id=f"bulk_classify_{trip['trip_id']}",
+                    system_message="You are a trip classification AI. Return ONLY valid JSON. No explanation."
+                ).with_model("openai", "gpt-4o")
+                
+                response = await chat.send_message(UserMessage(text=f"""Classify this trip:
+Start: {trip.get('start_address','Unknown')} | End: {trip.get('end_address','Unknown')}
+Distance: {trip.get('distance',0):.1f} miles | Notes: {trip.get('notes','None')}
+User occupation: {current_user.get('occupation_type','self_employed')}
+Past trips: {history_text}
+Return ONLY JSON: {{"classification": "business|personal|medical|charity", "confidence": 0.85, "purpose": "brief reason"}}"""))
+                
+                json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+                result = json.loads(json_match.group()) if json_match else {"classification": "personal", "confidence": 0.5, "purpose": "Auto-classification"}
+                
+                dist = trip.get("distance", 0)
+                cls = result.get("classification", "personal")
+                
+                await db.trips.update_one(
+                    {"trip_id": trip["trip_id"]},
+                    {"$set": {
+                        "classification": cls,
+                        "ai_confidence": result.get("confidence", 0.5),
+                        "purpose": result.get("purpose"),
+                        "deduction_value": calculate_deduction(dist, cls)
+                    }}
+                )
+                
+                results.append({
+                    "trip_id": trip["trip_id"],
+                    "classification": cls,
+                    "confidence": result.get("confidence", 0.5),
+                    "deduction": calculate_deduction(dist, cls)
+                })
+                
+            except Exception as e:
+                logger.error(f"Bulk classify error for {trip['trip_id']}: {e}")
+                results.append({"trip_id": trip["trip_id"], "error": str(e)})
+                
+    except Exception as e:
+        logger.error(f"Bulk classify setup error: {e}")
+        return {"classified": 0, "results": [], "error": str(e)}
+    
+    classified_count = len([r for r in results if "classification" in r])
+    total_deductions = sum(r.get("deduction", 0) for r in results if "deduction" in r)
+    
+    return {
+        "classified": classified_count,
+        "total_deductions": round(total_deductions, 2),
+        "results": results,
+        "message": f"Successfully classified {classified_count} trips with ${total_deductions:.2f} in potential deductions"
+    }
+
 @api_router.get("/ai/insights")
 async def get_ai_insights(current_user: dict = Depends(get_current_user)):
     try:
@@ -643,6 +721,116 @@ async def export_csv(year: int = None, current_user: dict = Depends(get_current_
         if isinstance(st, datetime): st = st.strftime("%Y-%m-%d %H:%M")
         writer.writerow([st, t.get("start_address",""), t.get("end_address",""), f"{t.get('distance',0):.2f}", t.get("classification",""), t.get("purpose",""), t.get("client_name",""), f"{t.get('deduction_value',0):.2f}", t.get("notes","")])
     return StreamingResponse(io.BytesIO(output.getvalue().encode()), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=mileage_{year}.csv"})
+
+@api_router.get("/reports/export/pdf")
+async def export_pdf(year: int = None, current_user: dict = Depends(get_current_user)):
+    """Generate professional IRS-compliant PDF mileage report"""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+    
+    now_dt = datetime.now(timezone.utc)
+    year = year or now_dt.year
+    
+    # Fetch trips
+    trips = await db.trips.find(
+        {"user_id": current_user["user_id"], "start_time": {"$gte": datetime(year, 1, 1, tzinfo=timezone.utc), "$lt": datetime(year + 1, 1, 1, tzinfo=timezone.utc)}, "is_active": False},
+        {"_id": 0}
+    ).sort("start_time", 1).to_list(2000)
+    
+    # Calculate summary
+    total_miles = sum(t.get("distance", 0) for t in trips)
+    business_miles = sum(t.get("distance", 0) for t in trips if t.get("classification") == "business")
+    personal_miles = sum(t.get("distance", 0) for t in trips if t.get("classification") == "personal")
+    medical_miles = sum(t.get("distance", 0) for t in trips if t.get("classification") == "medical")
+    charity_miles = sum(t.get("distance", 0) for t in trips if t.get("classification") == "charity")
+    total_deductions = sum(t.get("deduction_value", 0) for t in trips)
+    
+    # Create PDF
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=0.5*inch, leftMargin=0.5*inch, topMargin=0.5*inch, bottomMargin=0.5*inch)
+    styles = getSampleStyleSheet()
+    elements = []
+    
+    # Title Style
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, spaceAfter=12, textColor=colors.HexColor('#10B981'), alignment=TA_CENTER)
+    subtitle_style = ParagraphStyle('Subtitle', parent=styles['Normal'], fontSize=10, textColor=colors.grey, alignment=TA_CENTER, spaceAfter=20)
+    header_style = ParagraphStyle('Header', parent=styles['Heading2'], fontSize=12, textColor=colors.HexColor('#1F2937'), spaceBefore=16, spaceAfter=8)
+    
+    # Header
+    elements.append(Paragraph("Multi Mile Tracker", title_style))
+    elements.append(Paragraph(f"IRS Mileage Report - {year}", subtitle_style))
+    elements.append(Paragraph(f"Generated: {now_dt.strftime('%B %d, %Y')} | User: {current_user.get('name', current_user.get('email', 'User'))}", subtitle_style))
+    
+    # Summary Table
+    elements.append(Paragraph("Tax Deduction Summary", header_style))
+    summary_data = [
+        ["Category", "Miles", "Rate", "Deduction"],
+        ["Business", f"{business_miles:.1f}", f"${IRS_RATE_2024:.2f}/mi", f"${business_miles * IRS_RATE_2024:.2f}"],
+        ["Medical", f"{medical_miles:.1f}", f"${IRS_MEDICAL_RATE:.2f}/mi", f"${medical_miles * IRS_MEDICAL_RATE:.2f}"],
+        ["Charity", f"{charity_miles:.1f}", f"${IRS_CHARITY_RATE:.2f}/mi", f"${charity_miles * IRS_CHARITY_RATE:.2f}"],
+        ["Personal", f"{personal_miles:.1f}", "N/A", "$0.00"],
+        ["TOTAL", f"{total_miles:.1f}", "", f"${total_deductions:.2f}"],
+    ]
+    summary_table = Table(summary_data, colWidths=[2*inch, 1.5*inch, 1.5*inch, 1.5*inch])
+    summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10B981')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('TOPPADDING', (0, 0), (-1, 0), 10),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#D1FAE5')),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E5E7EB')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#F9FAFB')]),
+    ]))
+    elements.append(summary_table)
+    elements.append(Spacer(1, 20))
+    
+    # Trip Log Table
+    elements.append(Paragraph(f"Detailed Trip Log ({len(trips)} trips)", header_style))
+    trip_data = [["Date", "From", "To", "Miles", "Type", "Deduction"]]
+    for t in trips[:100]:  # Limit to 100 trips for PDF size
+        st = t.get("start_time", "")
+        if isinstance(st, datetime): st = st.strftime("%m/%d")
+        elif isinstance(st, str): st = st[:10]
+        trip_data.append([
+            st,
+            (t.get("start_address", "")[:20] + "...") if len(t.get("start_address", "")) > 20 else t.get("start_address", ""),
+            (t.get("end_address", "")[:20] + "...") if len(t.get("end_address", "")) > 20 else t.get("end_address", ""),
+            f"{t.get('distance', 0):.1f}",
+            t.get("classification", "")[:8].title(),
+            f"${t.get('deduction_value', 0):.2f}"
+        ])
+    
+    trip_table = Table(trip_data, colWidths=[0.7*inch, 1.5*inch, 1.5*inch, 0.7*inch, 0.8*inch, 0.9*inch])
+    trip_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#374151')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('ALIGN', (3, 0), (5, -1), 'RIGHT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+        ('TOPPADDING', (0, 0), (-1, 0), 8),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E5E7EB')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F9FAFB')]),
+    ]))
+    elements.append(trip_table)
+    elements.append(Spacer(1, 20))
+    
+    # IRS Disclaimer
+    disclaimer_style = ParagraphStyle('Disclaimer', parent=styles['Normal'], fontSize=8, textColor=colors.grey)
+    elements.append(Paragraph(f"IRS Standard Mileage Rates for {year}: Business ${IRS_RATE_2024}/mile, Medical ${IRS_MEDICAL_RATE}/mile, Charity ${IRS_CHARITY_RATE}/mile. This report is generated for informational purposes. Consult a tax professional for advice.", disclaimer_style))
+    
+    doc.build(elements)
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=mileage_report_{year}.pdf"})
 
 # ============================================================
 # PAYMENTS

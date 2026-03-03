@@ -19,6 +19,7 @@ export default function ReportsScreen() {
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState<number | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
   const { token } = useAuth();
   const insets = useSafeAreaInsets();
 
@@ -55,6 +56,23 @@ export default function ReportsScreen() {
       Alert.alert('Export Error', e.message);
     } finally {
       setExportLoading(false);
+    }
+  };
+
+  const handleExportPDF = async () => {
+    setPdfLoading(true);
+    try {
+      const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+      const url = `${BACKEND_URL}/api/reports/export/pdf?year=${selectedYear}`;
+      if (Platform.OS === 'web') {
+        window.open(url, '_blank');
+      } else {
+        await Linking.openURL(url);
+      }
+    } catch (e: any) {
+      Alert.alert('Export Error', e.message);
+    } finally {
+      setPdfLoading(false);
     }
   };
 
@@ -156,7 +174,12 @@ export default function ReportsScreen() {
             <Text style={styles.exportTitle}>Export & Share</Text>
             <TouchableOpacity testID="export-csv-btn" style={styles.exportBtn} onPress={handleExportCSV} disabled={exportLoading}>
               {exportLoading ? <ActivityIndicator size="small" color={Colors.brand.primary} /> : (
-                <><Feather name="download" size={18} color={Colors.brand.primary} /><Text style={styles.exportBtnText}>Download CSV Report ({selectedYear})</Text></>
+                <><Feather name="file-text" size={18} color={Colors.brand.primary} /><Text style={styles.exportBtnText}>Download CSV Report ({selectedYear})</Text></>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity testID="export-pdf-btn" style={[styles.exportBtn, { borderColor: Colors.brand.secondary + '40' }]} onPress={handleExportPDF} disabled={pdfLoading}>
+              {pdfLoading ? <ActivityIndicator size="small" color={Colors.brand.secondary} /> : (
+                <><Feather name="file" size={18} color={Colors.brand.secondary} /><Text style={[styles.exportBtnText, { color: Colors.brand.secondary }]}>Download PDF Tax Report ({selectedYear})</Text></>
               )}
             </TouchableOpacity>
             <View style={styles.exportNote}>
@@ -169,10 +192,10 @@ export default function ReportsScreen() {
           <View testID="pro-feature-teaser" style={styles.proCard}>
             <View style={styles.proCardLeft}>
               <View style={styles.proBadge}><Text style={styles.proBadgeText}>PRO</Text></View>
-              <Text style={styles.proTitle}>PDF Tax Report</Text>
-              <Text style={styles.proDesc}>Professional PDF with IRS Form 2106 summary, monthly charts, and accountant notes.</Text>
+              <Text style={styles.proTitle}>Advanced Tax Insights</Text>
+              <Text style={styles.proDesc}>AI-powered deduction optimizer, CPA partnership portal, and quarterly tax estimates.</Text>
             </View>
-            <Feather name="lock" size={24} color={Colors.brand.warning} />
+            <Feather name="trending-up" size={24} color={Colors.brand.warning} />
           </View>
         </ScrollView>
       )}

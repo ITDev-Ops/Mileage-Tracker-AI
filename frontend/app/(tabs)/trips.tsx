@@ -27,6 +27,7 @@ export default function TripsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [classifying, setClassifying] = useState<string | null>(null);
+  const [bulkClassifying, setBulkClassifying] = useState(false);
   const { token } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -92,6 +93,39 @@ export default function TripsScreen() {
     }
   };
 
+  const handleBulkClassify = async () => {
+    if (!token) return;
+    const unclassifiedCount = trips.filter(t => t.classification === 'unclassified' && !t.is_active).length;
+    if (unclassifiedCount === 0) {
+      Alert.alert('All Classified', 'No unclassified trips to process!');
+      return;
+    }
+    Alert.alert(
+      'Bulk AI Classify',
+      `Classify ${unclassifiedCount} unclassified trip${unclassifiedCount !== 1 ? 's' : ''} using AI?\nThis may take a moment.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Classify All', onPress: async () => {
+            setBulkClassifying(true);
+            try {
+              const result = await API.bulkClassifyTrips(token);
+              await loadTrips();
+              Alert.alert(
+                '✅ Bulk Classification Complete',
+                `${result.classified} trips classified\n$${result.total_deductions?.toFixed(2) || '0.00'} in potential deductions!`
+              );
+            } catch (e: any) {
+              Alert.alert('Error', e.message);
+            } finally {
+              setBulkClassifying(false);
+            }
+          }
+        }
+      ]
+    );
+  };
+
   const handleDelete = async (tripId: string) => {
     Alert.alert('Delete Trip', 'Are you sure you want to delete this trip?', [
       { text: 'Cancel', style: 'cancel' },
@@ -114,9 +148,20 @@ export default function TripsScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>My Trips</Text>
-        <TouchableOpacity testID="ai-classify-all-btn" style={styles.aiBtn} onPress={() => router.push('/ai/assistant')}>
-          <Feather name="zap" size={16} color={Colors.brand.primary} />
-          <Text style={styles.aiBtnText}>AI Classify</Text>
+        <TouchableOpacity 
+          testID="bulk-classify-btn" 
+          style={[styles.aiBtn, bulkClassifying && { opacity: 0.6 }]} 
+          onPress={handleBulkClassify}
+          disabled={bulkClassifying}
+        >
+          {bulkClassifying ? (
+            <ActivityIndicator size="small" color={Colors.brand.primary} />
+          ) : (
+            <>
+              <Feather name="zap" size={16} color={Colors.brand.primary} />
+              <Text style={styles.aiBtnText}>Classify All</Text>
+            </>
+          )}
         </TouchableOpacity>
       </View>
 

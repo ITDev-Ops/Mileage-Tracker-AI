@@ -87,6 +87,9 @@ class APIService {
   async getAIInsights(token: string) {
     return this.request('/ai/insights', {}, token);
   }
+  async bulkClassifyTrips(token: string) {
+    return this.request('/ai/classify-all', { method: 'POST' }, token);
+  }
 
   // Dashboard
   async getDashboardStats(token: string) {
