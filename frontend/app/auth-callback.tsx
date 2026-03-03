@@ -1,20 +1,34 @@
-import { useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Platform } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import { View, StyleSheet, Platform } from 'react-native';
+import { Redirect, useRouter, useSegments, useRootNavigationState } from 'expo-router';
 import { useAuth } from '../context/AuthContext';
 import { Colors } from '../constants/theme';
 import LoadingSpinner from '../components/LoadingSpinner';
 
+// Version: 3.0 - Use Redirect component to avoid navigation timing issues
 export default function AuthCallback() {
-  const { loginWithGoogle } = useAuth();
+  const { loginWithGoogle, user } = useAuth();
   const router = useRouter();
+  const rootNavigationState = useRootNavigationState();
+  const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const processed = useRef(false);
 
+  // Check if navigation is ready
+  const navigationReady = rootNavigationState?.key != null;
+
   useEffect(() => {
+    // Critical: Don't process until navigation is ready
+    if (!navigationReady) {
+      console.log('[AuthCallback] Waiting for navigation...');
+      return;
+    }
+    
     if (processed.current) return;
     processed.current = true;
+    
+    console.log('[AuthCallback] Processing auth callback...');
 
-    const handleCallback = async () => {
+    const processCallback = async () => {
       try {
         let sessionId: string | null = null;
 
@@ -31,19 +45,35 @@ export default function AuthCallback() {
           }
         }
 
+        console.log('[AuthCallback] Session ID:', sessionId ? 'found' : 'not found');
+
         if (sessionId) {
           await loginWithGoogle(sessionId);
-          router.replace('/(tabs)/dashboard');
+          console.log('[AuthCallback] Login successful');
+          setStatus('success');
         } else {
-          router.replace('/(auth)/login');
+          console.log('[AuthCallback] No session, will redirect to login');
+          setStatus('error');
         }
-      } catch {
-        router.replace('/(auth)/login');
+      } catch (err) {
+        console.error('[AuthCallback] Error:', err);
+        setStatus('error');
       }
     };
 
-    handleCallback();
-  }, []);
+    // Small delay to ensure everything is stable
+    const timer = setTimeout(processCallback, 200);
+    return () => clearTimeout(timer);
+  }, [navigationReady, loginWithGoogle]);
+
+  // Use Redirect component instead of router.replace to avoid timing issues
+  if (status === 'success' && navigationReady) {
+    return <Redirect href="/(tabs)/dashboard" />;
+  }
+  
+  if (status === 'error' && navigationReady) {
+    return <Redirect href="/(auth)/login" />;
+  }
 
   return (
     <View style={styles.container}>
