@@ -114,9 +114,12 @@ AI-powered mileage, tax & expense intelligence platform for iOS, Android, and We
 ## Prioritized Backlog
 
 ### P0 - Critical for Production
-- [ ] Background GPS tracking (expo-task-manager, requires native build)
-- [ ] PDF report generation (reportlab integration)
-- [ ] Push notifications for unclassified trip reminders
+- [x] PDF report generation (reportlab integration) ✅ IMPLEMENTED
+- [x] Bulk AI Classify — "Classify all unclassified trips" batch endpoint ✅ IMPLEMENTED
+- [x] Interactive map route display (Leaflet WebView) ✅ IMPLEMENTED
+- [x] Push notification service (expo-notifications) ✅ IMPLEMENTED
+- [x] Background GPS service module (expo-task-manager) ✅ IMPLEMENTED
+- [ ] Background GPS tracking active (requires native build)
 - [ ] Offline trip caching + sync
 
 ### P1 - High Priority
@@ -124,9 +127,7 @@ AI-powered mileage, tax & expense intelligence platform for iOS, Android, and We
 - [ ] Voice command interface ("Log this as business")
 - [ ] Fleet/team management (Business tier)
 - [ ] Trip merge/split functionality
-- [ ] Bulk AI classify (all unclassified trips at once)
 - [ ] CPA-ready PDF tax report with Form 2106 summary
-- [ ] Interactive map route display (react-native-maps)
 
 ### P2 - Nice to Have
 - [ ] Rideshare driver mode (Uber/Lyft import)
