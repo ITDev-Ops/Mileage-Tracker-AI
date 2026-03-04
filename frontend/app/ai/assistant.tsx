@@ -20,7 +20,7 @@ interface Message {
 const SUGGESTIONS = [
   'How much can I deduct this month?',
   'Classify my last 5 trips',
-  'What is the 2024 IRS mileage rate?',
+  `What is the ${new Date().getFullYear()} IRS mileage rate?`,
   'Generate my tax summary',
   'How can I maximize my deductions?',
 ];

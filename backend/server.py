@@ -29,12 +29,14 @@ client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
 # Config
-JWT_SECRET = os.environ.get('JWT_SECRET', 'multimile-secret-2024')
+JWT_SECRET = os.environ.get('JWT_SECRET', 'multimile-secret-2026')
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_DAYS = 30
-IRS_RATE_2024 = 0.67  # $/mile for business
-IRS_MEDICAL_RATE = 0.21
-IRS_CHARITY_RATE = 0.14
+
+# IRS Standard Mileage Rates (2026) - Updated annually
+IRS_BUSINESS_RATE = 0.70  # $/mile for business (updated for 2026)
+IRS_MEDICAL_RATE = 0.22   # $/mile for medical
+IRS_CHARITY_RATE = 0.14   # $/mile for charity
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_emergent')
 
@@ -154,7 +156,7 @@ async def get_current_user(request: Request) -> dict:
 
 def calculate_deduction(distance: float, classification: str) -> float:
     if classification == "business":
-        return round(distance * IRS_RATE_2024, 2)
+        return round(distance * IRS_BUSINESS_RATE, 2)
     elif classification == "medical":
         return round(distance * IRS_MEDICAL_RATE, 2)
     elif classification == "charity":
@@ -444,7 +446,7 @@ async def ai_chat(data: ChatMessage, current_user: dict = Depends(get_current_us
             system_message=f"""You are an AI mileage and tax assistant for Multi Mile Tracker.
 User: {current_user.get('name', 'User')} | Occupation: {current_user.get('occupation_type', 'self_employed')} | Country: {current_user.get('tax_country', 'US')}
 Stats: {len(trips)} trips tracked, {total_miles:.1f} total miles, ${total_deductions:.2f} in deductions
-IRS 2024 rate: $0.67/mile (business), $0.21/mile (medical), $0.14/mile (charity)
+IRS 2026 rate: $0.70/mile (business), $0.22/mile (medical), $0.14/mile (charity)
 Help with: trip classification, tax deductions, mileage reports, expense advice. Be concise and helpful."""
         ).with_model("openai", "gpt-4o")
         response = await chat.send_message(UserMessage(text=data.message))
@@ -662,7 +664,7 @@ async def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
         "recent_trips": recent_trips,
         "unclassified_count": unclassified_count,
         "chart_data": chart_data,
-        "irs_rate": IRS_RATE_2024
+        "irs_rate": IRS_BUSINESS_RATE
     }
 
 # ============================================================
@@ -711,7 +713,7 @@ async def get_report_summary(year: int = None, month: int = None, current_user: 
         "medical_miles": round(medical_miles, 2),
         "charity_miles": round(charity_miles, 2),
         "total_deductions": round(total_deductions, 2),
-        "irs_rate": IRS_RATE_2024,
+        "irs_rate": IRS_BUSINESS_RATE,
         "monthly_breakdown": monthly
     }
 
@@ -779,7 +781,7 @@ async def export_pdf(year: int = None, current_user: dict = Depends(get_current_
     elements.append(Paragraph("Tax Deduction Summary", header_style))
     summary_data = [
         ["Category", "Miles", "Rate", "Deduction"],
-        ["Business", f"{business_miles:.1f}", f"${IRS_RATE_2024:.2f}/mi", f"${business_miles * IRS_RATE_2024:.2f}"],
+        ["Business", f"{business_miles:.1f}", f"${IRS_BUSINESS_RATE:.2f}/mi", f"${business_miles * IRS_BUSINESS_RATE:.2f}"],
         ["Medical", f"{medical_miles:.1f}", f"${IRS_MEDICAL_RATE:.2f}/mi", f"${medical_miles * IRS_MEDICAL_RATE:.2f}"],
         ["Charity", f"{charity_miles:.1f}", f"${IRS_CHARITY_RATE:.2f}/mi", f"${charity_miles * IRS_CHARITY_RATE:.2f}"],
         ["Personal", f"{personal_miles:.1f}", "N/A", "$0.00"],
@@ -836,7 +838,7 @@ async def export_pdf(year: int = None, current_user: dict = Depends(get_current_
     
     # IRS Disclaimer
     disclaimer_style = ParagraphStyle('Disclaimer', parent=styles['Normal'], fontSize=8, textColor=colors.grey)
-    elements.append(Paragraph(f"IRS Standard Mileage Rates for {year}: Business ${IRS_RATE_2024}/mile, Medical ${IRS_MEDICAL_RATE}/mile, Charity ${IRS_CHARITY_RATE}/mile. This report is generated for informational purposes. Consult a tax professional for advice.", disclaimer_style))
+    elements.append(Paragraph(f"IRS Standard Mileage Rates for {year}: Business ${IRS_BUSINESS_RATE}/mile, Medical ${IRS_MEDICAL_RATE}/mile, Charity ${IRS_CHARITY_RATE}/mile. This report is generated for informational purposes. Consult a tax professional for advice.", disclaimer_style))
     
     doc.build(elements)
     buffer.seek(0)

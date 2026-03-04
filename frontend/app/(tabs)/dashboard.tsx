@@ -260,7 +260,7 @@ export default function DashboardScreen() {
         <View style={styles.yearlyCard}>
           <View style={styles.yearlySummary}>
             <View>
-              <Text style={styles.yearlyTitle}>2025 YTD Summary</Text>
+              <Text style={styles.yearlyTitle}>{new Date().getFullYear()} YTD Summary</Text>
               <Text style={styles.yearlyMiles}>{stats?.yearly_miles?.toFixed(1) || '0.0'} miles</Text>
             </View>
             <View style={styles.yearlyRight}>

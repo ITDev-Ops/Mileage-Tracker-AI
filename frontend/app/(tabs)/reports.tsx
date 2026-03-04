@@ -143,7 +143,7 @@ export default function ReportsScreen() {
           {/* IRS Rate Note */}
           <View style={styles.irsNote}>
             <Feather name="info" size={13} color={Colors.brand.secondary} />
-            <Text style={styles.irsNoteText}>IRS 2024 rate: ${summary?.irs_rate || 0.67}/mile business · $0.21/mile medical · $0.14/mile charity</Text>
+            <Text style={styles.irsNoteText}>IRS {new Date().getFullYear()} rate: ${summary?.irs_rate || 0.70}/mile business · $0.22/mile medical · $0.14/mile charity</Text>
           </View>
 
           {/* Monthly Breakdown Chart */}

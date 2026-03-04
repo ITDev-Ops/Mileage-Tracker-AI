@@ -62,9 +62,9 @@ AI-powered mileage, tax & expense intelligence platform for iOS, Android, and We
 ## Core Requirements (Static)
 
 ### IRS Compliance
-- 2024 Business rate: $0.67/mile
-- 2024 Medical rate: $0.21/mile  
-- 2024 Charity rate: $0.14/mile
+- 2026 Business rate: $0.70/mile
+- 2026 Medical rate: $0.22/mile  
+- 2026 Charity rate: $0.14/mile
 - Compliant with IRS Form 2106
 
 ### Subscription Tiers

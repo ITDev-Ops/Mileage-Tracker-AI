@@ -183,7 +183,7 @@ export default function SettingsScreen() {
             <View style={styles.divider} />
             <View style={styles.listRow}>
               <Feather name="shield" size={18} color={Colors.brand.primary} />
-              <Text style={styles.listRowText}>IRS Mileage Rate 2024</Text>
+              <Text style={styles.listRowText}>IRS Mileage Rate {new Date().getFullYear()}</Text>
               <Text style={styles.listRowValue}>$0.67/mi</Text>
             </View>
             <View style={styles.divider} />
