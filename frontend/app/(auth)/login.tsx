@@ -54,6 +54,7 @@ export default function LoginScreen() {
           </View>
           <Text style={styles.logoText}>Multi Mile Tracker</Text>
           <Text style={styles.tagline}>AI-Powered Mileage & Tax Intelligence</Text>
+          <Text style={styles.businessName}>Multisystems and Multisystem LLC</Text>
         </View>
 
         {/* Form Card */}
@@ -136,6 +137,7 @@ const styles = StyleSheet.create({
   },
   logoText: { color: Colors.text.primary, fontSize: FontSize.xxl, fontWeight: '800', letterSpacing: -0.5 },
   tagline: { color: Colors.text.tertiary, fontSize: FontSize.sm, marginTop: 4, textAlign: 'center' },
+  businessName: { color: Colors.text.tertiary, fontSize: FontSize.xs, marginTop: 8, textAlign: 'center', opacity: 0.7 },
   card: { backgroundColor: Colors.bg.secondary, borderRadius: Radius.xl, padding: 24, borderWidth: 1, borderColor: Colors.border },
   title: { color: Colors.text.primary, fontSize: FontSize.xl, fontWeight: '700', marginBottom: 4 },
   subtitle: { color: Colors.text.secondary, fontSize: FontSize.sm, marginBottom: 24 },
