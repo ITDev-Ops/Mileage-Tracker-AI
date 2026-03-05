@@ -1,15 +1,17 @@
 {
   "expo": {
-    "name": "Multi Mile Tracker",
-    "slug": "frontend",
+    "name": "Mileage Tracker AI",
+    "slug": "mileage-tracker-ai",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+    "scheme": "mileagetracker",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
+    "description": "The smartest mileage tracking app powered by AI. Automatically track your business drives, maximize IRS tax deductions, scan receipts with OCR, and generate compliant tax reports. Perfect for freelancers, real estate agents, sales professionals, rideshare drivers, and small business owners. Features include GPS auto-detection, AI trip classification, expense tracking, and CPA-ready PDF reports.",
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "com.multisystems.mileagetrackerai",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Track your drives for tax-deductible mileage records",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Auto-detect trip starts and stops in background",
@@ -18,6 +20,7 @@
       }
     },
     "android": {
+      "package": "com.multisystems.mileagetrackerai",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#000"

@@ -52,7 +52,7 @@ export default function LoginScreen() {
           <View style={styles.logoIcon}>
             <Feather name="navigation" size={32} color={Colors.brand.primary} />
           </View>
-          <Text style={styles.logoText}>Multi Mile Tracker</Text>
+          <Text style={styles.logoText}>Mileage Tracker AI</Text>
           <Text style={styles.tagline}>AI-Powered Mileage & Tax Intelligence</Text>
           <Text style={styles.businessName}>Multisystems and Multisystem LLC</Text>
         </View>

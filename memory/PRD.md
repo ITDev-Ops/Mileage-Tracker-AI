@@ -1,10 +1,12 @@
-# Multi Mile Tracker - PRD
+# Mileage Tracker AI - PRD
 
 ## Overview
 AI-powered mileage, tax & expense intelligence platform for iOS, Android, and Web. Beats MileIQ with GPT-4o AI classification, receipt OCR, and IRS-compliant tax reporting.
 
+**App Name**: Mileage Tracker AI  
+**Developer**: Multisystems and Multisystem LLC  
 **Last Updated**: March 2026  
-**Version**: 1.0.0 MVP
+**Version**: 1.0.0
 
 ---
 

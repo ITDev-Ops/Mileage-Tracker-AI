@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   RefreshControl, Alert, Platform, ActivityIndicator
@@ -53,6 +53,14 @@ function formatDuration(startTime: string): string {
   return `${mins}m`;
 }
 
+function formatLiveTripInfo(distance: number, startTime: string): string {
+  const diff = Date.now() - new Date(startTime).getTime();
+  const mins = Math.floor(diff / 60000);
+  const hrs = Math.floor(mins / 60);
+  const durationStr = hrs > 0 ? `${hrs}h ${mins % 60}m` : `${mins}m`;
+  return `${distance.toFixed(1)} miles · ${durationStr}`;
+}
+
 export default function DashboardScreen() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,6 +68,11 @@ export default function DashboardScreen() {
   const [startingTrip, setStartingTrip] = useState(false);
   const [endingTrip, setEndingTrip] = useState(false);
   const [insights, setInsights] = useState<any[]>([]);
+  const [liveDistance, setLiveDistance] = useState(0);
+  const [liveDuration, setLiveDuration] = useState('0m');
+  const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const { user, token } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -91,6 +104,94 @@ export default function DashboardScreen() {
     };
     init();
   }, [loadData]);
+
+  // Live trip tracking - updates distance and duration in real-time
+  useEffect(() => {
+    if (!stats?.active_trip) {
+      // Clean up when no active trip
+      if (locationWatchRef.current) {
+        locationWatchRef.current.remove();
+        locationWatchRef.current = null;
+      }
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      setLiveDistance(0);
+      setLiveDuration('0m');
+      lastLocationRef.current = null;
+      return;
+    }
+
+    // Initialize with current trip data
+    setLiveDistance(stats.active_trip.distance || 0);
+    lastLocationRef.current = stats.active_trip.start_lat && stats.active_trip.start_lng
+      ? { lat: stats.active_trip.start_lat, lng: stats.active_trip.start_lng }
+      : null;
+
+    // Start duration timer - updates every second
+    const updateDuration = () => {
+      if (stats?.active_trip?.start_time) {
+        const diff = Date.now() - new Date(stats.active_trip.start_time).getTime();
+        const totalMins = Math.floor(diff / 60000);
+        const hrs = Math.floor(totalMins / 60);
+        const mins = totalMins % 60;
+        setLiveDuration(hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`);
+      }
+    };
+    updateDuration();
+    timerRef.current = setInterval(updateDuration, 1000);
+
+    // Start location tracking for distance
+    const startLocationTracking = async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') return;
+
+        locationWatchRef.current = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.High, distanceInterval: 10, timeInterval: 5000 },
+          (location) => {
+            const newLat = location.coords.latitude;
+            const newLng = location.coords.longitude;
+            
+            if (lastLocationRef.current) {
+              // Calculate distance using Haversine formula
+              const R = 3958.8; // Earth's radius in miles
+              const dLat = (newLat - lastLocationRef.current.lat) * Math.PI / 180;
+              const dLng = (newLng - lastLocationRef.current.lng) * Math.PI / 180;
+              const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lastLocationRef.current.lat * Math.PI / 180) * Math.cos(newLat * Math.PI / 180) *
+                Math.sin(dLng/2) * Math.sin(dLng/2);
+              const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+              const dist = R * c;
+              
+              if (dist > 0.005) { // Only add if moved > ~26 feet
+                setLiveDistance(prev => prev + dist);
+              }
+            }
+            lastLocationRef.current = { lat: newLat, lng: newLng };
+          }
+        );
+      } catch (e) {
+        console.log('Location tracking error:', e);
+      }
+    };
+
+    if (Platform.OS !== 'web') {
+      startLocationTracking();
+    }
+
+    return () => {
+      if (locationWatchRef.current) {
+        locationWatchRef.current.remove();
+        locationWatchRef.current = null;
+      }
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [stats?.active_trip?.trip_id]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -216,7 +317,17 @@ export default function DashboardScreen() {
             <Text style={styles.activeTripRoute} numberOfLines={1}>
               {stats.active_trip.start_address || 'Current Location'}
             </Text>
-            <Text style={styles.activeTripTime}>Duration: {formatDuration(stats.active_trip.start_time)}</Text>
+            <View style={styles.activeTripStats}>
+              <View style={styles.activeTripStat}>
+                <Feather name="navigation" size={14} color={Colors.brand.primary} />
+                <Text style={styles.activeTripStatText}>{liveDistance.toFixed(1)} miles</Text>
+              </View>
+              <View style={styles.activeTripStatDivider} />
+              <View style={styles.activeTripStat}>
+                <Feather name="clock" size={14} color={Colors.brand.secondary} />
+                <Text style={styles.activeTripStatText}>{liveDuration}</Text>
+              </View>
+            </View>
             <TouchableOpacity testID="end-trip-btn" style={styles.endTripBtn} onPress={handleEndTrip} disabled={endingTrip}>
               {endingTrip ? <ActivityIndicator color="#FFF" size="small" /> : (
                 <><Feather name="square" size={16} color="#FFF" /><Text style={styles.endTripBtnText}>End Trip</Text></>
@@ -382,7 +493,11 @@ const styles = StyleSheet.create({
   pulseOuter: { width: 16, height: 16, borderRadius: 8, backgroundColor: Colors.brand.accent + '30', alignItems: 'center', justifyContent: 'center' },
   pulseInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.brand.accent },
   activeTripLabel: { color: Colors.brand.accent, fontSize: FontSize.xs, fontWeight: '800', letterSpacing: 1 },
-  activeTripRoute: { color: Colors.text.primary, fontSize: FontSize.base, fontWeight: '600', marginBottom: 4 },
+  activeTripRoute: { color: Colors.text.primary, fontSize: FontSize.base, fontWeight: '600', marginBottom: 8 },
+  activeTripStats: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, backgroundColor: Colors.bg.primary + '30', borderRadius: Radius.md, padding: 10 },
+  activeTripStat: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, justifyContent: 'center' },
+  activeTripStatText: { color: Colors.text.primary, fontSize: FontSize.md, fontWeight: '700' },
+  activeTripStatDivider: { width: 1, height: 20, backgroundColor: Colors.border },
   activeTripTime: { color: Colors.text.secondary, fontSize: FontSize.sm, marginBottom: 12 },
   endTripBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: Colors.brand.accent, borderRadius: Radius.md, paddingVertical: 10 },
   endTripBtnText: { color: '#FFF', fontWeight: '700', fontSize: FontSize.base },

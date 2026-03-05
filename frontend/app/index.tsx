@@ -12,7 +12,7 @@ export default function Index() {
 
   // Wait for both auth loading AND navigation to be ready
   if (loading || !navigationReady) {
-    return <LoadingSpinner fullScreen text="Loading Multi Mile Tracker..." />;
+    return <LoadingSpinner fullScreen text="Loading Mileage Tracker AI..." />;
   }
 
   // Use Redirect component to avoid timing issues
