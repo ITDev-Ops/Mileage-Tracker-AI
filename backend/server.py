@@ -20,7 +20,7 @@ import re
 import httpx
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / '.env', override=True)
 
 # MongoDB
 MONGO_URL = os.environ['MONGO_URL']
@@ -850,44 +850,88 @@ async def export_pdf(year: int = None, current_user: dict = Depends(get_current_
 
 @api_router.post("/payments/create-checkout")
 async def create_checkout(data: PaymentCheckout, request: Request, current_user: dict = Depends(get_current_user)):
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
+    import stripe
+    stripe.api_key = STRIPE_API_KEY
+    
     plan = data.plan.lower()
     if plan not in SUBSCRIPTION_PLANS:
         raise HTTPException(400, "Invalid plan")
     plan_info = SUBSCRIPTION_PLANS[plan]
-    host_url = str(request.base_url)
-    webhook_url = f"{host_url}api/webhook/stripe"
-    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+    
     success_url = f"{data.origin_url}/subscription?session_id={{CHECKOUT_SESSION_ID}}&plan={plan}"
     cancel_url = f"{data.origin_url}/subscription"
-    session = await stripe_checkout.create_checkout_session(CheckoutSessionRequest(
-        amount=float(plan_info["amount"]), currency=plan_info["currency"],
-        success_url=success_url, cancel_url=cancel_url,
-        metadata={"user_id": current_user["user_id"], "plan": plan, "email": current_user["email"]}
-    ))
-    await db.payment_transactions.insert_one({
-        "transaction_id": f"txn_{uuid.uuid4().hex[:12]}",
-        "user_id": current_user["user_id"],
-        "session_id": session.session_id,
-        "plan": plan, "amount": float(plan_info["amount"]), "currency": plan_info["currency"],
-        "payment_status": "pending", "created_at": datetime.now(timezone.utc)
-    })
-    return {"url": session.url, "session_id": session.session_id}
+    
+    try:
+        # Create Stripe Checkout Session with proper configuration
+        session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            mode='payment',  # Use 'subscription' for recurring
+            line_items=[{
+                'price_data': {
+                    'currency': plan_info["currency"],
+                    'unit_amount': int(float(plan_info["amount"]) * 100),  # Stripe uses cents
+                    'product_data': {
+                        'name': f'Mileage Tracker AI - {plan.capitalize()} Plan',
+                        'description': f'Monthly subscription to {plan.capitalize()} features',
+                    },
+                },
+                'quantity': 1,
+            }],
+            customer_email=current_user.get("email"),
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={
+                "user_id": current_user["user_id"],
+                "plan": plan,
+                "email": current_user["email"]
+            }
+        )
+        
+        await db.payment_transactions.insert_one({
+            "transaction_id": f"txn_{uuid.uuid4().hex[:12]}",
+            "user_id": current_user["user_id"],
+            "session_id": session.id,
+            "plan": plan, 
+            "amount": float(plan_info["amount"]), 
+            "currency": plan_info["currency"],
+            "payment_status": "pending", 
+            "created_at": datetime.now(timezone.utc)
+        })
+        
+        return {"url": session.url, "session_id": session.id}
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error: {e}")
+        raise HTTPException(400, f"Payment error: {str(e)}")
 
 @api_router.get("/payments/status/{session_id}")
 async def get_payment_status(session_id: str, request: Request, current_user: dict = Depends(get_current_user)):
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout
+    import stripe
+    stripe.api_key = STRIPE_API_KEY
+    
     txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
     if txn and txn.get("payment_status") == "paid":
         return txn
-    host_url = str(request.base_url)
-    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=f"{host_url}api/webhook/stripe")
-    status = await stripe_checkout.get_checkout_status(session_id)
-    if status.payment_status == "paid":
-        plan = status.metadata.get("plan", "pro")
-        await db.users.update_one({"user_id": current_user["user_id"]}, {"$set": {"subscription_tier": plan}})
-        await db.payment_transactions.update_one({"session_id": session_id}, {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc)}})
-    return {"status": status.status, "payment_status": status.payment_status, "plan": status.metadata.get("plan")}
+    
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+        if session.payment_status == "paid":
+            plan = session.metadata.get("plan", "pro")
+            await db.users.update_one(
+                {"user_id": current_user["user_id"]}, 
+                {"$set": {"subscription_tier": plan}}
+            )
+            await db.payment_transactions.update_one(
+                {"session_id": session_id}, 
+                {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc)}}
+            )
+        return {
+            "status": session.status, 
+            "payment_status": session.payment_status, 
+            "plan": session.metadata.get("plan")
+        }
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe status check error: {e}")
+        return {"status": "error", "payment_status": "unknown", "plan": None}
 
 @api_router.post("/webhook/stripe")
 async def stripe_webhook(request: Request):

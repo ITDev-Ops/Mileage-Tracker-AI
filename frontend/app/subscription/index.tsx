@@ -3,7 +3,7 @@ import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Alert, ActivityIndicator, Platform, Linking
 } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, Redirect } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
@@ -54,6 +54,11 @@ export default function SubscriptionScreen() {
   const { token, user, refreshUser } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+
+  // Redirect to login if not authenticated
+  if (!user && !loading) {
+    return <Redirect href="/(auth)/login" />;
+  }
 
   useEffect(() => {
     setCurrentTier(user?.subscription_tier || 'free');
