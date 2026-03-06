@@ -61,15 +61,26 @@ export default function SettingsScreen() {
   };
 
   const handleLogout = () => {
-    Alert.alert('Log Out', 'Are you sure you want to log out?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Log Out', style: 'destructive', onPress: async () => {
-          await logout();
+    if (Platform.OS === 'web') {
+      // Use window.confirm for web
+      const confirmed = window.confirm('Are you sure you want to log out?');
+      if (confirmed) {
+        logout().then(() => {
           router.replace('/(auth)/login');
-        }
+        });
       }
-    ]);
+    } else {
+      // Use Alert for mobile
+      Alert.alert('Log Out', 'Are you sure you want to log out?', [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Log Out', style: 'destructive', onPress: async () => {
+            await logout();
+            router.replace('/(auth)/login');
+          }
+        }
+      ]);
+    }
   };
 
   const tierInfo: Record<string, { label: string; color: string; icon: string }> = {

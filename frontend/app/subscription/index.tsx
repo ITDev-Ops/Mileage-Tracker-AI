@@ -48,17 +48,12 @@ const PLANS = [
 
 export default function SubscriptionScreen() {
   const { session_id } = useLocalSearchParams<{ session_id?: string }>();
-  const [loading, setLoading] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkingPayment, setCheckingPayment] = useState(false);
   const [currentTier, setCurrentTier] = useState('free');
-  const { token, user, refreshUser } = useAuth();
+  const { token, user, refreshUser, loading: authLoading } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-
-  // Redirect to login if not authenticated
-  if (!user && !loading) {
-    return <Redirect href="/(auth)/login" />;
-  }
 
   useEffect(() => {
     setCurrentTier(user?.subscription_tier || 'free');
@@ -75,7 +70,11 @@ export default function SubscriptionScreen() {
           if (status.payment_status === 'paid') {
             await refreshUser();
             setCheckingPayment(false);
-            Alert.alert('🎉 Subscription Activated!', `Welcome to ${status.plan?.charAt(0).toUpperCase()}${status.plan?.slice(1)} Plan! You now have access to all premium features.`);
+            if (Platform.OS === 'web') {
+              alert(`🎉 Subscription Activated! Welcome to ${status.plan?.charAt(0).toUpperCase()}${status.plan?.slice(1)} Plan!`);
+            } else {
+              Alert.alert('🎉 Subscription Activated!', `Welcome to ${status.plan?.charAt(0).toUpperCase()}${status.plan?.slice(1)} Plan! You now have access to all premium features.`);
+            }
           } else if (status.status === 'expired') {
             setCheckingPayment(false);
           } else {
@@ -92,16 +91,20 @@ export default function SubscriptionScreen() {
   const handleSubscribe = async (planKey: string) => {
     if (planKey === 'free') return;
     if (planKey === currentTier) {
-      Alert.alert('Current Plan', `You are already on the ${planKey} plan!`);
+      if (Platform.OS === 'web') {
+        alert(`You are already on the ${planKey} plan!`);
+      } else {
+        Alert.alert('Current Plan', `You are already on the ${planKey} plan!`);
+      }
       return;
     }
-    setLoading(true);
+    setCheckoutLoading(true);
     try {
       let originUrl = '';
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         originUrl = window.location.origin;
       } else {
-        originUrl = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+        originUrl = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://expense-mileage-hub.preview.emergentagent.com';
       }
       const result = await API.createCheckout(token!, planKey, originUrl);
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -110,11 +113,29 @@ export default function SubscriptionScreen() {
         await Linking.openURL(result.url);
       }
     } catch (e: any) {
-      Alert.alert('Error', e.message || 'Could not initiate checkout');
+      if (Platform.OS === 'web') {
+        alert('Error: ' + (e.message || 'Could not initiate checkout'));
+      } else {
+        Alert.alert('Error', e.message || 'Could not initiate checkout');
+      }
     } finally {
-      setLoading(false);
+      setCheckoutLoading(false);
     }
   };
+
+  // Redirect to login if not authenticated (after all hooks)
+  if (!user && !authLoading) {
+    return <Redirect href="/(auth)/login" />;
+  }
+
+  // Show loading while auth is being determined
+  if (authLoading) {
+    return (
+      <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
+        <ActivityIndicator size="large" color={Colors.brand.primary} />
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -190,9 +211,9 @@ export default function SubscriptionScreen() {
                     isCurrentPlan && { borderWidth: 1, borderColor: plan.color }
                   ]}
                   onPress={() => handleSubscribe(plan.key)}
-                  disabled={loading || isCurrentPlan}
+                  disabled={checkoutLoading || isCurrentPlan}
                 >
-                  {loading ? <ActivityIndicator color={isCurrentPlan ? plan.color : Colors.text.inverse} size="small" /> : (
+                  {checkoutLoading ? <ActivityIndicator color={isCurrentPlan ? plan.color : Colors.text.inverse} size="small" /> : (
                     <Text style={[styles.ctaBtnText, { color: isCurrentPlan ? plan.color : (plan.color === Colors.text.tertiary ? Colors.text.primary : Colors.text.inverse) }]}>
                       {isCurrentPlan ? '✓ Active' : plan.cta}
                     </Text>
