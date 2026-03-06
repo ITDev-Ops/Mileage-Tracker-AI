@@ -1,21 +1,32 @@
 import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 
 // Get backend URL from environment, with fallbacks for Expo Go
 const getBackendUrl = (): string => {
+  // Hardcoded URL that works - this ensures Android/iOS always have the correct URL
+  const FALLBACK_URL = 'https://expense-mileage-hub.preview.emergentagent.com';
+  
   // Try EXPO_PUBLIC_ env variable first
-  if (process.env.EXPO_PUBLIC_BACKEND_URL) {
-    return process.env.EXPO_PUBLIC_BACKEND_URL;
+  const envUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+  if (envUrl && envUrl.length > 0) {
+    console.log('[API] Using env URL:', envUrl);
+    return envUrl;
   }
+  
   // Try expo-constants extra
   const extra = Constants.expoConfig?.extra;
   if (extra?.backendUrl) {
+    console.log('[API] Using extra URL:', extra.backendUrl);
     return extra.backendUrl;
   }
+  
   // Fallback to the known preview URL
-  return 'https://expense-mileage-hub.preview.emergentagent.com';
+  console.log('[API] Using fallback URL:', FALLBACK_URL);
+  return FALLBACK_URL;
 };
 
 const BACKEND_URL = getBackendUrl();
+console.log('[API] Final BACKEND_URL:', BACKEND_URL);
 
 class APIService {
   private getHeaders(token?: string | null): Record<string, string> {
@@ -26,20 +37,27 @@ class APIService {
 
   private async request(path: string, options: RequestInit = {}, token?: string | null) {
     const url = `${BACKEND_URL}/api${path}`;
+    console.log('[API] Request:', options.method || 'GET', url);
+    
     try {
       const res = await fetch(url, {
         ...options,
         headers: { ...this.getHeaders(token), ...(options.headers as Record<string, string> || {}) },
       });
+      
+      console.log('[API] Response status:', res.status);
+      
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Request failed' }));
-        throw new Error(err.detail || 'Request failed');
+        const err = await res.json().catch(() => ({ detail: 'Server error' }));
+        console.log('[API] Error response:', err);
+        throw new Error(err.detail || `Request failed with status ${res.status}`);
       }
       return res.json();
     } catch (error: any) {
+      console.log('[API] Fetch error:', error.message);
       // Better error message for network issues
-      if (error.message === 'Network request failed') {
-        throw new Error('Unable to connect to server. Please check your internet connection.');
+      if (error.message === 'Network request failed' || error.message.includes('fetch')) {
+        throw new Error('Unable to connect to server. Please check your internet connection and try again.');
       }
       throw error;
     }

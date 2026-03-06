@@ -60,26 +60,34 @@ export default function SettingsScreen() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    // Simple confirmation that works on all platforms
+    const doLogout = async () => {
+      try {
+        await logout();
+        console.log('[Settings] Logged out successfully');
+        router.replace('/(auth)/login');
+      } catch (error) {
+        console.error('[Settings] Logout error:', error);
+      }
+    };
+
     if (Platform.OS === 'web') {
       // Use window.confirm for web
-      const confirmed = window.confirm('Are you sure you want to log out?');
-      if (confirmed) {
-        logout().then(() => {
-          router.replace('/(auth)/login');
-        });
+      if (window.confirm('Are you sure you want to log out?')) {
+        await doLogout();
       }
     } else {
-      // Use Alert for mobile
-      Alert.alert('Log Out', 'Are you sure you want to log out?', [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Log Out', style: 'destructive', onPress: async () => {
-            await logout();
-            router.replace('/(auth)/login');
-          }
-        }
-      ]);
+      // Use Alert for mobile - simplified version
+      Alert.alert(
+        'Log Out',
+        'Are you sure you want to log out?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Log Out', style: 'destructive', onPress: doLogout }
+        ],
+        { cancelable: true }
+      );
     }
   };
 
