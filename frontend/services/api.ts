@@ -1,4 +1,21 @@
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+import Constants from 'expo-constants';
+
+// Get backend URL from environment, with fallbacks for Expo Go
+const getBackendUrl = (): string => {
+  // Try EXPO_PUBLIC_ env variable first
+  if (process.env.EXPO_PUBLIC_BACKEND_URL) {
+    return process.env.EXPO_PUBLIC_BACKEND_URL;
+  }
+  // Try expo-constants extra
+  const extra = Constants.expoConfig?.extra;
+  if (extra?.backendUrl) {
+    return extra.backendUrl;
+  }
+  // Fallback to the known preview URL
+  return 'https://expense-mileage-hub.preview.emergentagent.com';
+};
+
+const BACKEND_URL = getBackendUrl();
 
 class APIService {
   private getHeaders(token?: string | null): Record<string, string> {
@@ -8,15 +25,24 @@ class APIService {
   }
 
   private async request(path: string, options: RequestInit = {}, token?: string | null) {
-    const res = await fetch(`${BACKEND_URL}/api${path}`, {
-      ...options,
-      headers: { ...this.getHeaders(token), ...(options.headers as Record<string, string> || {}) },
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Request failed' }));
-      throw new Error(err.detail || 'Request failed');
+    const url = `${BACKEND_URL}/api${path}`;
+    try {
+      const res = await fetch(url, {
+        ...options,
+        headers: { ...this.getHeaders(token), ...(options.headers as Record<string, string> || {}) },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Request failed' }));
+        throw new Error(err.detail || 'Request failed');
+      }
+      return res.json();
+    } catch (error: any) {
+      // Better error message for network issues
+      if (error.message === 'Network request failed') {
+        throw new Error('Unable to connect to server. Please check your internet connection.');
+      }
+      throw error;
     }
-    return res.json();
   }
 
   // Auth
