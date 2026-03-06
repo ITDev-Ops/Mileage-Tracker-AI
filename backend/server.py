@@ -20,7 +20,7 @@ import re
 import httpx
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env', override=True)
+load_dotenv(ROOT_DIR / '.env', override=False)
 
 # MongoDB
 MONGO_URL = os.environ['MONGO_URL']
