@@ -71,7 +71,7 @@
       ]
     ],
     "extra": {
-      "backendUrl": "https://expense-mileage-hub.preview.emergentagent.com",
+      "backendUrl": "https://gps-mileage-mvp.preview.emergentagent.com",
       "eas": {
         "projectId": "mileage-tracker-ai"
       }

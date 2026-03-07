@@ -1,7 +1,7 @@
 """
 Comprehensive Mileage Tracker AI Backend API Test
 Testing ALL functionality as per review request at:
-https://expense-mileage-hub.preview.emergentagent.com/api
+https://gps-mileage-mvp.preview.emergentagent.com/api
 
 Test sequence:
 1. Register a new user with unique email
@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timedelta
 
 # Correct Base URL from review request
-BASE_URL = "https://expense-mileage-hub.preview.emergentagent.com/api"
+BASE_URL = "https://gps-mileage-mvp.preview.emergentagent.com/api"
 
 class MileageTrackerAPITester:
     def __init__(self):
@@ -372,7 +372,7 @@ class MileageTrackerAPITester:
         try:
             checkout_data = {
                 "plan": "pro",
-                "origin_url": "https://expense-mileage-hub.preview.emergentagent.com"
+                "origin_url": "https://gps-mileage-mvp.preview.emergentagent.com"
             }
             
             checkout_resp = requests.post(f"{BASE_URL}/payments/create-checkout", json=checkout_data, headers=self.headers, timeout=30)

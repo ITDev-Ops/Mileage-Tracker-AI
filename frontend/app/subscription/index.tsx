@@ -104,7 +104,7 @@ export default function SubscriptionScreen() {
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         originUrl = window.location.origin;
       } else {
-        originUrl = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://expense-mileage-hub.preview.emergentagent.com';
+        originUrl = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://gps-mileage-mvp.preview.emergentagent.com';
       }
       const result = await API.createCheckout(token!, planKey, originUrl);
       if (Platform.OS === 'web' && typeof window !== 'undefined') {

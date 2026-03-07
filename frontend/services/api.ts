@@ -4,7 +4,7 @@ import { Platform } from 'react-native';
 // Get backend URL from environment, with fallbacks for Expo Go
 const getBackendUrl = (): string => {
   // Hardcoded URL that works - this ensures Android/iOS always have the correct URL
-  const FALLBACK_URL = 'https://expense-mileage-hub.preview.emergentagent.com';
+  const FALLBACK_URL = 'https://gps-mileage-mvp.preview.emergentagent.com';
   
   // Try EXPO_PUBLIC_ env variable first
   const envUrl = process.env.EXPO_PUBLIC_BACKEND_URL;

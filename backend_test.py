@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 
 # Base URL from review request
-BASE_URL = "https://expense-mileage-hub.preview.emergentagent.com/api"
+BASE_URL = "https://gps-mileage-mvp.preview.emergentagent.com/api"
 
 def test_auth_flow():
     """Test registration, login, and profile endpoints"""

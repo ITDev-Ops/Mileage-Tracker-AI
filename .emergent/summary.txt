@@ -1,108 +1,91 @@
 <analysis>
+<original_problem_statement>
+The user wants to build a comprehensive Multi Mile Tracker mobile application. The initial MVP was built, and several new features were added. However, the application is now in a critical state with major bugs, making it unusable for the user.
 
-**original_problem_statement:**
-The user wants to build a comprehensive Multi Mile Tracker mobile application to compete with and exceed the features of MileIQ.
+The user's latest and most critical requests are to fix the following issues, which prevent any use of the app:
+1.  **Registration Failed:** Users cannot create a new account, especially on Android. The request fails.
+2.  **Login Failed:** Users cannot log in.
+3.  **Logout Not Working:** The logout button is ineffective.
+4.  **Subscription Page Inaccessible:** The subscription page fails to load or display correctly.
+5.  The user is frustrated with recurring issues and the time/credits spent resolving them.
 
 **PRODUCT REQUIREMENTS:**
-- **Core Features:** Automatic background GPS mileage tracking, trip management (classification, editing, notes), IRS-compliant reporting (CSV/PDF), and multi-platform sync.
-- **AI-Enhanced Features:** Smart trip classification (learning schedules, destinations), AI Expense Assistant (OCR for receipts), AI Tax Optimizer (deduction recommendations), AI Drive Risk Analysis, and Voice Commands.
-- **Technical Architecture (User's Suggestion):** Flutter, NestJS, Supabase (PostgreSQL). **Note:** The agent implemented an Expo (React Native) + FastAPI (Python) + MongoDB stack to align with the execution environment.
-- **Monetization:** A freemium model with Free, Pro (.99/mo), and Business (9.99/mo) tiers, integrated with Stripe.
-- **Development Roadmap:** Phased approach, but the user requested a Full build from the start.
-    - **Phase 1:** Core tracking and manual classification.
-    - **Phase 2:** AI auto-classification, OCR, and reports.
-    - **Phase 3:** AI assistant and risk analysis.
-- **UI/UX:** A modern, premium dark mode interface.
+- **Core Features:** Automatic background GPS mileage tracking, trip management, IRS-compliant reporting (CSV/PDF), and multi-platform sync.
+- **AI-Enhanced Features:** Smart trip classification, AI Expense Assistant, AI Tax Optimizer, etc.
+- **Monetization:** Freemium model with Stripe integration.
+</original_problem_statement>
 
 **User's preferred language**: English
 
 **what currently exists?**
-A fully-featured and tested MVP of the Multi Mile Tracker application. The initial build successfully implemented the core functionalities from Phase 1 and Phase 2 of the roadmap. This includes:
-- A full-stack application with an Expo (React Native) frontend and a FastAPI (Python) backend.
-- User authentication supporting both JWT (email/password) and Google Social Login.
-- Complete CRUD operations for Trips, Expenses, and Reports.
-- AI-powered trip classification using OpenAI's GPT-4o, accessible via the Emergent Universal Key.
-- A modern, dark-mode user interface.
-- Integration with Stripe for handling subscriptions (though the full subscription logic is not yet tied to features).
-- The initial build passed a full suite of 15 backend and all frontend automated tests.
+A full-stack Expo (React Native) and FastAPI application named Mileage Tracker AI. The application has a rich feature set, including user authentication (JWT), CRUD for trips/expenses, AI-powered trip classification, PDF/CSV reporting, and live Stripe integration for subscriptions.
+
+However, the application is currently unstable. While the backend has proven to be robust and has passed all automated tests, the frontend is experiencing critical, recurring failures in its core authentication and navigation flows. Fixes that appeared successful in the web preview environment failed to work for the user on their device, indicating a discrepancy between the testing environment and real-world usage, likely related to state management, navigation timing, or environment variable loading on mobile.
 
 **Last working item**:
-- **Last item agent was working:** The agent was in the middle of implementing a batch of five new features requested by the user. These features were suggested by the agent as Next Action Items after the successful initial build. The agent was executing a large parallel tool call to create and modify the necessary files for these features when it was interrupted. The user then asked for a session summary.
+- **Last item agent was working:** The agent was actively debugging a set of critical, recurring issues reported by the user: inability to register, log in, log out, or access the subscription page. The agent had just confirmed via logs that the backend was receiving requests successfully, indicating the problem lies entirely within the frontend. The session ended before a definitive frontend fix could be implemented and verified.
 - **Status:** IN PROGRESS
 - **Agent Testing Done:** N
-- **Which testing method agent to use?** both (The new features involve significant frontend and backend changes, requiring end-to-end testing.)
+- **Which testing method agent to use?** The primary issue is frontend stability. The next agent should use a combination of manual testing (via  with careful inspection of console logs) and potentially call the  given the recurring nature of these bugs. The web preview has been unreliable for verifying fixes.
 - **User Testing Done:** N
 
 **All Pending/In progress Issue list**:
-There are no pending issues or bugs. The work is focused on new feature development.
+- **Issue 1: Critical Authentication and Navigation Failure (P0)**
+  - **Description:** The user is unable to perform basic functions: registering, logging in, logging out, and accessing the subscription page. This makes the app completely unusable. The issue seems to be specific to the user's environment (Android) and is not reproducible in the agent's web preview, suggesting a subtle bug related to mobile platform specifics, state management race conditions, or environment variable loading.
+  - **Status:** IN PROGRESS
+  - **Is recurring issue?** Y
+  - **Should Test frontend/backend/both after fix?** frontend
+  - **Blocked on other issue:** None
+
+**Issues Detail**:
+- **Issue 1: Critical Authentication and Navigation Failure (P0)**
+  - **Attempted fixes:**
+    - Numerous fixes have been applied to , , , and .
+    - These included fixing React hook order violations, renaming conflicting state variables (), using  for web/mobile-specific code (e.g.,  vs ), and adding defensive checks for navigation readiness.
+    - These fixes repeatedly worked in the agent's web preview but failed for the user, leading to frustration.
+  - **Next debug checklist:** The problem is systemic in the frontend. A step-by-step debug is required.
+    1.  **Verify Backend URL:** In , add aggressive  at the top to confirm the Expo Go app on the user's device is resolving the backend URL correctly.
+    2.  **Trace AuthContext:** In , add detailed  statements inside , , and  functions to trace their execution flow, especially around  operations and / state updates.
+    3.  **Debug Registration:** In , wrap the  function's  block to log the exact error object if the API call fails (e.g., ).
+    4.  **Debug Logout:** In , simplify the  function to its core logic ( and ) and add logs to confirm it's being called. The  or  might be masking the underlying issue.
+    5.  **Re-examine Subscription Page:** In , although hook order was fixed, re-verify all state dependencies and effects. Ensure the  hook is providing the expected  and  values when the component renders.
+  - **Why fix this issue and what will be achieved with the fix?** The app is fundamentally broken and unusable until a user can register, log in, and navigate core pages. Fixing this will restore basic functionality and user trust.
+  - **Status:** IN PROGRESS
+  - **Is recurring issue?** Y
+  - **Should Test frontend/backend/both after fix?** frontend
+  - **Blocked on other issue:** None
 
 **In progress Task List**:
-The agent was actively working on the following five features. The next agent must verify if the tool calls from the last turn completed successfully and then proceed with testing and finishing the implementation.
-
-- **Task 1: Implement Background GPS Tracking (P0)**
-    - **Where to resume:** Verify the creation of  and the modifications in  to add an auto-tracking toggle. The backend needs to be ready to accept location updates from the new service.  and  should be installed.
-    - **What will be achieved with this?** The app will be able to automatically detect and record trips in the background, a core feature of the product.
-    - **Status:** IN PROGRESS
-    - **Should Test frontend/backend/both after fix?** both
-    - **Blocked on something:** None
-
-- **Task 2: Implement PDF Report Generation (P0)**
-    - **Where to resume:** Verify the modifications in  to add a  endpoint using . Check  for the new download button and  for the corresponding API call function.
-    - **What will be achieved with this?** Users will be able to download their mileage and expense reports as professional-looking PDF files for tax purposes.
-    - **Status:** IN PROGRESS
-    - **Should Test frontend/backend/both after fix?** both
-    - **Blocked on something:** None
-
-- **Task 3: Implement Push Notifications (P0)**
-    - **Where to resume:** Verify the creation of  for scheduling daily reminders.  should be installed.
-    - **What will be achieved with this?** The app will be able to send scheduled notifications, increasing user engagement (e.g., reminders to classify trips).
-    - **Status:** IN PROGRESS
-    - **Should Test frontend/backend/both after fix?** frontend
-    - **Blocked on something:** None
-
-- **Task 4: Implement Map Route Display (P0)**
-    - **Where to resume:** Verify the creation of  which uses a  to display a route map. Check  to ensure this new component is integrated.  should be installed.
-    - **What will be achieved with this?** Users will be able to see a visual map of their completed trip routes.
-    - **Status:** IN PROGRESS
-    - **Should Test frontend/backend/both after fix?** frontend
-    - **Blocked on something:** None
-
-- **Task 5: Implement Bulk AI Trip Classification (P0)**
-    - **Where to resume:** Verify the modifications in  for a new  endpoint. Check  for the Bulk Classify button and progress UI, and  for the new API call function.
-    - **What will be achieved with this?** Users can classify all their unclassified trips with a single click, leveraging the AI for efficiency.
-    - **Status:** IN PROGRESS
-    - **Should Test frontend/backend/both after fix?** both
-    - **Blocked on something:** None
+There are no other tasks in progress. All efforts must be focused on resolving the P0 issue above.
 
 **Upcoming and Future Tasks**
-These tasks are from the original problem statement but have not been started.
-- **Upcoming Tasks (Phase 3):**
-    - **P1: AI Tax Optimizer:** Implement logic to recommend deduction strategies and predict tax savings based on user profile and trip data.
-    - **P1: AI Drive Risk Analysis:** Implement a system to analyze driving data (speed, braking) to provide a safety score and suggest better routes.
-    - **P2: Voice Command AI:** Integrate an on-device LLM or STT service to allow users to manage trips and reports via voice.
-- **Future Tasks (Business Tier & Scaling):**
-    - **P2: Business Tier Features:** Develop the fleet tracking admin dashboard, team reporting functionalities, and API access for business clients.
-    - **P2: Full Monetization Logic:** Integrate RevenueCat and wire up subscription tiers to unlock specific features.
-    - **P3: Scaling Vision:** Plan for and implement specialized modes like Rideshare, Trucking compliance, and EV mileage optimization.
+(From PRD, on hold until the app is stable)
+- **P0: Background GPS tracking:** Implement  for automatic trip detection.
+- **P0: Offline trip caching + sync:** Allow the app to function without a constant internet connection.
+- **P1: AI drive risk analysis:** Provide users with a safety score.
+- **P1: Voice command interface:** Allow hands-free trip logging.
 
 **Completed work in this session**
-- **Full-Stack Application Scaffolding:** Built the entire file structure for the Expo frontend and FastAPI backend.
-- **User Authentication:** Implemented JWT (email/password) and Google social login.
-- **Core CRUD Functionality:** Created models and API endpoints for Users, Trips, Expenses, and Reports.
-- **AI Integration:** Integrated OpenAI GPT-4o for single-trip classification.
-- **UI/UX:** Developed a complete, multi-screen dark-mode UI based on design guidelines.
-- **Stripe Integration:** Set up the basic Stripe playbook for future payment processing.
-- **Initial Testing:** The entire initial build was successfully verified by the testing agent, with all tests passing.
-- **Documentation:** Created  and .
+- **Feature: PDF Report Generation:** Added a backend endpoint () using .
+- **Feature: Bulk AI Trip Classification:** Implemented a backend endpoint () and a corresponding UI button on the trips screen.
+- **Feature: Live Trip Tracking:** The dashboard now shows live-updating duration and distance for an active trip.
+- **Feature: App Renaming:** The app name was changed to Mileage Tracker AI in  and throughout the UI.
+- **Stripe Integration Fix:** Replaced the  Stripe implementation with the native  Python SDK to fix checkout issues. Successfully configured and verified live Stripe keys (PK and SK).
+- **Bugfix: Dynamic Dates:** Removed all hardcoded years (2024, 2025) and updated the app to use the current year (2026) dynamically for IRS rates and UI displays.
+- **Bugfix: Multiple Frontend Crashes:** Fixed a React hook order violation and state variable conflicts on the subscription page.
+- **Bugfix: Logout Handler:** Refactored the logout function to handle platform differences between web () and mobile ().
+- **Optimization:** Refactored multiple N+1 database queries in the backend for improved performance.
+- **Documentation:** Created an  file with an SEO description and infographic ideas. Updated  and  for app store submission readiness.
 
 - **Recently completed:**
-  - Initial MVP build of Multi Mile Tracker (DONE)
-  - User Authentication (JWT + Google) (DONE)
-  - AI Trip Classification (Single Trip) (DONE)
-  - Dark Mode UI Implementation (DONE)
+  - Live Stripe key integration and checkout fix (DONE)
+  - Live trip duration/distance on dashboard (DONE)
+  - Dynamic year (2026) for all dates and rates (DONE)
+  - App renamed to Mileage Tracker AI (DONE)
+  - Fixed recurring crashes on subscription and logout pages (Effectiveness is disputed by the user).
 
 **Earlier issues found/mentioned but not fixed**
-None. A minor  import issue was found and immediately fixed by the agent.
+The core auth and navigation issues are not truly fixed as they keep recurring for the user despite the agent's fixes working in the web preview. The underlying cause has not been identified and resolved permanently.
 
 **Known issue recurrence from previous fork**
 N/A
@@ -111,122 +94,72 @@ N/A
 
 
 **Key Technical Concepts**
-- **Frontend:** React Native (Expo SDK 54), Expo Router, TypeScript
-- **Backend:** FastAPI (Python)
+- **Frontend:** React Native (Expo SDK 54), Expo Router, TypeScript, Zustand (via  context)
+- **Backend:** FastAPI (Python), Motor (async MongoDB driver)
 - **Database:** MongoDB
-- **Authentication:** JWT, Google OAuth (via Emergent-managed integration)
+- **Authentication:** JWT, Google OAuth, managed by 
+- **Payments:** Stripe (native Python and JS SDKs)
 - **AI:** OpenAI GPT-4o (via Emergent LLM Key)
-- **Payments:** Stripe
-- **Styling:** React Native StyleSheet (no CSS)
 
 **key DB schema**
-- **users:** uid=0(root) gid=0(root) groups=0(root), , , , , 
-- **trips:** uid=0(root) gid=0(root) groups=0(root), , , , , , , , , , , 
-- **locations:** uid=0(root) gid=0(root) groups=0(root), , , , , 
-- **expenses:** uid=0(root) gid=0(root) groups=0(root), , , , , , 
-- **subscriptions:** uid=0(root) gid=0(root) groups=0(root), , , , 
-- **reports:** uid=0(root) gid=0(root) groups=0(root), , , , 
-- **ai_logs:** uid=0(root) gid=0(root) groups=0(root), , , , 
-
-**changes in tech stack**
-The agent diverged from the user's proposed architecture (Flutter, NestJS, PostgreSQL) and implemented a stack compatible with the execution environment: **Expo (React Native), FastAPI (Python), and MongoDB**. This was a necessary and successful adaptation.
+- **users:** , , , 
+- **trips:** , , , , , 
+- **expenses:** , , , , 
 
 **All files of reference**
-- : Contains the entire backend logic, including all data models and API endpoints.
-- : Central hub for all frontend-to-backend communication.
-- : Defines the main tab navigation for the app.
-- : The main screen users see after logging in.
-- Files currently being created/modified:
-  - 
-  - 
-  - 
+**Files related to the current critical bug:**
+- : The heart of the authentication logic. Likely source of state management issues.
+- : Handles all communication with the backend. URL resolution might be failing on mobile.
+- : Login screen UI and logic.
+- : Registration screen UI and logic.
+- : Contains the logout button and handler.
+- : The subscription page that was previously crashing.
+- : Root layout that provides the .
+-  & : Entry points for routing logic that have been problematic.
 
-**Areas that need refactoring**:
-None identified. The initial build is clean and passed all tests.
-
-**key api endpoints**
-- 
-- 
-- 
--  (GET, POST)
--  (GET, PUT, DELETE)
--  (GET, POST)
--  (POST)
-- **In Progress:**
-  -  (GET)
-  -  (POST)
+**Other important files:**
+- : The entire backend application. It is considered stable.
+- : Main dashboard, recently modified for live tracking.
+- : App configuration for name, splash screen, and permissions.
 
 **Critical Info for New Agent**
-- **Tech Stack Adaptation:** Be aware that the current stack is Expo/FastAPI/MongoDB, not the Flutter/NestJS stack from the original problem statement. This was a deliberate choice to fit the environment.
-- **Current Task:** You are taking over in the middle of a large feature implementation. The last agent was executing a parallel tool call to add 5 new features. Your first step should be to verify the state of those changes, install any new dependencies (Looking in indexes: https://pypi.org/simple, https://d33sy5i8bnduwe.cloudfront.net/simple/
-Requirement already satisfied: reportlab in /root/.venv/lib/python3.11/site-packages (4.4.10)
-Requirement already satisfied: pillow>=9.0.0 in /root/.venv/lib/python3.11/site-packages (from reportlab) (12.1.1)
-Requirement already satisfied: charset-normalizer in /root/.venv/lib/python3.11/site-packages (from reportlab) (3.4.4), yarn add v1.22.22
-[1/4] Resolving packages...
-[2/4] Fetching packages...
-[3/4] Linking dependencies...
-[4/4] Building fresh packages...
-success Saved lockfile.
-success Saved 7 new dependencies.
-info Direct dependencies
-├─ expo-location@55.1.2
-├─ expo-notifications@55.0.10
-├─ expo-task-manager@55.0.9
-└─ react-native-webview@13.16.1
-info All dependencies
-├─ @expo/require-utils@55.0.2
-├─ expo-application@55.0.8
-├─ expo-location@55.1.2
-├─ expo-notifications@55.0.10
-├─ expo-task-manager@55.0.9
-├─ react-native-webview@13.16.1
-└─ unimodules-app-loader@55.0.2
-Done in 11.29s.), and then proceed to test and debug them.
-- **Restart Services:** Remember to restart services (nginx-code-proxy: stopped
-expo: stopped
-mongodb: stopped
-backend: stopped
-backend: started
-expo: started
-mongodb: started
-nginx-code-proxy: started
-code-server: started) after installing new dependencies or making significant changes to ensure they take effect.
-- **Testing is Key:** Once the 5 in-progress features are functionally complete, run a full E2E test using both frontend and backend testing agents before considering the task complete.
+- **USER IS FRUSTRATED:** The user has experienced the same critical bugs multiple times, even after the agent reported them as fixed. Your first and only priority is to solve the auth/navigation failures permanently. Acknowledge the user's frustration.
+- **DO NOT TRUST THE WEB PREVIEW:** The web preview has consistently given false positives, showing features as fixed when they still fail on the user's actual device. Assume the user's reports are the absolute truth. You must add extensive  statements and rely on the console output from the  to debug.
+- **THE PROBLEM IS IN THE FRONTEND:** The backend has been tested thoroughly and is stable. Do not waste time debugging . The issue is a complex interaction within the frontend's React Native/Expo Router/AuthContext stack.
+- **IMMEDIATE ACTION:** Follow the  for the P0 issue. The goal is to trace the execution flow from the moment a user taps a button (e.g., Register) to the point of failure, using logs to see what's happening on the (simulated) device.
+- **CONSIDER THE TROUBLESHOOT AGENT:** Given the recurring and elusive nature of this bug, calling the  early would be a wise step to get a fresh perspective and a solid plan before diving into more failed attempts.
 
 **documents created in this job**
 - 
 - 
-- 
-- 
-- 
 
 **Last 10 User Messages and any pending HUMAN messages**
-1. : User requested a summary to allow a new agent to pick up the work. This document fulfills that request. (COMPLETED)
-2. : User explicitly approved and requested the implementation of the 5 new features. (IN PROGRESS)
-3. : A simple prompt to keep the agent working. (COMPLETED)
-4. User provided initial choices for LLM, Auth, Payments, Design, and Scope. (COMPLETED)
-5. : The initial kick-off message. (COMPLETED)
+1.   - User reports a total failure of all core functionalities. (IN PROGRESS)
+2.   - User asked to finalize the app. (IN PROGRESS)
+3.   - User is extremely frustrated with recurring bugs and the cost. (IN PROGRESS)
+4.   - User requested deployment readiness check. (COMPLETED)
+5.   - User reported a bug with the subscription page. (COMPLETED, but now part of the larger failure)
+6.   - User provided an image showing a blank Stripe checkout page. (COMPLETED)
+7.   - User reported login getting stuck. (COMPLETED, but now part of the larger failure)
+8.   - User reported registration failure on Android. (COMPLETED, but now part of the larger failure)
+9.   - User reported two specific bugs. (COMPLETED, but now part of the larger failure)
+10.  - User reported a date-related bug. (COMPLETED)
 
 **Project Health Check:**
-- **Functional:** The core application is fully functional and has passed automated testing.
-- **Mocked:** No features are mocked.
-- **Broken:** Nothing is broken, but 5 major features are currently mid-implementation.
+- **Broken:** The application is critically broken for the user. Core authentication and navigation flows are non-functional on their target device.
 
 **3rd Party Integrations**
-- **OpenAI GPT-4o:** Used for AI trip classification. — uses Emergent LLM Key
-- **Stripe:** Set up for future subscription payments. — requires User API Key (test key is in env)
-- **Emergent-managed Google Auth:** Used for social login.
+- **OpenAI GPT-4o:** For AI features. — uses Emergent LLM Key.
+- **Stripe:** For subscriptions. — uses User API Key (Live keys are in the  files).
+- **Emergent-managed Google Auth:** For social login.
 
 **Testing status**
-- **Testing agent used after significant changes:** YES (after the initial MVP build).
-- **Troubleshoot agent used after agent stuck in loop:** NO
-- **Test files created:** No separate test files were created; the  was used directly.
-- **Known regressions:** None.
-
-**Credentials to test flow:**
-The backend has a  endpoint that populates the database with test data, including a test user. Alternatively, you can register a new user through the app's registration screen.
+- **Testing agent used after significant changes:** YES, the backend testing agent was used and passed all tests. Frontend testing has been unreliable.
+- **Troubleshoot agent used after agent stuck in loop:** NO, but it is highly recommended for the next agent.
+- **Test files created:** None.
+- **Known regressions:** The entire authentication system has regressed into a non-functional state for the end-user.
 
 **What agent forgot to execute**
-The agent was interrupted by the user's request for a summary. It did not forget but was stopped mid-execution. The primary task for the next agent is to complete the implementation of the 5 features that are currently in progress.
+The agent did not forget but was unable to permanently solve the recurring frontend bugs. The core failure was relying on the web preview for verification instead of devising a strategy to debug the mobile-specific issues the user was facing. The agent did not get to the root cause of the frontend instability.
 
 </analysis>

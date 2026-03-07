@@ -102,7 +102,7 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "Comprehensively test the Mileage Tracker AI backend API at https://expense-mileage-hub.preview.emergentagent.com/api"
+user_problem_statement: "Comprehensively test the Mileage Tracker AI backend API at https://gps-mileage-mvp.preview.emergentagent.com/api"
 
 backend:
   - task: "Auth Flow (register, login, profile)"

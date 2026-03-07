@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 # Configuration
-BASE_URL = "https://expense-mileage-hub.preview.emergentagent.com/api"
+BASE_URL = "https://gps-mileage-mvp.preview.emergentagent.com/api"
 TEST_EMAIL = f"test_{uuid.uuid4().hex[:8]}@example.com"
 TEST_PASSWORD = "TestPassword123!"
 TEST_NAME = "Test User"
@@ -425,7 +425,7 @@ class ComprehensiveTester:
         try:
             response = await self.test_with_auth("POST", "/payments/create-checkout", json_data={
                 "plan": "pro",
-                "origin_url": "https://expense-mileage-hub.preview.emergentagent.com"
+                "origin_url": "https://gps-mileage-mvp.preview.emergentagent.com"
             })
             
             if response.status_code == 200:
