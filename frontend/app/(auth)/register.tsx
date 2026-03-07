@@ -23,29 +23,42 @@ export default function RegisterScreen() {
   const [password, setPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
   const { register } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
+  const showError = (message: string) => {
+    setErrorMsg(message);
+    console.log('[Register] Error:', message);
+    if (Platform.OS !== 'web') {
+      Alert.alert('Error', message);
+    }
+  };
+
   const handleRegister = async () => {
+    setErrorMsg(''); // Clear previous errors
+    
     if (!name.trim() || !email.trim() || !password.trim()) {
-      Alert.alert('Error', 'Please fill in all fields');
+      showError('Please fill in all fields');
       return;
     }
     if (password.length < 6) {
-      Alert.alert('Error', 'Password must be at least 6 characters');
+      showError('Password must be at least 6 characters');
       return;
     }
+    
     setLoading(true);
-    console.log('[Register] Starting registration process...');
+    console.log('[Register] Starting registration process...', email.trim().toLowerCase());
+    
     try {
       await register(email.trim().toLowerCase(), password, name.trim());
       console.log('[Register] Auth successful, navigating to dashboard...');
-      // Use router.push instead of router.replace - known Expo Router Android bug workaround
       router.push('/(tabs)/dashboard');
     } catch (e: any) {
-      console.log('[Register] Failed:', e.message);
-      Alert.alert('Registration Failed', e.message || 'Something went wrong');
+      const message = e.message || 'Something went wrong. Please try again.';
+      console.log('[Register] Failed:', message);
+      showError(message);
     } finally {
       setLoading(false);
     }
@@ -68,6 +81,14 @@ export default function RegisterScreen() {
         </View>
 
         <View style={styles.card}>
+          {/* Error Message Display */}
+          {errorMsg ? (
+            <View style={styles.errorBox}>
+              <Feather name="alert-circle" size={16} color="#ff6b6b" />
+              <Text style={styles.errorText}>{errorMsg}</Text>
+            </View>
+          ) : null}
+
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Full Name</Text>
             <View style={styles.inputWrap}>
@@ -157,6 +178,12 @@ const styles = StyleSheet.create({
   title: { color: Colors.text.primary, fontSize: FontSize.xxl, fontWeight: '800', marginBottom: 4 },
   subtitle: { color: Colors.text.secondary, fontSize: FontSize.sm },
   card: { backgroundColor: Colors.bg.secondary, borderRadius: Radius.xl, padding: 24, borderWidth: 1, borderColor: Colors.border },
+  errorBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#ff6b6b20', borderRadius: Radius.md,
+    padding: 12, marginBottom: 16, borderWidth: 1, borderColor: '#ff6b6b40',
+  },
+  errorText: { color: '#ff6b6b', fontSize: FontSize.sm, fontWeight: '600', flex: 1 },
   inputGroup: { marginBottom: 16 },
   label: { color: Colors.text.secondary, fontSize: FontSize.sm, fontWeight: '600', marginBottom: 8 },
   inputWrap: {
