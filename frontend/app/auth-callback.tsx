@@ -53,16 +53,16 @@ export default function AuthCallback() {
           console.log('[AuthCallback] Login successful!');
           setStatus('done');
           setMessage('Success! Redirecting...');
-          // Navigate after a short delay
+          // Navigate after a short delay - use router.push for Android compatibility
           setTimeout(() => {
-            router.replace('/(tabs)/dashboard');
+            router.push('/(tabs)/dashboard');
           }, 500);
         } else {
           console.log('[AuthCallback] No session ID, redirecting to login');
           setStatus('error');
           setMessage('No session found, redirecting...');
           setTimeout(() => {
-            router.replace('/(auth)/login');
+            router.push('/(auth)/login');
           }, 1000);
         }
       } catch (err: any) {
@@ -70,7 +70,7 @@ export default function AuthCallback() {
         setStatus('error');
         setMessage('Login failed: ' + (err?.message || 'Unknown error'));
         setTimeout(() => {
-          router.replace('/(auth)/login');
+          router.push('/(auth)/login');
         }, 2000);
       }
     };

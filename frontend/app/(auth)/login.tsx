@@ -24,10 +24,14 @@ export default function LoginScreen() {
       return;
     }
     setLoading(true);
+    console.log('[Login] Starting login process...');
     try {
       await login(email.trim().toLowerCase(), password);
-      router.replace('/(tabs)/dashboard');
+      console.log('[Login] Auth successful, navigating to dashboard...');
+      // Use router.push instead of router.replace - known Expo Router Android bug workaround
+      router.push('/(tabs)/dashboard');
     } catch (e: any) {
+      console.log('[Login] Failed:', e.message);
       Alert.alert('Login Failed', e.message || 'Invalid credentials');
     } finally {
       setLoading(false);

@@ -37,10 +37,14 @@ export default function RegisterScreen() {
       return;
     }
     setLoading(true);
+    console.log('[Register] Starting registration process...');
     try {
       await register(email.trim().toLowerCase(), password, name.trim());
-      router.replace('/(tabs)/dashboard');
+      console.log('[Register] Auth successful, navigating to dashboard...');
+      // Use router.push instead of router.replace - known Expo Router Android bug workaround
+      router.push('/(tabs)/dashboard');
     } catch (e: any) {
+      console.log('[Register] Failed:', e.message);
       Alert.alert('Registration Failed', e.message || 'Something went wrong');
     } finally {
       setLoading(false);

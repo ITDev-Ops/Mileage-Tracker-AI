@@ -63,18 +63,24 @@ export default function SettingsScreen() {
   const handleLogout = async () => {
     // Simple confirmation that works on all platforms
     const doLogout = async () => {
+      console.log('[Settings] doLogout called, starting logout...');
       try {
         await logout();
-        console.log('[Settings] Logged out successfully');
-        router.replace('/(auth)/login');
-      } catch (error) {
-        console.error('[Settings] Logout error:', error);
+        console.log('[Settings] Logged out successfully, navigating to login...');
+        // Use router.push instead of router.replace - known Expo Router Android bug workaround
+        router.push('/(auth)/login');
+      } catch (error: any) {
+        console.error('[Settings] Logout error:', error.message);
+        // Still try to navigate even if logout had issues
+        router.push('/(auth)/login');
       }
     };
 
+    console.log('[Settings] handleLogout called, Platform:', Platform.OS);
+    
     if (Platform.OS === 'web') {
       // Use window.confirm for web
-      if (window.confirm('Are you sure you want to log out?')) {
+      if (typeof window !== 'undefined' && window.confirm('Are you sure you want to log out?')) {
         await doLogout();
       }
     } else {
