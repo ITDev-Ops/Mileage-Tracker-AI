@@ -3,10 +3,7 @@ import { Platform } from 'react-native';
 
 // Get backend URL from environment, with fallbacks for Expo Go
 const getBackendUrl = (): string => {
-  // Hardcoded URL that works - this ensures Android/iOS always have the correct URL
-  const FALLBACK_URL = 'https://gps-mileage-mvp.preview.emergentagent.com';
-  
-  // Try EXPO_PUBLIC_ env variable first
+  // Try EXPO_PUBLIC_ env variable first (required for deployment)
   const envUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
   if (envUrl && envUrl.length > 0) {
     console.log('[API] Using env URL:', envUrl);
@@ -20,9 +17,16 @@ const getBackendUrl = (): string => {
     return extra.backendUrl;
   }
   
-  // Fallback to the known preview URL
-  console.log('[API] Using fallback URL:', FALLBACK_URL);
-  return FALLBACK_URL;
+  // For development/preview, construct URL from hostname
+  const hostname = process.env.EXPO_PACKAGER_HOSTNAME;
+  if (hostname && hostname.length > 0) {
+    console.log('[API] Using hostname URL:', hostname);
+    return hostname;
+  }
+  
+  // Last resort - throw error in production, use empty string for dev
+  console.warn('[API] WARNING: No backend URL configured! Set EXPO_PUBLIC_BACKEND_URL');
+  return '';
 };
 
 const BACKEND_URL = getBackendUrl();
