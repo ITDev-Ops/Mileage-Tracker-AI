@@ -3,7 +3,7 @@ import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Alert, ActivityIndicator, Platform, Linking
 } from 'react-native';
-import { useRouter, useLocalSearchParams, Redirect } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
@@ -51,13 +51,24 @@ export default function SubscriptionScreen() {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkingPayment, setCheckingPayment] = useState(false);
   const [currentTier, setCurrentTier] = useState('free');
+  const [errorMsg, setErrorMsg] = useState('');
   const { token, user, refreshUser, loading: authLoading } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
+  console.log('[Subscription] Rendering - authLoading:', authLoading, 'user:', user?.email, 'token:', token ? 'present' : 'null');
+
   useEffect(() => {
     setCurrentTier(user?.subscription_tier || 'free');
   }, [user]);
+
+  // Redirect to login if not authenticated (after auth loading is done)
+  useEffect(() => {
+    if (!authLoading && !user) {
+      console.log('[Subscription] No user, redirecting to login...');
+      router.push('/(auth)/login');
+    }
+  }, [authLoading, user]);
 
   // Check payment status if returning from Stripe
   useEffect(() => {
@@ -113,26 +124,24 @@ export default function SubscriptionScreen() {
         await Linking.openURL(result.url);
       }
     } catch (e: any) {
+      const errMsg = e.message || 'Could not initiate checkout';
+      setErrorMsg(errMsg);
       if (Platform.OS === 'web') {
-        alert('Error: ' + (e.message || 'Could not initiate checkout'));
+        alert('Error: ' + errMsg);
       } else {
-        Alert.alert('Error', e.message || 'Could not initiate checkout');
+        Alert.alert('Error', errMsg);
       }
     } finally {
       setCheckoutLoading(false);
     }
   };
 
-  // Redirect to login if not authenticated (after all hooks)
-  if (!user && !authLoading) {
-    return <Redirect href="/(auth)/login" />;
-  }
-
-  // Show loading while auth is being determined
-  if (authLoading) {
+  // Show loading while auth is being determined - with dark background
+  if (authLoading || !user) {
     return (
-      <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
+      <View style={[styles.container, styles.loadingContainer]}>
         <ActivityIndicator size="large" color={Colors.brand.primary} />
+        <Text style={styles.loadingText}>Loading subscription plans...</Text>
       </View>
     );
   }
@@ -245,6 +254,8 @@ export default function SubscriptionScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.bg.primary },
+  loadingContainer: { alignItems: 'center', justifyContent: 'center' },
+  loadingText: { color: Colors.text.secondary, fontSize: FontSize.sm, marginTop: 12 },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.screen, paddingVertical: 12 },
   backBtn: { padding: 6 },
   title: { flex: 1, color: Colors.text.primary, fontSize: FontSize.lg, fontWeight: '800', textAlign: 'center' },
