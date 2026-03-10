@@ -1,9 +1,23 @@
+import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { Platform } from 'react-native';
 import { AuthProvider } from '../context/AuthContext';
 import { Colors } from '../constants/theme';
+import { initializeAutoTracking } from '../services/backgroundTracking';
 
 export default function RootLayout() {
+  // Initialize background tracking on app start
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      initializeAutoTracking().then(() => {
+        console.log('[App] Background tracking initialized');
+      }).catch((e) => {
+        console.log('[App] Failed to initialize background tracking:', e);
+      });
+    }
+  }, []);
+
   return (
     <AuthProvider>
       <StatusBar style="light" />

@@ -68,6 +68,14 @@
           "resizeMode": "contain",
           "backgroundColor": "#000"
         }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Mileage Tracker AI to access your location to automatically track your business drives in the background.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
       ]
     ],
     "extra": {

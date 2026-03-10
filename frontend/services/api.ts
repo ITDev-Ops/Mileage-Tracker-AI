@@ -92,6 +92,11 @@ class APIService {
   async createTrip(token: string, data: Record<string, unknown>) {
     return this.request('/trips', { method: 'POST', body: JSON.stringify(data) }, token);
   }
+  
+  // Create a complete trip with all data at once (for syncing auto-tracked trips)
+  async createTripDirect(token: string, data: Record<string, unknown>) {
+    return this.request('/trips/direct', { method: 'POST', body: JSON.stringify(data) }, token);
+  }
   async getTrip(token: string, tripId: string) {
     return this.request(`/trips/${tripId}`, {}, token);
   }

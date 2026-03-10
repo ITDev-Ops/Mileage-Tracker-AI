@@ -94,6 +94,20 @@ class TripEnd(BaseModel):
     distance: float = 0.0
     classification: Optional[str] = None
 
+class TripDirectCreate(BaseModel):
+    """For creating a complete trip directly (e.g., from auto-tracking sync)"""
+    start_time: str
+    end_time: Optional[str] = None
+    start_lat: Optional[float] = None
+    start_lng: Optional[float] = None
+    end_lat: Optional[float] = None
+    end_lng: Optional[float] = None
+    start_address: Optional[str] = None
+    end_address: Optional[str] = None
+    distance: float = 0.0
+    classification: str = "unclassified"
+    notes: Optional[str] = None
+
 class ExpenseCreate(BaseModel):
     amount: float
     merchant: Optional[str] = None
@@ -295,6 +309,54 @@ async def create_trip(data: TripCreate, current_user: dict = Depends(get_current
         "is_active": True,
         "deduction_value": 0.0,
         "created_at": datetime.now(timezone.utc)
+    }
+    await db.trips.insert_one(trip_doc)
+    return {k: v for k, v in trip_doc.items() if k != "_id"}
+
+@api_router.post("/trips/direct")
+async def create_trip_direct(data: TripDirectCreate, current_user: dict = Depends(get_current_user)):
+    """Create a complete trip directly (used for syncing auto-tracked trips)"""
+    trip_id = f"trip_{uuid.uuid4().hex[:12]}"
+    
+    # Parse start time
+    try:
+        start_time = datetime.fromisoformat(data.start_time.replace('Z', '+00:00'))
+    except:
+        start_time = datetime.now(timezone.utc)
+    
+    # Parse end time if provided
+    end_time = None
+    if data.end_time:
+        try:
+            end_time = datetime.fromisoformat(data.end_time.replace('Z', '+00:00'))
+        except:
+            end_time = datetime.now(timezone.utc)
+    
+    # Calculate deduction
+    deduction = calculate_deduction(data.distance, data.classification)
+    
+    trip_doc = {
+        "trip_id": trip_id,
+        "user_id": current_user["user_id"],
+        "start_time": start_time,
+        "end_time": end_time,
+        "distance": data.distance,
+        "start_lat": data.start_lat,
+        "start_lng": data.start_lng,
+        "end_lat": data.end_lat,
+        "end_lng": data.end_lng,
+        "start_address": data.start_address or "Auto-detected start",
+        "end_address": data.end_address or "Auto-detected end",
+        "classification": data.classification,
+        "ai_confidence": 0.0,
+        "risk_score": None,
+        "notes": data.notes or "Auto-tracked trip",
+        "purpose": None,
+        "client_name": None,
+        "is_active": False,  # Completed trips are not active
+        "deduction_value": deduction,
+        "created_at": datetime.now(timezone.utc),
+        "source": "auto_tracking"  # Mark as auto-tracked
     }
     await db.trips.insert_one(trip_doc)
     return {k: v for k, v in trip_doc.items() if k != "_id"}

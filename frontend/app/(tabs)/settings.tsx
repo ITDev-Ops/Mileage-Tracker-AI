@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert,
-  TextInput, ActivityIndicator, Platform
+  TextInput, ActivityIndicator, Platform, Switch
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
@@ -9,6 +9,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
 import { Colors, FontSize, Spacing, Radius } from '../../constants/theme';
+import {
+  isAutoTrackingEnabled,
+  setAutoTrackingEnabled,
+  getTrackingStatus,
+  syncPendingTrips,
+  getPendingTrips,
+  requestTrackingPermissions,
+} from '../../services/backgroundTracking';
 
 const OCCUPATIONS = [
   { key: 'self_employed', label: 'Self Employed' },
@@ -32,6 +40,10 @@ export default function SettingsScreen() {
   const [country, setCountry] = useState('US');
   const [saving, setSaving] = useState(false);
   const [subscription, setSubscription] = useState<any>(null);
+  const [autoTrackingOn, setAutoTrackingOn] = useState(false);
+  const [pendingTripsCount, setPendingTripsCount] = useState(0);
+  const [syncing, setSyncing] = useState(false);
+  const [trackingStatusLoading, setTrackingStatusLoading] = useState(true);
   const { user, token, logout, refreshUser } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -46,6 +58,97 @@ export default function SettingsScreen() {
       API.getSubscription(token).then(s => setSubscription(s)).catch(() => {});
     }
   }, [user, token]);
+
+  // Load auto-tracking status
+  useEffect(() => {
+    const loadTrackingStatus = async () => {
+      setTrackingStatusLoading(true);
+      try {
+        const enabled = await isAutoTrackingEnabled();
+        setAutoTrackingOn(enabled);
+        
+        const pending = await getPendingTrips();
+        setPendingTripsCount(pending.length);
+      } catch (e) {
+        console.log('[Settings] Error loading tracking status:', e);
+      } finally {
+        setTrackingStatusLoading(false);
+      }
+    };
+    
+    loadTrackingStatus();
+  }, []);
+
+  // Sync pending trips when user logs in
+  useEffect(() => {
+    if (token && pendingTripsCount > 0) {
+      // Auto-sync pending trips when user has token
+      handleSyncTrips();
+    }
+  }, [token]);
+
+  const handleToggleAutoTracking = async (value: boolean) => {
+    if (Platform.OS === 'web') {
+      Alert.alert('Not Available', 'Auto-tracking requires the mobile app.');
+      return;
+    }
+    
+    try {
+      if (value) {
+        // Request permissions first
+        const hasPermission = await requestTrackingPermissions();
+        if (!hasPermission) {
+          Alert.alert(
+            'Permission Required',
+            'Background location permission is required for auto-tracking. Please enable it in your device settings.',
+            [{ text: 'OK' }]
+          );
+          return;
+        }
+      }
+      
+      await setAutoTrackingEnabled(value);
+      setAutoTrackingOn(value);
+      
+      if (value) {
+        Alert.alert(
+          'Auto-Tracking Enabled 🚗',
+          'The app will now automatically detect and track your drives in the background. You don\'t need to press Start - just drive!',
+          [{ text: 'Got it!' }]
+        );
+      }
+    } catch (e: any) {
+      Alert.alert('Error', 'Could not change auto-tracking setting');
+      console.log('[Settings] Toggle auto-tracking error:', e);
+    }
+  };
+
+  const handleSyncTrips = async () => {
+    if (!token) {
+      Alert.alert('Login Required', 'Please log in to sync your trips.');
+      return;
+    }
+    
+    setSyncing(true);
+    try {
+      const syncedCount = await syncPendingTrips(token, API.createTripDirect);
+      
+      // Refresh pending count
+      const pending = await getPendingTrips();
+      setPendingTripsCount(pending.length);
+      
+      if (syncedCount > 0) {
+        Alert.alert('Trips Synced! ✅', `${syncedCount} auto-tracked trip${syncedCount > 1 ? 's' : ''} synced to your account.`);
+      } else if (pending.length === 0) {
+        Alert.alert('All Synced', 'All your trips are already synced!');
+      }
+    } catch (e: any) {
+      Alert.alert('Sync Error', 'Could not sync trips. Please try again.');
+      console.log('[Settings] Sync error:', e);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const handleSaveProfile = async () => {
     setSaving(true);
@@ -196,6 +299,73 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Auto-Tracking Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Auto-Tracking</Text>
+          <View style={styles.card}>
+            <View style={styles.autoTrackRow}>
+              <Feather name="navigation" size={18} color={Colors.brand.primary} />
+              <View style={styles.autoTrackInfo}>
+                <Text style={styles.autoTrackTitle}>Auto-Detect Drives</Text>
+                <Text style={styles.autoTrackDesc}>
+                  {Platform.OS === 'web' 
+                    ? 'Available on mobile app only'
+                    : 'Automatically track when driving starts'}
+                </Text>
+              </View>
+              {trackingStatusLoading ? (
+                <ActivityIndicator size="small" color={Colors.brand.primary} />
+              ) : (
+                <Switch
+                  testID="auto-tracking-toggle"
+                  value={autoTrackingOn}
+                  onValueChange={handleToggleAutoTracking}
+                  trackColor={{ false: Colors.bg.tertiary, true: Colors.brand.primaryDim }}
+                  thumbColor={autoTrackingOn ? Colors.brand.primary : Colors.text.tertiary}
+                  disabled={Platform.OS === 'web'}
+                />
+              )}
+            </View>
+            
+            {pendingTripsCount > 0 && (
+              <>
+                <View style={styles.divider} />
+                <TouchableOpacity 
+                  testID="sync-trips-btn"
+                  style={styles.syncRow} 
+                  onPress={handleSyncTrips}
+                  disabled={syncing}
+                >
+                  <Feather name="upload-cloud" size={18} color={Colors.brand.secondary} />
+                  <View style={styles.autoTrackInfo}>
+                    <Text style={styles.autoTrackTitle}>
+                      {pendingTripsCount} Unsynced Trip{pendingTripsCount !== 1 ? 's' : ''}
+                    </Text>
+                    <Text style={styles.autoTrackDesc}>Tap to sync to your account</Text>
+                  </View>
+                  {syncing ? (
+                    <ActivityIndicator size="small" color={Colors.brand.secondary} />
+                  ) : (
+                    <View style={styles.syncBadge}>
+                      <Text style={styles.syncBadgeText}>Sync</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              </>
+            )}
+            
+            <View style={styles.divider} />
+            <View style={styles.autoTrackNote}>
+              <Feather name="info" size={14} color={Colors.text.tertiary} />
+              <Text style={styles.autoTrackNoteText}>
+                {autoTrackingOn 
+                  ? 'Drives are tracked even without logging in. Sync when ready.'
+                  : 'Enable to never miss a deductible mile'}
+              </Text>
+            </View>
+          </View>
+        </View>
+
         {/* App Info */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>App</Text>
@@ -274,4 +444,13 @@ const styles = StyleSheet.create({
   divider: { height: 1, backgroundColor: Colors.border, marginVertical: 2 },
   logoutBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: Colors.brand.accentDim, borderRadius: Radius.xl, padding: 16, borderWidth: 1, borderColor: Colors.brand.accent + '40' },
   logoutText: { color: Colors.brand.accent, fontSize: FontSize.base, fontWeight: '700' },
+  autoTrackRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 4 },
+  autoTrackInfo: { flex: 1 },
+  autoTrackTitle: { color: Colors.text.primary, fontSize: FontSize.sm, fontWeight: '600' },
+  autoTrackDesc: { color: Colors.text.tertiary, fontSize: FontSize.xs, marginTop: 2 },
+  syncRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
+  syncBadge: { backgroundColor: Colors.brand.secondaryDim, borderRadius: Radius.full, paddingHorizontal: 12, paddingVertical: 5, borderWidth: 1, borderColor: Colors.brand.secondary + '40' },
+  syncBadgeText: { color: Colors.brand.secondary, fontSize: FontSize.xs, fontWeight: '700' },
+  autoTrackNote: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 8 },
+  autoTrackNoteText: { flex: 1, color: Colors.text.tertiary, fontSize: FontSize.xs, lineHeight: 16 },
 });
