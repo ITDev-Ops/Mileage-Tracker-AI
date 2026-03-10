@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Mileage Tracker AI",
-    "slug": "mileage-tracker-ai",
+    "name": "Multi Mile Tracker",
+    "slug": "multi-mile-tracker",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
