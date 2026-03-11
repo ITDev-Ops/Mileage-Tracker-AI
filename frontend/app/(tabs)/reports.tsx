@@ -8,6 +8,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
 import { Colors, FontSize, Spacing, Radius } from '../../constants/theme';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const now = new Date();
@@ -43,34 +45,122 @@ export default function ReportsScreen() {
   };
 
   const handleExportCSV = async () => {
+    if (!token) {
+      Alert.alert('Error', 'Please log in to download reports');
+      return;
+    }
+    
     setExportLoading(true);
     try {
       const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
       const url = `${BACKEND_URL}/api/reports/export/csv?year=${selectedYear}`;
+      
       if (Platform.OS === 'web') {
-        window.open(url, '_blank');
+        // For web: Fetch with auth header and trigger download
+        const response = await fetch(url, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (!response.ok) {
+          throw new Error('Failed to download report');
+        }
+        
+        const blob = await response.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = `mileage_report_${selectedYear}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(downloadUrl);
+        
+        Alert.alert('Success', 'CSV report downloaded successfully!');
       } else {
-        await Linking.openURL(url);
+        // For mobile: Download to file system and share
+        const fileUri = FileSystem.documentDirectory + `mileage_report_${selectedYear}.csv`;
+        const downloadResult = await FileSystem.downloadAsync(url, fileUri, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (downloadResult.status !== 200) {
+          throw new Error('Failed to download report');
+        }
+        
+        // Share the file
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(downloadResult.uri, {
+            mimeType: 'text/csv',
+            dialogTitle: 'Save CSV Report'
+          });
+        } else {
+          Alert.alert('Success', `Report saved to: ${downloadResult.uri}`);
+        }
       }
     } catch (e: any) {
-      Alert.alert('Export Error', e.message);
+      console.log('[Reports] CSV export error:', e);
+      Alert.alert('Export Error', e.message || 'Failed to download CSV report');
     } finally {
       setExportLoading(false);
     }
   };
 
   const handleExportPDF = async () => {
+    if (!token) {
+      Alert.alert('Error', 'Please log in to download reports');
+      return;
+    }
+    
     setPdfLoading(true);
     try {
       const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
       const url = `${BACKEND_URL}/api/reports/export/pdf?year=${selectedYear}`;
+      
       if (Platform.OS === 'web') {
-        window.open(url, '_blank');
+        // For web: Fetch with auth header and trigger download
+        const response = await fetch(url, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (!response.ok) {
+          throw new Error('Failed to download report');
+        }
+        
+        const blob = await response.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = `mileage_tax_report_${selectedYear}.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(downloadUrl);
+        
+        Alert.alert('Success', 'PDF report downloaded successfully!');
       } else {
-        await Linking.openURL(url);
+        // For mobile: Download to file system and share
+        const fileUri = FileSystem.documentDirectory + `mileage_tax_report_${selectedYear}.pdf`;
+        const downloadResult = await FileSystem.downloadAsync(url, fileUri, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (downloadResult.status !== 200) {
+          throw new Error('Failed to download report');
+        }
+        
+        // Share the file
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(downloadResult.uri, {
+            mimeType: 'application/pdf',
+            dialogTitle: 'Save PDF Report'
+          });
+        } else {
+          Alert.alert('Success', `Report saved to: ${downloadResult.uri}`);
+        }
       }
     } catch (e: any) {
-      Alert.alert('Export Error', e.message);
+      console.log('[Reports] PDF export error:', e);
+      Alert.alert('Export Error', e.message || 'Failed to download PDF report');
     } finally {
       setPdfLoading(false);
     }
