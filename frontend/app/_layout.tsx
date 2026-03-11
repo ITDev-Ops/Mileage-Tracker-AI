@@ -5,17 +5,28 @@ import { Platform } from 'react-native';
 import { AuthProvider } from '../context/AuthContext';
 import { Colors } from '../constants/theme';
 import { initializeAutoTracking } from '../services/backgroundTracking';
+import { initializeOfflineService } from '../services/offlineService';
 
 export default function RootLayout() {
-  // Initialize background tracking on app start
+  // Initialize background tracking and offline service on app start
   useEffect(() => {
-    if (Platform.OS !== 'web') {
-      initializeAutoTracking().then(() => {
-        console.log('[App] Background tracking initialized');
-      }).catch((e) => {
-        console.log('[App] Failed to initialize background tracking:', e);
-      });
-    }
+    const initialize = async () => {
+      try {
+        // Initialize offline service (network monitoring)
+        await initializeOfflineService();
+        console.log('[App] Offline service initialized');
+        
+        // Initialize background tracking on mobile only
+        if (Platform.OS !== 'web') {
+          await initializeAutoTracking();
+          console.log('[App] Background tracking initialized');
+        }
+      } catch (e) {
+        console.log('[App] Initialization error:', e);
+      }
+    };
+    
+    initialize();
   }, []);
 
   return (

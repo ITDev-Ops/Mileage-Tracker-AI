@@ -10,6 +10,17 @@ import * as Location from 'expo-location';
 import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
 import { Colors, FontSize, Spacing, Radius, Shadow, ClassificationColor } from '../../constants/theme';
+import {
+  isNetworkOnline,
+  onNetworkChange,
+  getOfflineStats,
+  syncOfflineTrips,
+  startTrip as startOfflineTrip,
+  updateTripLocation,
+  endTrip as endOfflineTrip,
+  getCurrentTrip,
+  getUnsyncedTrips,
+} from '../../services/offlineService';
 
 interface Stats {
   monthly_miles: number;
@@ -70,6 +81,9 @@ export default function DashboardScreen() {
   const [insights, setInsights] = useState<any[]>([]);
   const [liveDistance, setLiveDistance] = useState(0);
   const [liveDuration, setLiveDuration] = useState('0m');
+  const [isOnline, setIsOnline] = useState(true);
+  const [offlineTripsCount, setOfflineTripsCount] = useState(0);
+  const [syncing, setSyncing] = useState(false);
   const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const lastLocationRef = useRef<{ lat: number; lng: number } | null>(null);
@@ -77,15 +91,64 @@ export default function DashboardScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
+  // Monitor network status
+  useEffect(() => {
+    setIsOnline(isNetworkOnline());
+    const unsubscribe = onNetworkChange((online) => {
+      setIsOnline(online);
+      console.log('[Dashboard] Network status changed:', online ? 'online' : 'offline');
+      
+      // Auto-sync when coming online
+      if (online && token) {
+        handleSyncOfflineTrips();
+      }
+    });
+    
+    // Check for offline trips on mount
+    checkOfflineTrips();
+    
+    return () => unsubscribe();
+  }, [token]);
+
+  const checkOfflineTrips = async () => {
+    const trips = await getUnsyncedTrips();
+    setOfflineTripsCount(trips.length);
+  };
+
+  const handleSyncOfflineTrips = async () => {
+    if (!token || !isOnline) return;
+    
+    setSyncing(true);
+    try {
+      const result = await syncOfflineTrips(token, API.createTripDirect);
+      if (result.synced > 0) {
+        Alert.alert('Trips Synced! ✅', `${result.synced} offline trip${result.synced > 1 ? 's' : ''} synced successfully.`);
+        await loadData(); // Refresh dashboard
+      }
+      await checkOfflineTrips();
+    } catch (e) {
+      console.log('[Dashboard] Sync error:', e);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const loadData = useCallback(async () => {
     if (!token) return;
+    
+    // If offline, load from cache or show offline data
+    if (!isOnline) {
+      console.log('[Dashboard] Offline mode - using cached data');
+      return;
+    }
+    
     try {
       const data = await API.getDashboardStats(token);
       setStats(data);
     } catch (e: any) {
       console.error('Dashboard load error:', e);
     }
-  }, [token]);
+  }, [token, isOnline]);
 
   const loadInsights = useCallback(async () => {
     if (!token) return;
@@ -306,6 +369,35 @@ export default function DashboardScreen() {
             <Feather name="zap" size={18} color="#FFF" />
           </TouchableOpacity>
         </View>
+
+        {/* Offline Status Banner */}
+        {!isOnline && (
+          <View style={styles.offlineBanner}>
+            <Feather name="wifi-off" size={16} color="#FFF" />
+            <Text style={styles.offlineBannerText}>Offline Mode - Trips will sync when connected</Text>
+          </View>
+        )}
+
+        {/* Unsynced Trips Banner */}
+        {offlineTripsCount > 0 && isOnline && (
+          <TouchableOpacity 
+            style={styles.syncBanner} 
+            onPress={handleSyncOfflineTrips}
+            disabled={syncing}
+          >
+            <Feather name="upload-cloud" size={16} color="#FFF" />
+            <Text style={styles.syncBannerText}>
+              {syncing ? 'Syncing...' : `${offlineTripsCount} offline trip${offlineTripsCount > 1 ? 's' : ''} ready to sync`}
+            </Text>
+            {syncing ? (
+              <ActivityIndicator size="small" color="#FFF" />
+            ) : (
+              <View style={styles.syncNowBtn}>
+                <Text style={styles.syncNowText}>Sync Now</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        )}
 
         {/* Active Trip Banner */}
         {stats?.active_trip ? (
@@ -539,4 +631,28 @@ const styles = StyleSheet.create({
   quickActions: { flexDirection: 'row', paddingHorizontal: Spacing.screen, gap: 10, marginBottom: 8 },
   quickActionBtn: { flex: 1, backgroundColor: Colors.bg.secondary, borderRadius: Radius.lg, padding: 14, alignItems: 'center', gap: 6, borderWidth: 1, borderColor: Colors.border },
   quickActionText: { color: Colors.text.secondary, fontSize: FontSize.xs, fontWeight: '600', textAlign: 'center' },
+  offlineBanner: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    gap: 8, 
+    marginHorizontal: Spacing.screen, 
+    backgroundColor: Colors.brand.warning, 
+    borderRadius: Radius.md, 
+    padding: 12, 
+    marginBottom: 12 
+  },
+  offlineBannerText: { color: '#FFF', fontSize: FontSize.sm, fontWeight: '600', flex: 1 },
+  syncBanner: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    gap: 8, 
+    marginHorizontal: Spacing.screen, 
+    backgroundColor: Colors.brand.secondary, 
+    borderRadius: Radius.md, 
+    padding: 12, 
+    marginBottom: 12 
+  },
+  syncBannerText: { color: '#FFF', fontSize: FontSize.sm, fontWeight: '600', flex: 1 },
+  syncNowBtn: { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: Radius.sm, paddingHorizontal: 12, paddingVertical: 6 },
+  syncNowText: { color: '#FFF', fontSize: FontSize.xs, fontWeight: '700' },
 });
