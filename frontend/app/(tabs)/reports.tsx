@@ -45,6 +45,8 @@ export default function ReportsScreen() {
   };
 
   const handleExportCSV = async () => {
+    console.log('[Reports] handleExportCSV called, token:', token ? 'present' : 'null');
+    
     if (!token) {
       Alert.alert('Error', 'Please log in to download reports');
       return;
@@ -54,18 +56,30 @@ export default function ReportsScreen() {
     try {
       const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
       const url = `${BACKEND_URL}/api/reports/export/csv?year=${selectedYear}`;
+      console.log('[Reports] Downloading CSV from:', url);
       
       if (Platform.OS === 'web') {
         // For web: Fetch with auth header and trigger download
+        console.log('[Reports] Using web fetch method');
         const response = await fetch(url, {
-          headers: { 'Authorization': `Bearer ${token}` }
+          method: 'GET',
+          headers: { 
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'text/csv'
+          }
         });
         
+        console.log('[Reports] Response status:', response.status);
+        
         if (!response.ok) {
-          throw new Error('Failed to download report');
+          const errorText = await response.text();
+          console.log('[Reports] Error response:', errorText);
+          throw new Error(errorText || 'Failed to download report');
         }
         
         const blob = await response.blob();
+        console.log('[Reports] Blob size:', blob.size);
+        
         const downloadUrl = window.URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = downloadUrl;
@@ -75,13 +89,16 @@ export default function ReportsScreen() {
         document.body.removeChild(link);
         window.URL.revokeObjectURL(downloadUrl);
         
-        Alert.alert('Success', 'CSV report downloaded successfully!');
+        console.log('[Reports] CSV download complete');
       } else {
         // For mobile: Download to file system and share
+        console.log('[Reports] Using mobile FileSystem method');
         const fileUri = FileSystem.documentDirectory + `mileage_report_${selectedYear}.csv`;
         const downloadResult = await FileSystem.downloadAsync(url, fileUri, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
+        
+        console.log('[Reports] Download result:', downloadResult.status);
         
         if (downloadResult.status !== 200) {
           throw new Error('Failed to download report');
@@ -106,6 +123,8 @@ export default function ReportsScreen() {
   };
 
   const handleExportPDF = async () => {
+    console.log('[Reports] handleExportPDF called, token:', token ? 'present' : 'null');
+    
     if (!token) {
       Alert.alert('Error', 'Please log in to download reports');
       return;
@@ -115,18 +134,30 @@ export default function ReportsScreen() {
     try {
       const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
       const url = `${BACKEND_URL}/api/reports/export/pdf?year=${selectedYear}`;
+      console.log('[Reports] Downloading PDF from:', url);
       
       if (Platform.OS === 'web') {
         // For web: Fetch with auth header and trigger download
+        console.log('[Reports] Using web fetch method');
         const response = await fetch(url, {
-          headers: { 'Authorization': `Bearer ${token}` }
+          method: 'GET',
+          headers: { 
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/pdf'
+          }
         });
         
+        console.log('[Reports] Response status:', response.status);
+        
         if (!response.ok) {
-          throw new Error('Failed to download report');
+          const errorText = await response.text();
+          console.log('[Reports] Error response:', errorText);
+          throw new Error(errorText || 'Failed to download report');
         }
         
         const blob = await response.blob();
+        console.log('[Reports] Blob size:', blob.size);
+        
         const downloadUrl = window.URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = downloadUrl;
@@ -136,13 +167,16 @@ export default function ReportsScreen() {
         document.body.removeChild(link);
         window.URL.revokeObjectURL(downloadUrl);
         
-        Alert.alert('Success', 'PDF report downloaded successfully!');
+        console.log('[Reports] PDF download complete');
       } else {
         // For mobile: Download to file system and share
+        console.log('[Reports] Using mobile FileSystem method');
         const fileUri = FileSystem.documentDirectory + `mileage_tax_report_${selectedYear}.pdf`;
         const downloadResult = await FileSystem.downloadAsync(url, fileUri, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
+        
+        console.log('[Reports] Download result:', downloadResult.status);
         
         if (downloadResult.status !== 200) {
           throw new Error('Failed to download report');
