@@ -83,6 +83,12 @@ class APIService {
   async updateProfile(token: string, data: Record<string, string>) {
     return this.request('/auth/profile', { method: 'PUT', body: JSON.stringify(data) }, token);
   }
+  async forgotPassword(email: string) {
+    return this.request('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
+  }
+  async verifyResetCode(email: string, code: string, new_password: string) {
+    return this.request('/auth/verify-reset-code', { method: 'POST', body: JSON.stringify({ email, code, new_password }) });
+  }
 
   // Trips
   async getTrips(token: string, classification?: string) {

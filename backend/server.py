@@ -67,6 +67,14 @@ class UserLogin(BaseModel):
     email: str
     password: str
 
+class PasswordResetRequest(BaseModel):
+    email: str
+
+class PasswordResetVerify(BaseModel):
+    email: str
+    code: str
+    new_password: str
+
 class GoogleAuthRequest(BaseModel):
     session_id: str
 
@@ -207,8 +215,10 @@ async def register(data: UserCreate):
 @api_router.post("/auth/login")
 async def login(data: UserLogin):
     user = await db.users.find_one({"email": data.email.lower()}, {"_id": 0})
-    if not user or not verify_password(data.password, user.get("password_hash", "")):
-        raise HTTPException(401, "Invalid email or password")
+    if not user:
+        raise HTTPException(401, "No account found with this email")
+    if not verify_password(data.password, user.get("password_hash", "")):
+        raise HTTPException(401, "Incorrect password")
     token = create_jwt_token(user["user_id"], user["email"])
     user_response = {k: v for k, v in user.items() if k != "password_hash"}
     return {"token": token, "user": user_response}
@@ -256,6 +266,73 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 @api_router.post("/auth/logout")
 async def logout():
     return {"message": "Logged out"}
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(data: PasswordResetRequest):
+    """Request password reset - sends a 6-digit code to user's email"""
+    user = await db.users.find_one({"email": data.email.lower()})
+    if not user:
+        raise HTTPException(404, "No account found with this email address")
+    
+    # Generate 6-digit code
+    import random
+    reset_code = str(random.randint(100000, 999999))
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=15)
+    
+    # Store reset code in database
+    await db.password_resets.delete_many({"email": data.email.lower()})  # Remove old codes
+    await db.password_resets.insert_one({
+        "email": data.email.lower(),
+        "code": reset_code,
+        "expires_at": expiry,
+        "created_at": datetime.now(timezone.utc)
+    })
+    
+    # In production, send email here. For now, we'll return success and log the code
+    print(f"[PASSWORD RESET] Code for {data.email}: {reset_code}")
+    
+    return {
+        "message": "Password reset code sent to your email",
+        "email": data.email.lower(),
+        # Include code in response for demo/testing purposes
+        # Remove this in production and send via email instead
+        "reset_code": reset_code
+    }
+
+@api_router.post("/auth/verify-reset-code")
+async def verify_reset_code(data: PasswordResetVerify):
+    """Verify reset code and set new password"""
+    # Find the reset code
+    reset_record = await db.password_resets.find_one({
+        "email": data.email.lower(),
+        "code": data.code
+    })
+    
+    if not reset_record:
+        raise HTTPException(400, "Invalid reset code")
+    
+    # Check if code has expired
+    if reset_record["expires_at"] < datetime.now(timezone.utc):
+        await db.password_resets.delete_one({"_id": reset_record["_id"]})
+        raise HTTPException(400, "Reset code has expired. Please request a new one.")
+    
+    # Validate new password
+    if len(data.new_password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    
+    # Update user's password
+    result = await db.users.update_one(
+        {"email": data.email.lower()},
+        {"$set": {"password_hash": hash_password(data.new_password)}}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(404, "User not found")
+    
+    # Delete the used reset code
+    await db.password_resets.delete_one({"_id": reset_record["_id"]})
+    
+    return {"message": "Password reset successful. You can now log in with your new password."}
 
 @api_router.put("/auth/profile")
 async def update_profile(data: dict = Body(...), current_user: dict = Depends(get_current_user)):
