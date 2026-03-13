@@ -22,6 +22,11 @@ import {
   getUnsyncedTrips,
   saveOfflineTrip,
 } from '../../services/offlineService';
+import {
+  isAutoTrackingEnabled,
+  getTrackingStatus,
+  getPendingTrips as getAutoTrackedTrips,
+} from '../../services/backgroundTracking';
 
 interface Stats {
   monthly_miles: number;
@@ -85,6 +90,7 @@ export default function DashboardScreen() {
   const [isOnline, setIsOnline] = useState(true);
   const [offlineTripsCount, setOfflineTripsCount] = useState(0);
   const [syncing, setSyncing] = useState(false);
+  const [isAutoTrip, setIsAutoTrip] = useState(false);
   const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const lastLocationRef = useRef<{ lat: number; lng: number } | null>(null);
@@ -92,7 +98,7 @@ export default function DashboardScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  // Monitor network status
+  // Monitor network status and auto-tracking
   useEffect(() => {
     setIsOnline(isNetworkOnline());
     const unsubscribe = onNetworkChange((online) => {
@@ -108,8 +114,44 @@ export default function DashboardScreen() {
     // Check for offline trips on mount
     checkOfflineTrips();
     
-    return () => unsubscribe();
+    // Check for auto-tracking status
+    checkAutoTrackingStatus();
+    
+    // Poll for auto-tracking trip updates every 5 seconds
+    const autoTrackInterval = setInterval(checkAutoTrackingStatus, 5000);
+    
+    return () => {
+      unsubscribe();
+      clearInterval(autoTrackInterval);
+    };
   }, [token]);
+
+  const checkAutoTrackingStatus = async () => {
+    try {
+      const status = await getTrackingStatus();
+      if (status.currentTrip && status.isRunning) {
+        // There's an active auto-tracked trip
+        setIsAutoTrip(true);
+        setLiveDistance(status.currentTrip.distance || 0);
+        
+        // Calculate duration from start time
+        if (status.currentTrip.start_time) {
+          const startTime = new Date(status.currentTrip.start_time).getTime();
+          const diff = Date.now() - startTime;
+          const totalMins = Math.floor(diff / 60000);
+          const hrs = Math.floor(totalMins / 60);
+          const mins = totalMins % 60;
+          setLiveDuration(hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`);
+        }
+        
+        console.log('[Dashboard] Auto trip in progress:', status.currentTrip.distance?.toFixed(2), 'miles');
+      } else {
+        setIsAutoTrip(false);
+      }
+    } catch (e) {
+      console.log('[Dashboard] Error checking auto-tracking:', e);
+    }
+  };
 
   const checkOfflineTrips = async () => {
     const trips = await getUnsyncedTrips();
@@ -504,20 +546,29 @@ export default function DashboardScreen() {
           </TouchableOpacity>
         )}
 
-        {/* Active Trip Banner */}
-        {stats?.active_trip ? (
-          <View testID="active-trip-banner" style={styles.activeTripCard}>
+        {/* Active Trip Banner - Shows for both manual and auto trips */}
+        {(stats?.active_trip || isAutoTrip) ? (
+          <View testID="active-trip-banner" style={[
+            styles.activeTripCard,
+            isAutoTrip && styles.autoTripCard
+          ]}>
             <View style={styles.activeTripPulse}>
-              <View style={styles.pulseOuter}><View style={styles.pulseInner} /></View>
-              <Text style={styles.activeTripLabel}>TRIP IN PROGRESS</Text>
+              <View style={[styles.pulseOuter, isAutoTrip && styles.autoPulseOuter]}>
+                <View style={[styles.pulseInner, isAutoTrip && styles.autoPulseInner]} />
+              </View>
+              <Text style={[styles.activeTripLabel, isAutoTrip && styles.autoTripLabel]}>
+                {isAutoTrip ? 'AUTO DRIVE IN PROGRESS' : 'TRIP IN PROGRESS'}
+              </Text>
             </View>
             <Text style={styles.activeTripRoute} numberOfLines={1}>
-              {stats.active_trip.start_address || 'Current Location'}
+              {stats?.active_trip?.start_address || 'Current Location'}
             </Text>
             <View style={styles.activeTripStats}>
               <View style={styles.activeTripStat}>
-                <Feather name="navigation" size={14} color={Colors.brand.primary} />
-                <Text style={styles.activeTripStatText}>{liveDistance.toFixed(1)} miles</Text>
+                <Feather name="navigation" size={14} color={isAutoTrip ? '#60A5FA' : Colors.brand.primary} />
+                <Text style={[styles.activeTripStatText, isAutoTrip && styles.autoTripStatText]}>
+                  {liveDistance.toFixed(1)} miles
+                </Text>
               </View>
               <View style={styles.activeTripStatDivider} />
               <View style={styles.activeTripStat}>
@@ -760,4 +811,21 @@ const styles = StyleSheet.create({
   syncBannerText: { color: '#FFF', fontSize: FontSize.sm, fontWeight: '600', flex: 1 },
   syncNowBtn: { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: Radius.sm, paddingHorizontal: 12, paddingVertical: 6 },
   syncNowText: { color: '#FFF', fontSize: FontSize.xs, fontWeight: '700' },
+  // Auto-trip light blue styles
+  autoTripCard: { 
+    borderColor: '#60A5FA40',
+    backgroundColor: '#1E3A5F',
+  },
+  autoTripLabel: { 
+    color: '#60A5FA',
+  },
+  autoPulseOuter: { 
+    backgroundColor: '#60A5FA30',
+  },
+  autoPulseInner: { 
+    backgroundColor: '#60A5FA',
+  },
+  autoTripStatText: { 
+    color: '#60A5FA',
+  },
 });
