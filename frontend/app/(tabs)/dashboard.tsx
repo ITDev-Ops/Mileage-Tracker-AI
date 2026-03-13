@@ -187,6 +187,7 @@ export default function DashboardScreen() {
     }
 
     // Initialize with current trip data
+    console.log('[Dashboard] Active trip detected:', stats.active_trip?.trip_id, 'start_time:', stats.active_trip?.start_time);
     setLiveDistance(stats.active_trip.distance || 0);
     lastLocationRef.current = stats.active_trip.start_lat && stats.active_trip.start_lng
       ? { lat: stats.active_trip.start_lat, lng: stats.active_trip.start_lng }
@@ -195,11 +196,14 @@ export default function DashboardScreen() {
     // Start duration timer - updates every second
     const updateDuration = () => {
       if (stats?.active_trip?.start_time) {
-        const diff = Date.now() - new Date(stats.active_trip.start_time).getTime();
+        const startTime = new Date(stats.active_trip.start_time).getTime();
+        const diff = Date.now() - startTime;
         const totalMins = Math.floor(diff / 60000);
         const hrs = Math.floor(totalMins / 60);
         const mins = totalMins % 60;
-        setLiveDuration(hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`);
+        const newDuration = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
+        console.log('[Dashboard] Duration update - start:', stats.active_trip.start_time, 'diff:', diff, 'duration:', newDuration);
+        setLiveDuration(newDuration);
       }
     };
     updateDuration();
@@ -209,13 +213,20 @@ export default function DashboardScreen() {
     const startLocationTracking = async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') return;
+        if (status !== 'granted') {
+          console.log('[Dashboard] Location permission not granted');
+          return;
+        }
 
+        console.log('[Dashboard] Starting location tracking...');
         locationWatchRef.current = await Location.watchPositionAsync(
           { accuracy: Location.Accuracy.High, distanceInterval: 10, timeInterval: 5000 },
           (location) => {
             const newLat = location.coords.latitude;
             const newLng = location.coords.longitude;
+            const speed = location.coords.speed || 0;
+            
+            console.log('[Dashboard] Location update:', { lat: newLat.toFixed(6), lng: newLng.toFixed(6), speed: (speed * 2.237).toFixed(1) + ' mph' });
             
             if (lastLocationRef.current) {
               // Calculate distance using Haversine formula
@@ -228,15 +239,22 @@ export default function DashboardScreen() {
               const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
               const dist = R * c;
               
+              console.log('[Dashboard] Calculated segment distance:', dist.toFixed(4), 'miles');
+              
               if (dist > 0.005) { // Only add if moved > ~26 feet
-                setLiveDistance(prev => prev + dist);
+                setLiveDistance(prev => {
+                  const newTotal = prev + dist;
+                  console.log('[Dashboard] Updated liveDistance:', newTotal.toFixed(2), 'miles');
+                  return newTotal;
+                });
               }
             }
             lastLocationRef.current = { lat: newLat, lng: newLng };
           }
         );
+        console.log('[Dashboard] Location tracking started successfully');
       } catch (e) {
-        console.log('Location tracking error:', e);
+        console.log('[Dashboard] Location tracking error:', e);
       }
     };
 
@@ -301,7 +319,10 @@ export default function DashboardScreen() {
       let endLat: number | undefined;
       let endLng: number | undefined;
       let endAddress = 'Destination';
-      let distance = 0;
+      
+      // Use the accumulated liveDistance instead of straight-line calculation
+      // liveDistance is tracked in real-time during the trip via GPS
+      let distance = liveDistance;
 
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
@@ -316,12 +337,21 @@ export default function DashboardScreen() {
           }
         } catch {}
 
-        if (stats.active_trip.start_lat && stats.active_trip.start_lng) {
+        // If no liveDistance was recorded (e.g., on web or GPS failed), 
+        // fall back to straight-line distance as minimum
+        if (distance === 0 && stats.active_trip.start_lat && stats.active_trip.start_lng) {
           distance = haversineDistance(stats.active_trip.start_lat, stats.active_trip.start_lng, endLat, endLng);
+          console.log('[Dashboard] Using fallback straight-line distance:', distance);
         }
       }
 
+      console.log('[Dashboard] Ending trip with distance:', distance, 'miles');
       await API.endTrip(token!, stats.active_trip.trip_id, { end_lat: endLat, end_lng: endLng, end_address: endAddress, distance });
+      
+      // Reset live tracking state
+      setLiveDistance(0);
+      setLiveDuration('0m');
+      
       await loadData();
       router.push(`/trip/${stats.active_trip.trip_id}`);
     } catch (e: any) {
