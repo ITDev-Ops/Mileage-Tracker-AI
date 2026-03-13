@@ -259,7 +259,8 @@ export async function syncOfflineTrips(
         start_address: trip.start_address || 'Offline tracked',
         end_address: trip.end_address || 'Offline tracked',
         distance: trip.distance,
-        classification: trip.classification || 'unclassified',
+        // Default to 'business' for deduction calculation (Issue #2 fix)
+        classification: trip.classification || 'business',
         notes: trip.notes || 'Tracked offline',
       });
       

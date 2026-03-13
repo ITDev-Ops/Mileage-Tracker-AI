@@ -26,6 +26,7 @@ import {
   isAutoTrackingEnabled,
   getTrackingStatus,
   getPendingTrips as getAutoTrackedTrips,
+  stopBackgroundTracking,
 } from '../../services/backgroundTracking';
 
 interface Stats {
@@ -91,6 +92,7 @@ export default function DashboardScreen() {
   const [offlineTripsCount, setOfflineTripsCount] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [isAutoTrip, setIsAutoTrip] = useState(false);
+  const [autoTripAddress, setAutoTripAddress] = useState('Current Location');
   const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const lastLocationRef = useRef<{ lat: number; lng: number } | null>(null);
@@ -144,9 +146,29 @@ export default function DashboardScreen() {
           setLiveDuration(hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`);
         }
         
+        // Get current location for address (Issue #5 fix)
+        try {
+          const route = status.currentTrip.route;
+          if (route && route.length > 0) {
+            const lastPoint = route[route.length - 1];
+            const geo = await Location.reverseGeocodeAsync({ 
+              latitude: lastPoint.latitude, 
+              longitude: lastPoint.longitude 
+            });
+            if (geo.length > 0) {
+              const g = geo[0];
+              const address = [g.street, g.city, g.region].filter(Boolean).join(', ');
+              setAutoTripAddress(address || 'Current Location');
+            }
+          }
+        } catch (geoError) {
+          console.log('[Dashboard] Geocode error:', geoError);
+        }
+        
         console.log('[Dashboard] Auto trip in progress:', status.currentTrip.distance?.toFixed(2), 'miles');
       } else {
         setIsAutoTrip(false);
+        setAutoTripAddress('Current Location');
       }
     } catch (e) {
       console.log('[Dashboard] Error checking auto-tracking:', e);
@@ -166,7 +188,10 @@ export default function DashboardScreen() {
       const result = await syncOfflineTrips(token, API.createTripDirect);
       if (result.synced > 0) {
         Alert.alert('Trips Synced! ✅', `${result.synced} offline trip${result.synced > 1 ? 's' : ''} synced successfully.`);
-        await loadData(); // Refresh dashboard
+        
+        // Refresh dashboard stats after sync (Issue #1 & #3 fix)
+        await loadData();
+        loadInsights();
       }
       await checkOfflineTrips();
     } catch (e) {
@@ -356,7 +381,11 @@ export default function DashboardScreen() {
   };
 
   const handleEndTrip = async () => {
-    if (!stats?.active_trip) return;
+    // Handle both manual and auto trips (Issue #4 fix)
+    const isManualTrip = stats?.active_trip;
+    
+    if (!isManualTrip && !isAutoTrip) return;
+    
     setEndingTrip(true);
     try {
       let endLat: number | undefined;
@@ -382,14 +411,47 @@ export default function DashboardScreen() {
 
         // If no liveDistance was recorded (e.g., on web or GPS failed), 
         // fall back to straight-line distance as minimum
-        if (distance === 0 && stats.active_trip.start_lat && stats.active_trip.start_lng) {
+        if (distance === 0 && isManualTrip && stats.active_trip.start_lat && stats.active_trip.start_lng) {
           distance = haversineDistance(stats.active_trip.start_lat, stats.active_trip.start_lng, endLat, endLng);
           console.log('[Dashboard] Using fallback straight-line distance:', distance);
         }
       }
 
-      console.log('[Dashboard] Ending trip with distance:', distance, 'miles, online:', isOnline);
+      console.log('[Dashboard] Ending trip with distance:', distance, 'miles, online:', isOnline, 'isAutoTrip:', isAutoTrip);
       
+      // Handle Auto Trip End (Issue #4 fix)
+      if (isAutoTrip && !isManualTrip) {
+        console.log('[Dashboard] Ending AUTO trip manually');
+        
+        // Stop background tracking to end the current auto trip
+        await stopBackgroundTracking();
+        
+        // The trip will be saved to pending trips by the background service
+        // Refresh the pending trips count
+        await checkOfflineTrips();
+        
+        // Reset state
+        setIsAutoTrip(false);
+        setLiveDistance(0);
+        setLiveDuration('0m');
+        setAutoTripAddress('Current Location');
+        
+        Alert.alert(
+          'Auto Trip Ended ✅',
+          `Your ${distance.toFixed(1)} mile auto-tracked trip has been saved and will sync shortly.`,
+          [{ text: 'OK' }]
+        );
+        
+        // Sync if online
+        if (isOnline && token) {
+          setTimeout(() => handleSyncOfflineTrips(), 1000);
+        }
+        
+        await loadData();
+        return;
+      }
+      
+      // Handle Manual Trip End
       // Check if online - if not, save locally for later sync
       if (!isOnline) {
         console.log('[Dashboard] Offline - saving trip locally for later sync');
@@ -405,7 +467,7 @@ export default function DashboardScreen() {
           start_address: stats.active_trip.start_address || 'Unknown start',
           end_address: endAddress,
           distance: distance,
-          classification: 'unclassified',
+          classification: 'business',
           notes: 'Tracked offline - pending sync',
         });
         
@@ -452,7 +514,7 @@ export default function DashboardScreen() {
             start_address: stats?.active_trip?.start_address || 'Unknown',
             end_address: 'Unknown',
             distance: liveDistance,
-            classification: 'unclassified',
+            classification: 'business',
             notes: 'Saved offline due to connection error',
           });
           
@@ -550,23 +612,23 @@ export default function DashboardScreen() {
         {(stats?.active_trip || isAutoTrip) ? (
           <View testID="active-trip-banner" style={[
             styles.activeTripCard,
-            isAutoTrip && styles.autoTripCard
+            isAutoTrip && !stats?.active_trip && styles.autoTripCard
           ]}>
             <View style={styles.activeTripPulse}>
-              <View style={[styles.pulseOuter, isAutoTrip && styles.autoPulseOuter]}>
-                <View style={[styles.pulseInner, isAutoTrip && styles.autoPulseInner]} />
+              <View style={[styles.pulseOuter, isAutoTrip && !stats?.active_trip && styles.autoPulseOuter]}>
+                <View style={[styles.pulseInner, isAutoTrip && !stats?.active_trip && styles.autoPulseInner]} />
               </View>
-              <Text style={[styles.activeTripLabel, isAutoTrip && styles.autoTripLabel]}>
-                {isAutoTrip ? 'AUTO DRIVE IN PROGRESS' : 'TRIP IN PROGRESS'}
+              <Text style={[styles.activeTripLabel, isAutoTrip && !stats?.active_trip && styles.autoTripLabel]}>
+                {isAutoTrip && !stats?.active_trip ? 'AUTO DRIVE IN PROGRESS' : 'TRIP IN PROGRESS'}
               </Text>
             </View>
             <Text style={styles.activeTripRoute} numberOfLines={1}>
-              {stats?.active_trip?.start_address || 'Current Location'}
+              {stats?.active_trip?.start_address || autoTripAddress || 'Current Location'}
             </Text>
             <View style={styles.activeTripStats}>
               <View style={styles.activeTripStat}>
-                <Feather name="navigation" size={14} color={isAutoTrip ? '#60A5FA' : Colors.brand.primary} />
-                <Text style={[styles.activeTripStatText, isAutoTrip && styles.autoTripStatText]}>
+                <Feather name="navigation" size={14} color={isAutoTrip && !stats?.active_trip ? '#60A5FA' : Colors.brand.primary} />
+                <Text style={[styles.activeTripStatText, isAutoTrip && !stats?.active_trip && styles.autoTripStatText]}>
                   {liveDistance.toFixed(1)} miles
                 </Text>
               </View>
