@@ -20,6 +20,7 @@ import {
   endTrip as endOfflineTrip,
   getCurrentTrip,
   getUnsyncedTrips,
+  saveOfflineTrip,
 } from '../../services/offlineService';
 
 interface Stats {
@@ -345,7 +346,46 @@ export default function DashboardScreen() {
         }
       }
 
-      console.log('[Dashboard] Ending trip with distance:', distance, 'miles');
+      console.log('[Dashboard] Ending trip with distance:', distance, 'miles, online:', isOnline);
+      
+      // Check if online - if not, save locally for later sync
+      if (!isOnline) {
+        console.log('[Dashboard] Offline - saving trip locally for later sync');
+        
+        // Save the trip offline
+        const offlineTrip = await saveOfflineTrip({
+          start_time: stats.active_trip.start_time,
+          end_time: new Date().toISOString(),
+          start_lat: stats.active_trip.start_lat || 0,
+          start_lng: stats.active_trip.start_lng || 0,
+          end_lat: endLat || 0,
+          end_lng: endLng || 0,
+          start_address: stats.active_trip.start_address || 'Unknown start',
+          end_address: endAddress,
+          distance: distance,
+          classification: 'unclassified',
+          notes: 'Tracked offline - pending sync',
+        });
+        
+        console.log('[Dashboard] Saved offline trip:', offlineTrip.id);
+        
+        // Update offline trips count
+        await checkOfflineTrips();
+        
+        Alert.alert(
+          'Trip Saved Offline 📱',
+          `Your ${distance.toFixed(1)} mile trip has been saved. It will sync automatically when you reconnect.`,
+          [{ text: 'OK' }]
+        );
+        
+        // Reset live tracking state
+        setLiveDistance(0);
+        setLiveDuration('0m');
+        
+        return;
+      }
+      
+      // Online - send to server
       await API.endTrip(token!, stats.active_trip.trip_id, { end_lat: endLat, end_lng: endLng, end_address: endAddress, distance });
       
       // Reset live tracking state
@@ -355,6 +395,41 @@ export default function DashboardScreen() {
       await loadData();
       router.push(`/trip/${stats.active_trip.trip_id}`);
     } catch (e: any) {
+      console.log('[Dashboard] End trip error:', e.message);
+      
+      // If the API call failed (maybe went offline mid-request), save locally
+      if (!isOnline || e.message?.includes('network') || e.message?.includes('Network')) {
+        try {
+          const offlineTrip = await saveOfflineTrip({
+            start_time: stats?.active_trip?.start_time || new Date().toISOString(),
+            end_time: new Date().toISOString(),
+            start_lat: stats?.active_trip?.start_lat || 0,
+            start_lng: stats?.active_trip?.start_lng || 0,
+            end_lat: 0,
+            end_lng: 0,
+            start_address: stats?.active_trip?.start_address || 'Unknown',
+            end_address: 'Unknown',
+            distance: liveDistance,
+            classification: 'unclassified',
+            notes: 'Saved offline due to connection error',
+          });
+          
+          await checkOfflineTrips();
+          
+          Alert.alert(
+            'Trip Saved Offline',
+            'Connection lost. Your trip has been saved and will sync when connected.',
+            [{ text: 'OK' }]
+          );
+          
+          setLiveDistance(0);
+          setLiveDuration('0m');
+          return;
+        } catch (saveError) {
+          console.log('[Dashboard] Failed to save offline:', saveError);
+        }
+      }
+      
       Alert.alert('Error', e.message || 'Could not end trip');
     } finally {
       setEndingTrip(false);
