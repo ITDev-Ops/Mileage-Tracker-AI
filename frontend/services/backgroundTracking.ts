@@ -18,7 +18,7 @@ const STORAGE_KEYS = {
 const DRIVING_SPEED_THRESHOLD = 2.2; // ~5 mph - start tracking
 const STOPPED_SPEED_THRESHOLD = 0.5; // ~1 mph - consider stopped
 const MIN_TRIP_DISTANCE = 0.1; // Minimum 0.1 miles to count as trip
-const STOP_TIMEOUT = 120000; // 2 minutes of being stopped = end trip
+const STOP_TIMEOUT = 300000; // 5 minutes of being stopped = end trip (changed from 2 min)
 
 // Types
 interface LocationPoint {
@@ -206,10 +206,13 @@ async function processLocationUpdate(locations: Location.LocationObject[]): Prom
     const stoppedDuration = Date.now() - lastMovementTime;
     
     if (stoppedDuration >= STOP_TIMEOUT) {
-      // End trip after being stopped for 2 minutes
+      // End trip after being stopped for 5 minutes
+      log('Trip ending - stopped for 5 minutes', { tripId: currentTrip.id, distance: currentTrip.distance });
       await endAutoTrip(currentTrip, point);
+      log('Auto trip completed and saved - ready for sync');
     } else {
-      log('Stopped but waiting...', { stoppedFor: Math.round(stoppedDuration / 1000) + 's' });
+      const remainingTime = Math.round((STOP_TIMEOUT - stoppedDuration) / 1000);
+      log('Stopped but waiting...', { stoppedFor: Math.round(stoppedDuration / 1000) + 's', willEndIn: remainingTime + 's' });
     }
   }
 }

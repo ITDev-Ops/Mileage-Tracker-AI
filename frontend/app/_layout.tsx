@@ -1,10 +1,10 @@
 import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { Platform } from 'react-native';
+import { Platform, Alert } from 'react-native';
 import { AuthProvider } from '../context/AuthContext';
 import { Colors } from '../constants/theme';
-import { initializeAutoTracking } from '../services/backgroundTracking';
+import { initializeAutoTracking, startBackgroundTracking, requestTrackingPermissions } from '../services/backgroundTracking';
 import { initializeOfflineService } from '../services/offlineService';
 
 export default function RootLayout() {
@@ -16,10 +16,36 @@ export default function RootLayout() {
         await initializeOfflineService();
         console.log('[App] Offline service initialized');
         
-        // Initialize background tracking on mobile only
+        // Auto-enable background tracking on mobile by default
         if (Platform.OS !== 'web') {
+          console.log('[App] Initializing auto-tracking...');
+          
+          // Request permissions
+          const hasPermission = await requestTrackingPermissions();
+          
+          if (hasPermission) {
+            // Start background tracking automatically
+            const started = await startBackgroundTracking();
+            console.log('[App] Background tracking started:', started);
+            
+            if (started) {
+              console.log('[App] Auto-tracking is now ACTIVE - will detect driving automatically');
+            }
+          } else {
+            console.log('[App] Location permission not granted - auto-tracking disabled');
+            // Show a one-time alert about enabling tracking
+            Alert.alert(
+              'Enable Auto-Tracking?',
+              'For accurate mileage tracking, please allow location access. The app will automatically detect and track your drives.',
+              [
+                { text: 'Maybe Later', style: 'cancel' },
+                { text: 'Enable', onPress: () => requestTrackingPermissions() }
+              ]
+            );
+          }
+          
+          // Also initialize any existing tracking state
           await initializeAutoTracking();
-          console.log('[App] Background tracking initialized');
         }
       } catch (e) {
         console.log('[App] Initialization error:', e);
