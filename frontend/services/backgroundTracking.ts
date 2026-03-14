@@ -18,7 +18,7 @@ const STORAGE_KEYS = {
 const DRIVING_SPEED_THRESHOLD = 2.2; // ~5 mph - start tracking
 const STOPPED_SPEED_THRESHOLD = 0.5; // ~1 mph - consider stopped
 const MIN_TRIP_DISTANCE = 0.1; // Minimum 0.1 miles to count as trip
-const STOP_TIMEOUT = 300000; // 5 minutes of being stopped = end trip (changed from 2 min)
+const STOP_TIMEOUT = 120000; // 2 minutes of being stopped = end trip (changed from 5 min)
 
 // Types
 interface LocationPoint {
