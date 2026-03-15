@@ -30,6 +30,7 @@ import {
   startBackgroundTracking,
   syncPendingTrips as syncAutoTrackedTrips,
   clearPendingTrips,
+  getCurrentTrip as getAutoCurrentTrip,
 } from '../../services/backgroundTracking';
 
 interface Stats {
@@ -133,15 +134,30 @@ export default function DashboardScreen() {
 
   const checkAutoTrackingStatus = async () => {
     try {
+      // Check both getTrackingStatus AND direct getCurrentTrip for redundancy
       const status = await getTrackingStatus();
-      if (status.currentTrip && status.isRunning) {
+      const directTrip = await getAutoCurrentTrip();
+      
+      console.log('[Dashboard] Auto-tracking status check:', { 
+        isRunning: status.isRunning, 
+        hasCurrentTrip: !!status.currentTrip,
+        hasDirectTrip: !!directTrip,
+        tripDistance: status.currentTrip?.distance || directTrip?.distance,
+        pendingCount: status.pendingTripsCount 
+      });
+      
+      // Use either source - some platforms may have issues with one or the other
+      const currentTrip = status.currentTrip || directTrip;
+      
+      // Check if there's an active auto-tracked trip
+      if (currentTrip) {
         // There's an active auto-tracked trip
         setIsAutoTrip(true);
-        setLiveDistance(status.currentTrip.distance || 0);
+        setLiveDistance(currentTrip.distance || 0);
         
         // Calculate duration from start time
-        if (status.currentTrip.start_time) {
-          const startTime = new Date(status.currentTrip.start_time).getTime();
+        if (currentTrip.start_time) {
+          const startTime = new Date(currentTrip.start_time).getTime();
           const diff = Date.now() - startTime;
           const totalMins = Math.floor(diff / 60000);
           const hrs = Math.floor(totalMins / 60);
@@ -149,9 +165,9 @@ export default function DashboardScreen() {
           setLiveDuration(hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`);
         }
         
-        // Get current location for address (Issue #5 fix)
+        // Get current location for address
         try {
-          const route = status.currentTrip.route;
+          const route = currentTrip.route;
           if (route && route.length > 0) {
             const lastPoint = route[route.length - 1];
             const geo = await Location.reverseGeocodeAsync({ 
@@ -168,7 +184,7 @@ export default function DashboardScreen() {
           console.log('[Dashboard] Geocode error:', geoError);
         }
         
-        console.log('[Dashboard] Auto trip in progress:', status.currentTrip.distance?.toFixed(2), 'miles');
+        console.log('[Dashboard] Auto trip ACTIVE:', currentTrip.distance?.toFixed(2), 'miles');
       } else {
         setIsAutoTrip(false);
         setAutoTripAddress('Current Location');
@@ -682,7 +698,7 @@ export default function DashboardScreen() {
                 <View style={[styles.pulseInner, isAutoTrip && !stats?.active_trip && styles.autoPulseInner]} />
               </View>
               <Text style={[styles.activeTripLabel, isAutoTrip && !stats?.active_trip && styles.autoTripLabel]}>
-                {isAutoTrip && !stats?.active_trip ? 'AUTO TRACKING IN PROGRESS' : 'TRIP IN PROGRESS'}
+                {isAutoTrip && !stats?.active_trip ? 'AUTO DRIVE IN PROGRESS' : 'TRIP IN PROGRESS'}
               </Text>
             </View>
             <Text style={styles.activeTripRoute} numberOfLines={1}>

@@ -70,10 +70,14 @@ function generateTripId(): string {
 }
 
 // Get current auto trip from storage
-async function getCurrentTrip(): Promise<PendingTrip | null> {
+export async function getCurrentTrip(): Promise<PendingTrip | null> {
   try {
     const tripJson = await AsyncStorage.getItem(STORAGE_KEYS.CURRENT_TRIP);
-    return tripJson ? JSON.parse(tripJson) : null;
+    const trip = tripJson ? JSON.parse(tripJson) : null;
+    if (trip) {
+      log('Current trip found:', { id: trip.id, distance: trip.distance, routePoints: trip.route?.length });
+    }
+    return trip;
   } catch (e) {
     log('Error getting current trip', e);
     return null;
