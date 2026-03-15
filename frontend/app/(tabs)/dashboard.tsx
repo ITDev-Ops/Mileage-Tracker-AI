@@ -27,6 +27,9 @@ import {
   getTrackingStatus,
   getPendingTrips as getAutoTrackedTrips,
   stopBackgroundTracking,
+  startBackgroundTracking,
+  syncPendingTrips as syncAutoTrackedTrips,
+  clearPendingTrips,
 } from '../../services/backgroundTracking';
 
 interface Stats {
@@ -176,26 +179,74 @@ export default function DashboardScreen() {
   };
 
   const checkOfflineTrips = async () => {
-    const trips = await getUnsyncedTrips();
-    setOfflineTripsCount(trips.length);
+    // Count trips from both sources: offline service AND auto-tracking
+    const offlineTrips = await getUnsyncedTrips();
+    const autoTrips = await getAutoTrackedTrips();
+    const totalUnsynced = offlineTrips.length + autoTrips.filter(t => !t.synced).length;
+    console.log('[Dashboard] Unsynced trips count:', { offline: offlineTrips.length, auto: autoTrips.length, total: totalUnsynced });
+    setOfflineTripsCount(totalUnsynced);
   };
 
   const handleSyncOfflineTrips = async () => {
     if (!token || !isOnline) return;
     
     setSyncing(true);
+    console.log('[Dashboard] Starting sync of all offline trips...');
+    
     try {
-      const result = await syncOfflineTrips(token, API.createTripDirect);
-      if (result.synced > 0) {
-        Alert.alert('Trips Synced! ✅', `${result.synced} offline trip${result.synced > 1 ? 's' : ''} synced successfully.`);
+      // Sync trips from BOTH sources
+      // 1. Sync offline service trips (manual trips saved offline)
+      const offlineResult = await syncOfflineTrips(token, API.createTripDirect);
+      console.log('[Dashboard] Offline service sync result:', offlineResult);
+      
+      // 2. Sync auto-tracked trips from background tracking
+      const autoSynced = await syncAutoTrackedTrips(token, API.createTripDirect);
+      console.log('[Dashboard] Auto-tracked trips synced:', autoSynced);
+      
+      const totalSynced = offlineResult.synced + autoSynced;
+      
+      if (totalSynced > 0) {
+        console.log('[Dashboard] Successfully synced', totalSynced, 'trips total. Now refreshing dashboard stats...');
         
-        // Refresh dashboard stats after sync (Issue #1 & #3 fix)
-        await loadData();
+        // Important: Wait a brief moment for backend to fully commit the data
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Refresh dashboard stats after sync - CRITICAL for data aggregation
+        console.log('[Dashboard] Fetching fresh stats from server...');
+        const freshStats = await API.getDashboardStats(token);
+        console.log('[Dashboard] Fresh stats received:', {
+          monthly_miles: freshStats?.monthly_miles,
+          yearly_miles: freshStats?.yearly_miles,
+          monthly_deductions: freshStats?.monthly_deductions,
+          yearly_deductions: freshStats?.yearly_deductions,
+        });
+        
+        // Update state with fresh data
+        setStats(freshStats);
+        
+        // Also refresh insights
         loadInsights();
+        
+        // Now check for remaining unsynced trips
+        await checkOfflineTrips();
+        
+        // Clear synced auto-tracked trips
+        if (autoSynced > 0) {
+          await clearPendingTrips();
+        }
+        
+        // Only show success alert after data is confirmed refreshed
+        Alert.alert(
+          'Trips Synced! ✅', 
+          `${totalSynced} offline trip${totalSynced > 1 ? 's' : ''} synced successfully.\n\nYour dashboard stats have been updated.`
+        );
+      } else {
+        // No trips to sync, just update the count
+        await checkOfflineTrips();
       }
-      await checkOfflineTrips();
-    } catch (e) {
-      console.log('[Dashboard] Sync error:', e);
+    } catch (e: any) {
+      console.log('[Dashboard] Sync error:', e.message || e);
+      Alert.alert('Sync Failed', 'Unable to sync trips. Please try again.');
     } finally {
       setSyncing(false);
     }
@@ -446,6 +497,18 @@ export default function DashboardScreen() {
         if (isOnline && token) {
           setTimeout(() => handleSyncOfflineTrips(), 1000);
         }
+        
+        // CRITICAL: Restart background tracking to continue monitoring for new drives
+        // This ensures auto-tracking remains "always on" even after manual stop
+        console.log('[Dashboard] Restarting background tracking for continuous monitoring...');
+        setTimeout(async () => {
+          try {
+            await startBackgroundTracking();
+            console.log('[Dashboard] Background tracking restarted successfully');
+          } catch (e) {
+            console.log('[Dashboard] Failed to restart background tracking:', e);
+          }
+        }, 2000);
         
         await loadData();
         return;

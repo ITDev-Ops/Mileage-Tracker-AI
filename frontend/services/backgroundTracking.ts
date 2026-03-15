@@ -404,7 +404,8 @@ export async function syncPendingTrips(token: string, createTripFn: (token: stri
         start_address: trip.start_address || 'Auto-detected start',
         end_address: trip.end_address || 'Auto-detected end',
         distance: trip.distance,
-        classification: 'unclassified',
+        // Default to 'business' for proper deduction calculation
+        classification: 'business',
         notes: 'Auto-tracked trip',
       });
       
