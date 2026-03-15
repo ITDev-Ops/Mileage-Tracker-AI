@@ -188,22 +188,39 @@ export default function DashboardScreen() {
   };
 
   const handleSyncOfflineTrips = async () => {
-    if (!token || !isOnline) return;
+    if (!token || !isOnline) {
+      console.log('[Dashboard] Cannot sync - token or network unavailable:', { hasToken: !!token, isOnline });
+      return;
+    }
     
     setSyncing(true);
     console.log('[Dashboard] Starting sync of all offline trips...');
     
     try {
-      // Sync trips from BOTH sources
+      let totalSynced = 0;
+      
       // 1. Sync offline service trips (manual trips saved offline)
-      const offlineResult = await syncOfflineTrips(token, API.createTripDirect);
-      console.log('[Dashboard] Offline service sync result:', offlineResult);
+      try {
+        const offlineResult = await syncOfflineTrips(token, API.createTripDirect);
+        console.log('[Dashboard] Offline service sync result:', offlineResult);
+        totalSynced += offlineResult.synced;
+      } catch (offlineError: any) {
+        console.log('[Dashboard] Offline service sync error (continuing):', offlineError.message || offlineError);
+      }
       
       // 2. Sync auto-tracked trips from background tracking
-      const autoSynced = await syncAutoTrackedTrips(token, API.createTripDirect);
-      console.log('[Dashboard] Auto-tracked trips synced:', autoSynced);
-      
-      const totalSynced = offlineResult.synced + autoSynced;
+      try {
+        const autoSynced = await syncAutoTrackedTrips(token, API.createTripDirect);
+        console.log('[Dashboard] Auto-tracked trips synced:', autoSynced);
+        totalSynced += autoSynced;
+        
+        // Clear synced auto-tracked trips
+        if (autoSynced > 0) {
+          await clearPendingTrips();
+        }
+      } catch (autoError: any) {
+        console.log('[Dashboard] Auto-tracked sync error (continuing):', autoError.message || autoError);
+      }
       
       if (totalSynced > 0) {
         console.log('[Dashboard] Successfully synced', totalSynced, 'trips total. Now refreshing dashboard stats...');
@@ -230,23 +247,19 @@ export default function DashboardScreen() {
         // Now check for remaining unsynced trips
         await checkOfflineTrips();
         
-        // Clear synced auto-tracked trips
-        if (autoSynced > 0) {
-          await clearPendingTrips();
-        }
-        
         // Only show success alert after data is confirmed refreshed
         Alert.alert(
           'Trips Synced! ✅', 
           `${totalSynced} offline trip${totalSynced > 1 ? 's' : ''} synced successfully.\n\nYour dashboard stats have been updated.`
         );
       } else {
-        // No trips to sync, just update the count
+        // No trips synced - check for remaining
         await checkOfflineTrips();
+        Alert.alert('No Trips to Sync', 'All trips are already synced or there was an issue with the pending trips.');
       }
     } catch (e: any) {
-      console.log('[Dashboard] Sync error:', e.message || e);
-      Alert.alert('Sync Failed', 'Unable to sync trips. Please try again.');
+      console.log('[Dashboard] Sync error:', e.message || e, e);
+      Alert.alert('Sync Failed', `Unable to sync trips: ${e.message || 'Unknown error'}. Please try again.`);
     } finally {
       setSyncing(false);
     }
