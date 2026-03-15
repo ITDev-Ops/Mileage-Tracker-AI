@@ -28,6 +28,8 @@ import {
   getPendingTrips as getAutoTrackedTrips,
   stopBackgroundTracking,
   startBackgroundTracking,
+  syncPendingTrips as syncAutoTrackedTrips,
+  clearPendingTrips,
 } from '../../services/backgroundTracking';
 
 interface Stats {
