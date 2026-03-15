@@ -1,10 +1,17 @@
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
+import { Platform, DeviceEventEmitter } from 'react-native';
 
 // Task name for background location tracking
 export const BACKGROUND_LOCATION_TASK = 'background-location-tracking';
+
+// Event names for cross-context communication
+export const AUTO_TRACK_EVENTS = {
+  TRIP_STARTED: 'AUTO_TRACK_TRIP_STARTED',
+  TRIP_UPDATED: 'AUTO_TRACK_TRIP_UPDATED',
+  TRIP_ENDED: 'AUTO_TRACK_TRIP_ENDED',
+};
 
 // Storage keys
 const STORAGE_KEYS = {
@@ -139,6 +146,10 @@ async function startAutoTrip(location: LocationPoint): Promise<PendingTrip> {
   
   await saveCurrentTrip(trip);
   log('Auto trip started', { tripId: trip.id, location });
+  
+  // Emit event to notify foreground app
+  DeviceEventEmitter.emit(AUTO_TRACK_EVENTS.TRIP_STARTED, trip);
+  
   return trip;
 }
 
@@ -157,6 +168,9 @@ async function endAutoTrip(trip: PendingTrip, endLocation: LocationPoint): Promi
   }
   
   await saveCurrentTrip(null);
+  
+  // Emit event to notify foreground app
+  DeviceEventEmitter.emit(AUTO_TRACK_EVENTS.TRIP_ENDED, trip);
 }
 
 // Variables for stop detection
@@ -203,6 +217,9 @@ async function processLocationUpdate(locations: Location.LocationObject[]): Prom
         currentTrip.route.push(point);
         await saveCurrentTrip(currentTrip);
         log('Trip distance updated', { distance: currentTrip.distance, segment: segmentDistance });
+        
+        // Emit event to notify foreground app of trip update
+        DeviceEventEmitter.emit(AUTO_TRACK_EVENTS.TRIP_UPDATED, currentTrip);
       }
     }
   } else if (currentTrip && isStopped) {
@@ -210,8 +227,8 @@ async function processLocationUpdate(locations: Location.LocationObject[]): Prom
     const stoppedDuration = Date.now() - lastMovementTime;
     
     if (stoppedDuration >= STOP_TIMEOUT) {
-      // End trip after being stopped for 5 minutes
-      log('Trip ending - stopped for 5 minutes', { tripId: currentTrip.id, distance: currentTrip.distance });
+      // End trip after being stopped for 2 minutes
+      log('Trip ending - stopped for 2 minutes', { tripId: currentTrip.id, distance: currentTrip.distance });
       await endAutoTrip(currentTrip, point);
       log('Auto trip completed and saved - ready for sync');
     } else {

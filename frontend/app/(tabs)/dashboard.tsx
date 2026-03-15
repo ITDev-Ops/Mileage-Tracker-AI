@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Platform, ActivityIndicator
+  RefreshControl, Alert, Platform, ActivityIndicator, AppState, AppStateStatus,
+  DeviceEventEmitter
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
@@ -31,6 +32,7 @@ import {
   syncPendingTrips as syncAutoTrackedTrips,
   clearPendingTrips,
   getCurrentTrip as getAutoCurrentTrip,
+  AUTO_TRACK_EVENTS,
 } from '../../services/backgroundTracking';
 
 interface Stats {
@@ -103,6 +105,7 @@ export default function DashboardScreen() {
   const { user, token } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const appState = useRef(AppState.currentState);
 
   // Monitor network status and auto-tracking
   useEffect(() => {
@@ -120,15 +123,66 @@ export default function DashboardScreen() {
     // Check for offline trips on mount
     checkOfflineTrips();
     
-    // Check for auto-tracking status
+    // Check for auto-tracking status immediately
     checkAutoTrackingStatus();
     
-    // Poll for auto-tracking trip updates every 5 seconds
-    const autoTrackInterval = setInterval(checkAutoTrackingStatus, 5000);
+    // Poll for auto-tracking trip updates every 3 seconds (reduced from 5 for better responsiveness)
+    const autoTrackInterval = setInterval(checkAutoTrackingStatus, 3000);
+    
+    // CRITICAL: Add AppState listener to detect when app becomes active
+    // This ensures the banner appears when user opens the app during an active auto-trip
+    const appStateSubscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      console.log('[Dashboard] AppState changed:', appState.current, '->', nextAppState);
+      
+      if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
+        // App has come to the foreground - immediately check for auto-trips
+        console.log('[Dashboard] App became active - checking for auto-trips');
+        checkAutoTrackingStatus();
+        checkOfflineTrips();
+      }
+      
+      appState.current = nextAppState;
+    });
+    
+    // CRITICAL: Listen to DeviceEventEmitter for real-time auto-trip updates from background
+    const tripStartedSub = DeviceEventEmitter.addListener(AUTO_TRACK_EVENTS.TRIP_STARTED, (trip) => {
+      console.log('[Dashboard] AUTO_TRACK_EVENTS.TRIP_STARTED received:', trip?.id);
+      setIsAutoTrip(true);
+      setLiveDistance(trip?.distance || 0);
+      setLiveDuration('0m');
+    });
+    
+    const tripUpdatedSub = DeviceEventEmitter.addListener(AUTO_TRACK_EVENTS.TRIP_UPDATED, (trip) => {
+      console.log('[Dashboard] AUTO_TRACK_EVENTS.TRIP_UPDATED received:', trip?.distance);
+      setIsAutoTrip(true);
+      setLiveDistance(trip?.distance || 0);
+      
+      // Calculate duration
+      if (trip?.start_time) {
+        const startTime = new Date(trip.start_time).getTime();
+        const diff = Date.now() - startTime;
+        const totalMins = Math.floor(diff / 60000);
+        const hrs = Math.floor(totalMins / 60);
+        const mins = totalMins % 60;
+        setLiveDuration(hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`);
+      }
+    });
+    
+    const tripEndedSub = DeviceEventEmitter.addListener(AUTO_TRACK_EVENTS.TRIP_ENDED, (trip) => {
+      console.log('[Dashboard] AUTO_TRACK_EVENTS.TRIP_ENDED received:', trip?.id);
+      setIsAutoTrip(false);
+      setLiveDistance(0);
+      setLiveDuration('0m');
+      checkOfflineTrips(); // Refresh pending trips count
+    });
     
     return () => {
       unsubscribe();
       clearInterval(autoTrackInterval);
+      appStateSubscription.remove();
+      tripStartedSub.remove();
+      tripUpdatedSub.remove();
+      tripEndedSub.remove();
     };
   }, [token]);
 
