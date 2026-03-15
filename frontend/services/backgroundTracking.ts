@@ -1,17 +1,10 @@
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform, DeviceEventEmitter } from 'react-native';
+import { Platform } from 'react-native';
 
 // Task name for background location tracking
 export const BACKGROUND_LOCATION_TASK = 'background-location-tracking';
-
-// Event names for cross-context communication
-export const AUTO_TRACK_EVENTS = {
-  TRIP_STARTED: 'AUTO_TRACK_TRIP_STARTED',
-  TRIP_UPDATED: 'AUTO_TRACK_TRIP_UPDATED',
-  TRIP_ENDED: 'AUTO_TRACK_TRIP_ENDED',
-};
 
 // Storage keys
 const STORAGE_KEYS = {
@@ -25,7 +18,7 @@ const STORAGE_KEYS = {
 const DRIVING_SPEED_THRESHOLD = 2.2; // ~5 mph - start tracking
 const STOPPED_SPEED_THRESHOLD = 0.5; // ~1 mph - consider stopped
 const MIN_TRIP_DISTANCE = 0.1; // Minimum 0.1 miles to count as trip
-const STOP_TIMEOUT = 120000; // 2 minutes of being stopped = end trip (changed from 5 min)
+const STOP_TIMEOUT = 120000; // 2 minutes of being stopped = end trip
 
 // Types
 interface LocationPoint {
@@ -77,14 +70,10 @@ function generateTripId(): string {
 }
 
 // Get current auto trip from storage
-export async function getCurrentTrip(): Promise<PendingTrip | null> {
+async function getCurrentTrip(): Promise<PendingTrip | null> {
   try {
     const tripJson = await AsyncStorage.getItem(STORAGE_KEYS.CURRENT_TRIP);
-    const trip = tripJson ? JSON.parse(tripJson) : null;
-    if (trip) {
-      log('Current trip found:', { id: trip.id, distance: trip.distance, routePoints: trip.route?.length });
-    }
-    return trip;
+    return tripJson ? JSON.parse(tripJson) : null;
   } catch (e) {
     log('Error getting current trip', e);
     return null;
@@ -146,10 +135,6 @@ async function startAutoTrip(location: LocationPoint): Promise<PendingTrip> {
   
   await saveCurrentTrip(trip);
   log('Auto trip started', { tripId: trip.id, location });
-  
-  // Emit event to notify foreground app
-  DeviceEventEmitter.emit(AUTO_TRACK_EVENTS.TRIP_STARTED, trip);
-  
   return trip;
 }
 
@@ -168,9 +153,6 @@ async function endAutoTrip(trip: PendingTrip, endLocation: LocationPoint): Promi
   }
   
   await saveCurrentTrip(null);
-  
-  // Emit event to notify foreground app
-  DeviceEventEmitter.emit(AUTO_TRACK_EVENTS.TRIP_ENDED, trip);
 }
 
 // Variables for stop detection
@@ -217,9 +199,6 @@ async function processLocationUpdate(locations: Location.LocationObject[]): Prom
         currentTrip.route.push(point);
         await saveCurrentTrip(currentTrip);
         log('Trip distance updated', { distance: currentTrip.distance, segment: segmentDistance });
-        
-        // Emit event to notify foreground app of trip update
-        DeviceEventEmitter.emit(AUTO_TRACK_EVENTS.TRIP_UPDATED, currentTrip);
       }
     }
   } else if (currentTrip && isStopped) {
