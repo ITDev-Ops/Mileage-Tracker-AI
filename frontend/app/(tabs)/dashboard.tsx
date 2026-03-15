@@ -698,7 +698,7 @@ export default function DashboardScreen() {
                 <View style={[styles.pulseInner, isAutoTrip && !stats?.active_trip && styles.autoPulseInner]} />
               </View>
               <Text style={[styles.activeTripLabel, isAutoTrip && !stats?.active_trip && styles.autoTripLabel]}>
-                {isAutoTrip && !stats?.active_trip ? 'AUTO DRIVE IN PROGRESS' : 'TRIP IN PROGRESS'}
+                {isAutoTrip && !stats?.active_trip ? 'AUTO TRACKER IN PROGRESS' : 'TRIP IN PROGRESS'}
               </Text>
             </View>
             <Text style={styles.activeTripRoute} numberOfLines={1}>
