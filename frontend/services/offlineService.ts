@@ -223,12 +223,12 @@ export async function syncOfflineTrips(
   token: string,
   createTripFn: (token: string, data: any) => Promise<any>
 ): Promise<{ synced: number; failed: number }> {
-  if (!isOnline) {
-    log('Cannot sync - offline');
-    return { synced: 0, failed: 0 };
-  }
+  // Don't check isOnline here - let the caller decide (they already check)
+  // This function should just attempt to sync what's available
   
   const unsyncedTrips = await getUnsyncedTrips();
+  log('Found unsynced trips:', unsyncedTrips.length);
+  
   if (unsyncedTrips.length === 0) {
     log('No trips to sync');
     return { synced: 0, failed: 0 };
@@ -249,6 +249,8 @@ export async function syncOfflineTrips(
     try {
       await updateTripSyncAttempt(trip.id);
       
+      log('Syncing trip:', { id: trip.id, distance: trip.distance, start: trip.start_time });
+      
       await createTripFn(token, {
         start_time: trip.start_time,
         end_time: trip.end_time,
@@ -266,7 +268,7 @@ export async function syncOfflineTrips(
       
       await markTripSynced(trip.id);
       synced++;
-      log('Synced trip:', trip.id);
+      log('Synced trip successfully:', trip.id);
     } catch (e: any) {
       log('Failed to sync trip:', { id: trip.id, error: e.message });
       failed++;
@@ -275,6 +277,11 @@ export async function syncOfflineTrips(
   
   // Update last sync time
   await AsyncStorage.setItem(STORAGE_KEYS.LAST_SYNC_TIME, new Date().toISOString());
+  
+  // Clean up synced trips
+  if (synced > 0) {
+    await clearSyncedTrips();
+  }
   
   log('Sync complete:', { synced, failed });
   return { synced, failed };

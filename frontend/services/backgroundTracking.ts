@@ -19,6 +19,7 @@ const DRIVING_SPEED_THRESHOLD = 2.2; // ~5 mph - start tracking
 const STOPPED_SPEED_THRESHOLD = 0.5; // ~1 mph - consider stopped
 const MIN_TRIP_DISTANCE = 0.1; // Minimum 0.1 miles to count as trip
 const STOP_TIMEOUT = 120000; // 2 minutes of being stopped = end trip
+const AUTO_START_DELAY = 60000; // 1 minute delay before auto-tracking starts a trip
 
 // Types
 interface LocationPoint {
@@ -155,8 +156,9 @@ async function endAutoTrip(trip: PendingTrip, endLocation: LocationPoint): Promi
   await saveCurrentTrip(null);
 }
 
-// Variables for stop detection
+// Variables for stop detection and auto-start delay
 let lastMovementTime = Date.now();
+let drivingDetectedTime: number | null = null; // When driving was first detected
 let stopCheckTimer: NodeJS.Timeout | null = null;
 
 // Process location update from background task
@@ -184,8 +186,24 @@ async function processLocationUpdate(locations: Location.LocationObject[]): Prom
     lastMovementTime = Date.now();
     
     if (!currentTrip) {
-      // Start new trip - driving detected!
-      currentTrip = await startAutoTrip(point);
+      // Driving detected but no trip yet
+      if (drivingDetectedTime === null) {
+        // First time detecting driving - start the delay timer
+        drivingDetectedTime = Date.now();
+        log('Driving detected - waiting 1 minute before starting auto trip...');
+      } else {
+        // Check if we've waited long enough (1 minute)
+        const waitedTime = Date.now() - drivingDetectedTime;
+        if (waitedTime >= AUTO_START_DELAY) {
+          // Start new trip - user didn't start manually within 1 minute
+          currentTrip = await startAutoTrip(point);
+          drivingDetectedTime = null; // Reset
+          log('Auto trip started after 1 minute delay', { tripId: currentTrip.id });
+        } else {
+          const remainingWait = Math.round((AUTO_START_DELAY - waitedTime) / 1000);
+          log('Still waiting...', { waited: Math.round(waitedTime / 1000) + 's', remaining: remainingWait + 's' });
+        }
+      }
     } else {
       // Continue existing trip - add location and update distance
       const lastPoint = currentTrip.route[currentTrip.route.length - 1];
@@ -201,18 +219,26 @@ async function processLocationUpdate(locations: Location.LocationObject[]): Prom
         log('Trip distance updated', { distance: currentTrip.distance, segment: segmentDistance });
       }
     }
-  } else if (currentTrip && isStopped) {
-    // Check if stopped for too long
-    const stoppedDuration = Date.now() - lastMovementTime;
+  } else {
+    // Not driving - reset the driving detection timer
+    if (!currentTrip) {
+      drivingDetectedTime = null;
+    }
     
-    if (stoppedDuration >= STOP_TIMEOUT) {
-      // End trip after being stopped for 2 minutes
-      log('Trip ending - stopped for 2 minutes', { tripId: currentTrip.id, distance: currentTrip.distance });
-      await endAutoTrip(currentTrip, point);
-      log('Auto trip completed and saved - ready for sync');
-    } else {
-      const remainingTime = Math.round((STOP_TIMEOUT - stoppedDuration) / 1000);
-      log('Stopped but waiting...', { stoppedFor: Math.round(stoppedDuration / 1000) + 's', willEndIn: remainingTime + 's' });
+    if (currentTrip && isStopped) {
+      // Check if stopped for too long
+      const stoppedDuration = Date.now() - lastMovementTime;
+      
+      if (stoppedDuration >= STOP_TIMEOUT) {
+        // End trip after being stopped for 2 minutes
+        log('Trip ending - stopped for 2 minutes', { tripId: currentTrip.id, distance: currentTrip.distance });
+        await endAutoTrip(currentTrip, point);
+        log('Auto trip completed and saved - ready for sync');
+        drivingDetectedTime = null; // Reset for next trip
+      } else {
+        const remainingTime = Math.round((STOP_TIMEOUT - stoppedDuration) / 1000);
+        log('Stopped but waiting...', { stoppedFor: Math.round(stoppedDuration / 1000) + 's', willEndIn: remainingTime + 's' });
+      }
     }
   }
 }
@@ -429,6 +455,26 @@ export async function syncPendingTrips(token: string, createTripFn: (token: stri
 export async function clearPendingTrips(): Promise<void> {
   await savePendingTrips([]);
   log('Pending trips cleared');
+}
+
+// Reset auto-tracking state - call this when manual trip starts or ends
+// This ensures auto-tracking starts fresh and doesn't pickup data from manual trips
+export async function resetAutoTrackingState(): Promise<void> {
+  // Clear any current auto trip
+  await saveCurrentTrip(null);
+  
+  // Reset the delay timer
+  drivingDetectedTime = null;
+  lastMovementTime = Date.now();
+  
+  log('Auto-tracking state reset - will start fresh for next trip');
+}
+
+// Clear current auto trip (if there's an incomplete one)
+export async function clearCurrentAutoTrip(): Promise<void> {
+  await saveCurrentTrip(null);
+  drivingDetectedTime = null;
+  log('Current auto trip cleared');
 }
 
 // Initialize auto-tracking on app start

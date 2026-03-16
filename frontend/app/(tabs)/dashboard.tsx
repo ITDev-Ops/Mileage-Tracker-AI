@@ -30,6 +30,7 @@ import {
   startBackgroundTracking,
   syncPendingTrips as syncAutoTrackedTrips,
   clearPendingTrips,
+  resetAutoTrackingState,
 } from '../../services/backgroundTracking';
 
 interface Stats {
@@ -416,6 +417,10 @@ export default function DashboardScreen() {
   const handleStartTrip = async () => {
     setStartingTrip(true);
     try {
+      // Reset auto-tracking state so it doesn't interfere with manual trip
+      // and starts fresh after manual trip ends
+      await resetAutoTrackingState();
+      
       let startLat: number | undefined;
       let startLng: number | undefined;
       let startAddress = 'Current Location';
@@ -571,6 +576,9 @@ export default function DashboardScreen() {
       // Reset live tracking state
       setLiveDistance(0);
       setLiveDuration('0m');
+      
+      // Reset auto-tracking state so next auto trip starts fresh from 0 miles
+      await resetAutoTrackingState();
       
       await loadData();
       router.push(`/trip/${stats.active_trip.trip_id}`);
