@@ -139,16 +139,64 @@ async function startAutoTrip(location: LocationPoint): Promise<PendingTrip> {
   return trip;
 }
 
-// End current auto trip
+// Storage key for auth token (to send trips directly to server)
+const AUTH_TOKEN_KEY = 'auth_token';
+
+// Get auth token from storage
+async function getAuthToken(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(AUTH_TOKEN_KEY);
+  } catch (e) {
+    log('Error getting auth token', e);
+    return null;
+  }
+}
+
+// API function to create trip directly (will be set from dashboard)
+let createTripDirectFn: ((token: string, data: any) => Promise<any>) | null = null;
+
+export function setCreateTripFunction(fn: (token: string, data: any) => Promise<any>): void {
+  createTripDirectFn = fn;
+  log('Create trip function set');
+}
+
+// End current auto trip and send directly to server
 async function endAutoTrip(trip: PendingTrip, endLocation: LocationPoint): Promise<void> {
   trip.end_time = new Date().toISOString();
   trip.end_lat = endLocation.latitude;
   trip.end_lng = endLocation.longitude;
   
-  // Only save trips with meaningful distance
+  // Only process trips with meaningful distance
   if (trip.distance >= MIN_TRIP_DISTANCE) {
-    await addPendingTrip(trip);
-    log('Auto trip ended and saved', { tripId: trip.id, distance: trip.distance });
+    log('Auto trip ended', { tripId: trip.id, distance: trip.distance });
+    
+    // Try to send directly to server
+    const token = await getAuthToken();
+    if (token && createTripDirectFn) {
+      try {
+        await createTripDirectFn(token, {
+          start_time: trip.start_time,
+          end_time: trip.end_time,
+          start_lat: trip.start_lat,
+          start_lng: trip.start_lng,
+          end_lat: trip.end_lat,
+          end_lng: trip.end_lng,
+          start_address: trip.start_address || 'Auto-detected start',
+          end_address: trip.end_address || 'Auto-detected end',
+          distance: trip.distance,
+          classification: 'business',
+          notes: 'Auto-tracked trip',
+        });
+        log('Auto trip sent directly to server - dashboard will update', { tripId: trip.id });
+      } catch (e) {
+        log('Failed to send to server, saving to pending', { tripId: trip.id, error: e });
+        await addPendingTrip(trip);
+      }
+    } else {
+      // No token or function - save to pending for later sync
+      await addPendingTrip(trip);
+      log('No auth available, saved to pending', { tripId: trip.id });
+    }
   } else {
     log('Auto trip too short, discarding', { tripId: trip.id, distance: trip.distance });
   }

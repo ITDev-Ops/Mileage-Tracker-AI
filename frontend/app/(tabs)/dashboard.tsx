@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Alert, Platform, ActivityIndicator
+  RefreshControl, Alert, Platform, ActivityIndicator, Animated, Easing
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
@@ -13,25 +13,22 @@ import { Colors, FontSize, Spacing, Radius, Shadow, ClassificationColor } from '
 import {
   isNetworkOnline,
   onNetworkChange,
-  getOfflineStats,
-  syncOfflineTrips,
-  startTrip as startOfflineTrip,
-  updateTripLocation,
-  endTrip as endOfflineTrip,
-  getCurrentTrip,
-  getUnsyncedTrips,
   saveOfflineTrip,
 } from '../../services/offlineService';
 import {
   isAutoTrackingEnabled,
   getTrackingStatus,
-  getPendingTrips as getAutoTrackedTrips,
   stopBackgroundTracking,
   startBackgroundTracking,
-  syncPendingTrips as syncAutoTrackedTrips,
-  clearPendingTrips,
   resetAutoTrackingState,
+  setCreateTripFunction,
 } from '../../services/backgroundTracking';
+import {
+  getDailyMessage,
+  getAllCategoryMessages,
+  shouldShowMagnified,
+  resetAppOpenedTime,
+} from '../../services/inspirationService';
 
 interface Stats {
   monthly_miles: number;
@@ -93,10 +90,23 @@ export default function DashboardScreen() {
   const [liveDistance, setLiveDistance] = useState(0);
   const [liveDuration, setLiveDuration] = useState('0m');
   const [isOnline, setIsOnline] = useState(true);
-  const [offlineTripsCount, setOfflineTripsCount] = useState(0);
-  const [syncing, setSyncing] = useState(false);
   const [isAutoTrip, setIsAutoTrip] = useState(false);
   const [autoTripAddress, setAutoTripAddress] = useState('Current Location');
+  
+  // Inspiration banner states
+  const [inspirationMessage, setInspirationMessage] = useState('');
+  const [inspirationColor, setInspirationColor] = useState('#FFD700');
+  const [allMessages, setAllMessages] = useState<string[]>([]);
+  const [currentMessageIndex, setCurrentMessageIndex] = useState(0);
+  const [isMagnified, setIsMagnified] = useState(false);
+  const scrollAnim = useRef(new Animated.Value(0)).current;
+  const magnifyAnim = useRef(new Animated.Value(0)).current;
+  
+  // Manual trip auto-end tracking
+  const [lastManualMovementTime, setLastManualMovementTime] = useState<number>(Date.now());
+  const manualStopCheckRef = useRef<NodeJS.Timeout | null>(null);
+  const MANUAL_TRIP_STOP_TIMEOUT = 10 * 60 * 1000; // 10 minutes
+  
   const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const lastLocationRef = useRef<{ lat: number; lng: number } | null>(null);
@@ -104,21 +114,66 @@ export default function DashboardScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
+  // Set up API function for background tracking to use
+  useEffect(() => {
+    if (token) {
+      setCreateTripFunction(API.createTripDirect.bind(API));
+    }
+  }, [token]);
+
+  // Load inspiration messages and check magnification
+  useEffect(() => {
+    const loadInspiration = async () => {
+      try {
+        const daily = await getDailyMessage();
+        setInspirationMessage(daily.message);
+        setInspirationColor(daily.color);
+        
+        const all = await getAllCategoryMessages();
+        setAllMessages(all.messages);
+        
+        const shouldMagnify = await shouldShowMagnified();
+        setIsMagnified(shouldMagnify);
+        
+        // If magnified, animate after 5 minutes
+        if (shouldMagnify) {
+          Animated.timing(magnifyAnim, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: false,
+          }).start();
+          
+          // Reset magnification after 5 minutes
+          setTimeout(() => {
+            Animated.timing(magnifyAnim, {
+              toValue: 0,
+              duration: 500,
+              useNativeDriver: false,
+            }).start(() => setIsMagnified(false));
+          }, 5 * 60 * 1000);
+        }
+      } catch (e) {
+        console.log('[Dashboard] Error loading inspiration:', e);
+      }
+    };
+    
+    loadInspiration();
+    
+    // Scroll through messages every 8 seconds
+    const scrollInterval = setInterval(() => {
+      setCurrentMessageIndex(prev => (prev + 1) % Math.max(allMessages.length, 1));
+    }, 8000);
+    
+    return () => clearInterval(scrollInterval);
+  }, [allMessages.length]);
+
   // Monitor network status and auto-tracking
   useEffect(() => {
     setIsOnline(isNetworkOnline());
     const unsubscribe = onNetworkChange((online) => {
       setIsOnline(online);
       console.log('[Dashboard] Network status changed:', online ? 'online' : 'offline');
-      
-      // Auto-sync when coming online
-      if (online && token) {
-        handleSyncOfflineTrips();
-      }
     });
-    
-    // Check for offline trips on mount
-    checkOfflineTrips();
     
     // Check for auto-tracking status
     checkAutoTrackingStatus();
@@ -179,92 +234,73 @@ export default function DashboardScreen() {
     }
   };
 
-  const checkOfflineTrips = async () => {
-    // Count trips from both sources: offline service AND auto-tracking
-    const offlineTrips = await getUnsyncedTrips();
-    const autoTrips = await getAutoTrackedTrips();
-    const totalUnsynced = offlineTrips.length + autoTrips.filter(t => !t.synced).length;
-    console.log('[Dashboard] Unsynced trips count:', { offline: offlineTrips.length, auto: autoTrips.length, total: totalUnsynced });
-    setOfflineTripsCount(totalUnsynced);
-  };
+  // Auto-end manual trip after 10 minutes of no movement
+  const checkManualTripMovement = useCallback((speed: number) => {
+    if (speed >= 2.2) { // ~5 mph, driving speed
+      setLastManualMovementTime(Date.now());
+    }
+  }, []);
 
-  const handleSyncOfflineTrips = async () => {
-    if (!token || !isOnline) {
-      console.log('[Dashboard] Cannot sync - token or network unavailable:', { hasToken: !!token, isOnline });
-      return;
-    }
-    
-    setSyncing(true);
-    console.log('[Dashboard] Starting sync of all offline trips...');
-    
-    try {
-      let totalSynced = 0;
-      
-      // 1. Sync offline service trips (manual trips saved offline)
-      try {
-        const offlineResult = await syncOfflineTrips(token, API.createTripDirect);
-        console.log('[Dashboard] Offline service sync result:', offlineResult);
-        totalSynced += offlineResult.synced;
-      } catch (offlineError: any) {
-        console.log('[Dashboard] Offline service sync error (continuing):', offlineError.message || offlineError);
-      }
-      
-      // 2. Sync auto-tracked trips from background tracking
-      try {
-        const autoSynced = await syncAutoTrackedTrips(token, API.createTripDirect);
-        console.log('[Dashboard] Auto-tracked trips synced:', autoSynced);
-        totalSynced += autoSynced;
-        
-        // Clear synced auto-tracked trips
-        if (autoSynced > 0) {
-          await clearPendingTrips();
+  // Monitor manual trip for auto-end
+  useEffect(() => {
+    if (stats?.active_trip && !isAutoTrip) {
+      // Manual trip is active - check for 10-minute stop
+      manualStopCheckRef.current = setInterval(async () => {
+        const stoppedDuration = Date.now() - lastManualMovementTime;
+        if (stoppedDuration >= MANUAL_TRIP_STOP_TIMEOUT) {
+          console.log('[Dashboard] Manual trip auto-ending after 10 minutes of no movement');
+          // Auto-end the trip
+          try {
+            let endLat: number | undefined;
+            let endLng: number | undefined;
+            let endAddress = 'Trip ended (auto)';
+            
+            const { status } = await Location.requestForegroundPermissionsAsync();
+            if (status === 'granted') {
+              const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+              endLat = loc.coords.latitude;
+              endLng = loc.coords.longitude;
+              try {
+                const geo = await Location.reverseGeocodeAsync({ latitude: endLat, longitude: endLng });
+                if (geo.length > 0) {
+                  const g = geo[0];
+                  endAddress = [g.street, g.city, g.region].filter(Boolean).join(', ') || 'Trip ended (auto)';
+                }
+              } catch {}
+            }
+            
+            await API.endTrip(token!, stats.active_trip.trip_id, { 
+              end_lat: endLat, 
+              end_lng: endLng, 
+              end_address: endAddress, 
+              distance: liveDistance 
+            });
+            
+            // Reset state
+            setLiveDistance(0);
+            setLiveDuration('0m');
+            await resetAutoTrackingState();
+            await loadData();
+            
+            Alert.alert(
+              'Trip Auto-Ended',
+              `Your trip was automatically ended after 10 minutes of no movement.\n\nDistance: ${liveDistance.toFixed(1)} miles`,
+              [{ text: 'OK' }]
+            );
+          } catch (e: any) {
+            console.log('[Dashboard] Error auto-ending trip:', e.message);
+          }
         }
-      } catch (autoError: any) {
-        console.log('[Dashboard] Auto-tracked sync error (continuing):', autoError.message || autoError);
-      }
+      }, 30000); // Check every 30 seconds
       
-      if (totalSynced > 0) {
-        console.log('[Dashboard] Successfully synced', totalSynced, 'trips total. Now refreshing dashboard stats...');
-        
-        // Important: Wait a brief moment for backend to fully commit the data
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        // Refresh dashboard stats after sync - CRITICAL for data aggregation
-        console.log('[Dashboard] Fetching fresh stats from server...');
-        const freshStats = await API.getDashboardStats(token);
-        console.log('[Dashboard] Fresh stats received:', {
-          monthly_miles: freshStats?.monthly_miles,
-          yearly_miles: freshStats?.yearly_miles,
-          monthly_deductions: freshStats?.monthly_deductions,
-          yearly_deductions: freshStats?.yearly_deductions,
-        });
-        
-        // Update state with fresh data
-        setStats(freshStats);
-        
-        // Also refresh insights
-        loadInsights();
-        
-        // Now check for remaining unsynced trips
-        await checkOfflineTrips();
-        
-        // Only show success alert after data is confirmed refreshed
-        Alert.alert(
-          'Trips Synced! ✅', 
-          `${totalSynced} offline trip${totalSynced > 1 ? 's' : ''} synced successfully.\n\nYour dashboard stats have been updated.`
-        );
-      } else {
-        // No trips synced - check for remaining
-        await checkOfflineTrips();
-        Alert.alert('No Trips to Sync', 'All trips are already synced or there was an issue with the pending trips.');
-      }
-    } catch (e: any) {
-      console.log('[Dashboard] Sync error:', e.message || e, e);
-      Alert.alert('Sync Failed', `Unable to sync trips: ${e.message || 'Unknown error'}. Please try again.`);
-    } finally {
-      setSyncing(false);
+      return () => {
+        if (manualStopCheckRef.current) {
+          clearInterval(manualStopCheckRef.current);
+          manualStopCheckRef.current = null;
+        }
+      };
     }
-  };
+  }, [stats?.active_trip, isAutoTrip, lastManualMovementTime, token, liveDistance]);
 
   const loadData = useCallback(async () => {
     if (!token) return;
@@ -671,26 +707,34 @@ export default function DashboardScreen() {
           </View>
         )}
 
-        {/* Unsynced Trips Banner */}
-        {offlineTripsCount > 0 && isOnline && (
-          <TouchableOpacity 
-            style={styles.syncBanner} 
-            onPress={handleSyncOfflineTrips}
-            disabled={syncing}
+        {/* Inspiration Banner - Daily Motivational Messages */}
+        <Animated.View style={[
+          styles.inspirationBanner,
+          {
+            height: magnifyAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [60, 120],
+            }),
+            backgroundColor: inspirationColor + '22', // Add transparency
+          }
+        ]}>
+          <Feather name="sun" size={isMagnified ? 24 : 18} color={inspirationColor} />
+          <Animated.Text 
+            style={[
+              styles.inspirationText,
+              {
+                color: inspirationColor,
+                fontSize: magnifyAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [14, 20],
+                }),
+              }
+            ]}
+            numberOfLines={isMagnified ? 4 : 2}
           >
-            <Feather name="upload-cloud" size={16} color="#FFF" />
-            <Text style={styles.syncBannerText}>
-              {syncing ? 'Syncing...' : `${offlineTripsCount} offline trip${offlineTripsCount > 1 ? 's' : ''} ready to sync`}
-            </Text>
-            {syncing ? (
-              <ActivityIndicator size="small" color="#FFF" />
-            ) : (
-              <View style={styles.syncNowBtn}>
-                <Text style={styles.syncNowText}>Sync Now</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-        )}
+            {allMessages[currentMessageIndex] || inspirationMessage}
+          </Animated.Text>
+        </Animated.View>
 
         {/* Active Trip Banner - Shows for both manual and auto trips */}
         {(stats?.active_trip || isAutoTrip) ? (
@@ -973,5 +1017,23 @@ const styles = StyleSheet.create({
   },
   autoTripStatText: { 
     color: '#60A5FA',
+  },
+  // Inspiration banner styles
+  inspirationBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginHorizontal: Spacing.screen,
+    borderRadius: Radius.lg,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  inspirationText: {
+    flex: 1,
+    fontWeight: '600',
+    lineHeight: 22,
+    fontStyle: 'italic',
   },
 });

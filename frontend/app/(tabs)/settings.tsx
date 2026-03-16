@@ -13,10 +13,15 @@ import {
   isAutoTrackingEnabled,
   setAutoTrackingEnabled,
   getTrackingStatus,
-  syncPendingTrips,
-  getPendingTrips,
   requestTrackingPermissions,
 } from '../../services/backgroundTracking';
+import {
+  INSPIRATION_CATEGORIES,
+  getSelectedCategory,
+  setSelectedCategory,
+  getCustomMessage,
+  setCustomMessage,
+} from '../../services/inspirationService';
 
 const OCCUPATIONS = [
   { key: 'self_employed', label: 'Self Employed' },
@@ -41,9 +46,13 @@ export default function SettingsScreen() {
   const [saving, setSaving] = useState(false);
   const [subscription, setSubscription] = useState<any>(null);
   const [autoTrackingOn, setAutoTrackingOn] = useState(false);
-  const [pendingTripsCount, setPendingTripsCount] = useState(0);
-  const [syncing, setSyncing] = useState(false);
   const [trackingStatusLoading, setTrackingStatusLoading] = useState(true);
+  
+  // Inspiration category states
+  const [selectedInspirationCategory, setSelectedInspirationCategory] = useState('potential');
+  const [customInspirationMessage, setCustomInspirationMessage] = useState('');
+  const [showCustomInput, setShowCustomInput] = useState(false);
+  
   const { user, token, logout, refreshUser } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -59,7 +68,7 @@ export default function SettingsScreen() {
     }
   }, [user, token]);
 
-  // Load auto-tracking status
+  // Load auto-tracking status and inspiration settings
   useEffect(() => {
     const loadTrackingStatus = async () => {
       setTrackingStatusLoading(true);
@@ -67,8 +76,14 @@ export default function SettingsScreen() {
         const enabled = await isAutoTrackingEnabled();
         setAutoTrackingOn(enabled);
         
-        const pending = await getPendingTrips();
-        setPendingTripsCount(pending.length);
+        // Load inspiration settings
+        const category = await getSelectedCategory();
+        setSelectedInspirationCategory(category);
+        if (category === 'custom') {
+          setShowCustomInput(true);
+          const customMsg = await getCustomMessage();
+          setCustomInspirationMessage(customMsg || '');
+        }
       } catch (e) {
         console.log('[Settings] Error loading tracking status:', e);
       } finally {
@@ -79,13 +94,18 @@ export default function SettingsScreen() {
     loadTrackingStatus();
   }, []);
 
-  // Sync pending trips when user logs in
-  useEffect(() => {
-    if (token && pendingTripsCount > 0) {
-      // Auto-sync pending trips when user has token
-      handleSyncTrips();
+  const handleSelectCategory = async (categoryId: string) => {
+    setSelectedInspirationCategory(categoryId);
+    await setSelectedCategory(categoryId);
+    setShowCustomInput(categoryId === 'custom');
+  };
+
+  const handleSaveCustomMessage = async () => {
+    if (customInspirationMessage.trim()) {
+      await setCustomMessage(customInspirationMessage.trim());
+      Alert.alert('Saved!', 'Your custom inspiration message has been saved.');
     }
-  }, [token]);
+  };
 
   const handleToggleAutoTracking = async (value: boolean) => {
     if (Platform.OS === 'web') {
@@ -120,33 +140,6 @@ export default function SettingsScreen() {
     } catch (e: any) {
       Alert.alert('Error', 'Could not change auto-tracking setting');
       console.log('[Settings] Toggle auto-tracking error:', e);
-    }
-  };
-
-  const handleSyncTrips = async () => {
-    if (!token) {
-      Alert.alert('Login Required', 'Please log in to sync your trips.');
-      return;
-    }
-    
-    setSyncing(true);
-    try {
-      const syncedCount = await syncPendingTrips(token, API.createTripDirect);
-      
-      // Refresh pending count
-      const pending = await getPendingTrips();
-      setPendingTripsCount(pending.length);
-      
-      if (syncedCount > 0) {
-        Alert.alert('Trips Synced! ✅', `${syncedCount} auto-tracked trip${syncedCount > 1 ? 's' : ''} synced to your account.`);
-      } else if (pending.length === 0) {
-        Alert.alert('All Synced', 'All your trips are already synced!');
-      }
-    } catch (e: any) {
-      Alert.alert('Sync Error', 'Could not sync trips. Please try again.');
-      console.log('[Settings] Sync error:', e);
-    } finally {
-      setSyncing(false);
     }
   };
 
@@ -327,42 +320,76 @@ export default function SettingsScreen() {
               )}
             </View>
             
-            {pendingTripsCount > 0 && (
-              <>
-                <View style={styles.divider} />
-                <TouchableOpacity 
-                  testID="sync-trips-btn"
-                  style={styles.syncRow} 
-                  onPress={handleSyncTrips}
-                  disabled={syncing}
-                >
-                  <Feather name="upload-cloud" size={18} color={Colors.brand.secondary} />
-                  <View style={styles.autoTrackInfo}>
-                    <Text style={styles.autoTrackTitle}>
-                      {pendingTripsCount} Unsynced Trip{pendingTripsCount !== 1 ? 's' : ''}
-                    </Text>
-                    <Text style={styles.autoTrackDesc}>Tap to sync to your account</Text>
-                  </View>
-                  {syncing ? (
-                    <ActivityIndicator size="small" color={Colors.brand.secondary} />
-                  ) : (
-                    <View style={styles.syncBadge}>
-                      <Text style={styles.syncBadgeText}>Sync</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-              </>
-            )}
-            
             <View style={styles.divider} />
             <View style={styles.autoTrackNote}>
               <Feather name="info" size={14} color={Colors.text.tertiary} />
               <Text style={styles.autoTrackNoteText}>
                 {autoTrackingOn 
-                  ? 'Drives are tracked even without logging in. Sync when ready.'
+                  ? 'Trips are automatically tracked and saved to your dashboard.'
                   : 'Enable to never miss a deductible mile'}
               </Text>
             </View>
+          </View>
+        </View>
+
+        {/* Daily Inspiration Category */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Daily Inspiration</Text>
+          <View style={styles.card}>
+            <Text style={[styles.autoTrackDesc, { marginBottom: 12, marginHorizontal: 16, marginTop: 12 }]}>
+              Choose a category for your daily motivational messages
+            </Text>
+            
+            {INSPIRATION_CATEGORIES.map((cat, index) => (
+              <React.Fragment key={cat.id}>
+                {index > 0 && <View style={styles.divider} />}
+                <TouchableOpacity
+                  style={styles.listRow}
+                  onPress={() => handleSelectCategory(cat.id)}
+                >
+                  <View style={[styles.inspirationDot, { backgroundColor: cat.color }]} />
+                  <Text style={styles.listRowText}>{cat.name}</Text>
+                  {selectedInspirationCategory === cat.id && (
+                    <Feather name="check" size={18} color={Colors.brand.primary} />
+                  )}
+                </TouchableOpacity>
+              </React.Fragment>
+            ))}
+            
+            <View style={styles.divider} />
+            <TouchableOpacity
+              style={styles.listRow}
+              onPress={() => handleSelectCategory('custom')}
+            >
+              <View style={[styles.inspirationDot, { backgroundColor: '#00CED1' }]} />
+              <Text style={styles.listRowText}>Custom Message</Text>
+              {selectedInspirationCategory === 'custom' && (
+                <Feather name="check" size={18} color={Colors.brand.primary} />
+              )}
+            </TouchableOpacity>
+            
+            {showCustomInput && (
+              <>
+                <View style={styles.divider} />
+                <View style={{ padding: 16 }}>
+                  <TextInput
+                    style={styles.customInput}
+                    placeholder="Enter your custom inspiration message..."
+                    placeholderTextColor={Colors.text.tertiary}
+                    value={customInspirationMessage}
+                    onChangeText={setCustomInspirationMessage}
+                    multiline
+                    numberOfLines={3}
+                  />
+                  <TouchableOpacity
+                    style={styles.saveCustomBtn}
+                    onPress={handleSaveCustomMessage}
+                  >
+                    <Text style={styles.saveCustomBtnText}>Save Custom Message</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
           </View>
         </View>
 
@@ -438,7 +465,7 @@ const styles = StyleSheet.create({
   settingsRowInfo: { flex: 1 },
   settingsRowTitle: { color: Colors.text.primary, fontSize: FontSize.sm, fontWeight: '600' },
   settingsRowSub: { color: Colors.text.tertiary, fontSize: FontSize.xs, marginTop: 2 },
-  listRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },
+  listRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, paddingHorizontal: 16 },
   listRowText: { flex: 1, color: Colors.text.primary, fontSize: FontSize.sm },
   listRowValue: { color: Colors.text.tertiary, fontSize: FontSize.sm },
   divider: { height: 1, backgroundColor: Colors.border, marginVertical: 2 },
@@ -451,6 +478,37 @@ const styles = StyleSheet.create({
   syncRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
   syncBadge: { backgroundColor: Colors.brand.secondaryDim, borderRadius: Radius.full, paddingHorizontal: 12, paddingVertical: 5, borderWidth: 1, borderColor: Colors.brand.secondary + '40' },
   syncBadgeText: { color: Colors.brand.secondary, fontSize: FontSize.xs, fontWeight: '700' },
-  autoTrackNote: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 8 },
+  autoTrackNote: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 8, paddingHorizontal: 16 },
   autoTrackNoteText: { flex: 1, color: Colors.text.tertiary, fontSize: FontSize.xs, lineHeight: 16 },
+  // Inspiration styles
+  inspirationDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  customInput: {
+    backgroundColor: Colors.bg.secondary,
+    borderRadius: Radius.md,
+    padding: 12,
+    color: Colors.text.primary,
+    fontSize: FontSize.sm,
+    minHeight: 80,
+    textAlignVertical: 'top',
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  saveCustomBtn: {
+    backgroundColor: Colors.brand.primaryDim,
+    borderRadius: Radius.md,
+    padding: 12,
+    marginTop: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.brand.primary + '40',
+  },
+  saveCustomBtnText: {
+    color: Colors.brand.primary,
+    fontSize: FontSize.sm,
+    fontWeight: '600',
+  },
 });
