@@ -28,7 +28,7 @@ export async function scheduleUnclassifiedReminder(unclassifiedCount: number): P
     await Notifications.scheduleNotificationAsync({
       identifier: 'unclassified-reminder',
       content: {
-        title: '🚗 Multi Mile Tracker',
+        title: '🚗 Mileage Tracker AI',
         body: `${unclassifiedCount} trip${unclassifiedCount !== 1 ? 's' : ''} need classification — maximize your tax deductions!`,
         data: { screen: 'trips' },
         sound: undefined,

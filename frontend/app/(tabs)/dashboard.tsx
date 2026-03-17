@@ -22,6 +22,7 @@ import {
   startBackgroundTracking,
   resetAutoTrackingState,
   setCreateTripFunction,
+  setDashboardRefreshFunction,
 } from '../../services/backgroundTracking';
 import {
   getDailyMessage,
@@ -118,6 +119,12 @@ export default function DashboardScreen() {
   useEffect(() => {
     if (token) {
       setCreateTripFunction(API.createTripDirect.bind(API));
+      // Set up dashboard refresh function so auto-trips can trigger refresh
+      setDashboardRefreshFunction(async () => {
+        console.log('[Dashboard] Background triggered refresh');
+        await loadData();
+        loadInsights();
+      });
     }
   }, [token]);
 
@@ -707,33 +714,41 @@ export default function DashboardScreen() {
           </View>
         )}
 
-        {/* Inspiration Banner - Daily Motivational Messages */}
+        {/* Inspiration Banner - Daily Motivational Messages with Ticker Scroll */}
         <Animated.View style={[
           styles.inspirationBanner,
           {
-            height: magnifyAnim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [60, 120],
-            }),
-            backgroundColor: inspirationColor + '22', // Add transparency
+            minHeight: isMagnified ? 140 : 70,
+            backgroundColor: inspirationColor + '22',
           }
         ]}>
-          <Feather name="sun" size={isMagnified ? 24 : 18} color={inspirationColor} />
-          <Animated.Text 
-            style={[
-              styles.inspirationText,
-              {
-                color: inspirationColor,
-                fontSize: magnifyAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [14, 20],
-                }),
-              }
-            ]}
-            numberOfLines={isMagnified ? 4 : 2}
+          <View style={styles.inspirationIconContainer}>
+            <Feather name="sun" size={isMagnified ? 28 : 20} color={inspirationColor} />
+          </View>
+          <ScrollView 
+            horizontal={!isMagnified}
+            showsHorizontalScrollIndicator={false}
+            showsVerticalScrollIndicator={false}
+            style={styles.inspirationScrollContainer}
+            contentContainerStyle={isMagnified ? styles.inspirationScrollContentMagnified : styles.inspirationScrollContent}
           >
-            {allMessages[currentMessageIndex] || inspirationMessage}
-          </Animated.Text>
+            <Text 
+              style={[
+                styles.inspirationText,
+                {
+                  color: inspirationColor,
+                  fontSize: isMagnified ? 22 : 15,
+                  lineHeight: isMagnified ? 32 : 22,
+                  fontWeight: isMagnified ? '700' : '600',
+                }
+              ]}
+            >
+              {isMagnified 
+                ? (allMessages[currentMessageIndex] || inspirationMessage)
+                : `✨ ${allMessages[currentMessageIndex] || inspirationMessage} ✨`
+              }
+            </Text>
+          </ScrollView>
         </Animated.View>
 
         {/* Active Trip Banner - Shows for both manual and auto trips */}
@@ -1029,11 +1044,22 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
+    overflow: 'hidden',
+  },
+  inspirationIconContainer: {
+    padding: 4,
+  },
+  inspirationScrollContainer: {
+    flex: 1,
+  },
+  inspirationScrollContent: {
+    alignItems: 'center',
+  },
+  inspirationScrollContentMagnified: {
+    paddingVertical: 8,
   },
   inspirationText: {
-    flex: 1,
     fontWeight: '600',
-    lineHeight: 22,
     fontStyle: 'italic',
   },
 });

@@ -1,6 +1,8 @@
 {
   "identity": {
-    "name": "Multi Mile Tracker",
+    "name": "Mileage Tracker AI",
+    "tagline": "AI-Powered Mileage & Tax Intelligence",
+    "business": "Multisystems and Multisystem LLC",
     "persona": "The Performance Pro - Mileage Intelligence",
     "vibe": "Dark, Kinetic, Tactical, High-Contrast",
     "description": "A premium, dark-mode-first mileage and expense tracking app that feels like a cockpit. Beats MileIQ by being faster, darker, and smarter.",

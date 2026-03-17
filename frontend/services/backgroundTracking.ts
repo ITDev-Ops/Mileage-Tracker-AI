@@ -154,10 +154,16 @@ async function getAuthToken(): Promise<string | null> {
 
 // API function to create trip directly (will be set from dashboard)
 let createTripDirectFn: ((token: string, data: any) => Promise<any>) | null = null;
+let dashboardRefreshFn: (() => Promise<void>) | null = null;
 
 export function setCreateTripFunction(fn: (token: string, data: any) => Promise<any>): void {
   createTripDirectFn = fn;
   log('Create trip function set');
+}
+
+export function setDashboardRefreshFunction(fn: () => Promise<void>): void {
+  dashboardRefreshFn = fn;
+  log('Dashboard refresh function set');
 }
 
 // End current auto trip and send directly to server
@@ -187,7 +193,19 @@ async function endAutoTrip(trip: PendingTrip, endLocation: LocationPoint): Promi
           classification: 'business',
           notes: 'Auto-tracked trip',
         });
-        log('Auto trip sent directly to server - dashboard will update', { tripId: trip.id });
+        log('Auto trip sent directly to server - triggering dashboard refresh', { tripId: trip.id });
+        
+        // Trigger dashboard refresh to update stats
+        if (dashboardRefreshFn) {
+          setTimeout(async () => {
+            try {
+              await dashboardRefreshFn!();
+              log('Dashboard refreshed after auto-trip');
+            } catch (e) {
+              log('Dashboard refresh error', e);
+            }
+          }, 500); // Small delay to ensure server processed the trip
+        }
       } catch (e) {
         log('Failed to send to server, saving to pending', { tripId: trip.id, error: e });
         await addPendingTrip(trip);

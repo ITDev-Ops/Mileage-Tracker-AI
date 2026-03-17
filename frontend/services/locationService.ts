@@ -56,7 +56,7 @@ export async function startBackgroundTracking(): Promise<boolean> {
         distanceInterval: 30,
         timeInterval: 20000,
         foregroundService: {
-          notificationTitle: 'Multi Mile Tracker',
+          notificationTitle: 'Mileage Tracker AI',
           notificationBody: 'Monitoring for drives automatically...',
           notificationColor: '#10B981',
         },
