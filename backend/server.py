@@ -40,7 +40,7 @@ IRS_CHARITY_RATE = 0.14   # $/mile for charity
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_emergent')
 
-app = FastAPI(title="Multi Mile Tracker API")
+app = FastAPI(title="Mileage Tracker AI API")
 api_router = APIRouter(prefix="/api")
 
 app.add_middleware(
@@ -582,7 +582,7 @@ async def ai_chat(data: ChatMessage, current_user: dict = Depends(get_current_us
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=session_id,
-            system_message=f"""You are an AI mileage and tax assistant for Multi Mile Tracker.
+            system_message=f"""You are an AI mileage and tax assistant for Mileage Tracker AI.
 User: {current_user.get('name', 'User')} | Occupation: {current_user.get('occupation_type', 'self_employed')} | Country: {current_user.get('tax_country', 'US')}
 Stats: {len(trips)} trips tracked, {total_miles:.1f} total miles, ${total_deductions:.2f} in deductions
 IRS 2026 rate: $0.70/mile (business), $0.22/mile (medical), $0.14/mile (charity)
@@ -866,12 +866,23 @@ async def export_csv(year: int = None, current_user: dict = Depends(get_current_
     ).sort("start_time", 1).to_list(2000)
     output = io.StringIO()
     writer = csv.writer(output)
+    
+    # Branding header
+    writer.writerow(["Mileage Tracker AI"])
+    writer.writerow(["AI-Powered Mileage & Tax Intelligence"])
+    writer.writerow(["Multisystems and Multisystem LLC"])
+    writer.writerow([])
+    writer.writerow([f"IRS Mileage Report - {year}"])
+    writer.writerow([f"Generated: {now.strftime('%B %d, %Y')} | User: {current_user.get('name', current_user.get('email', 'User'))}"])
+    writer.writerow([])
+    
+    # Data header and rows
     writer.writerow(["Date", "Start", "End", "Miles", "Classification", "Purpose", "Client", "Deduction ($)", "Notes"])
     for t in trips:
         st = t.get("start_time", "")
         if isinstance(st, datetime): st = st.strftime("%Y-%m-%d %H:%M")
         writer.writerow([st, t.get("start_address",""), t.get("end_address",""), f"{t.get('distance',0):.2f}", t.get("classification",""), t.get("purpose",""), t.get("client_name",""), f"{t.get('deduction_value',0):.2f}", t.get("notes","")])
-    return StreamingResponse(io.BytesIO(output.getvalue().encode()), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=mileage_{year}.csv"})
+    return StreamingResponse(io.BytesIO(output.getvalue().encode()), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=mileage_tracker_ai_{year}.csv"})
 
 @api_router.get("/reports/export/pdf")
 async def export_pdf(year: int = None, current_user: dict = Depends(get_current_user)):
@@ -907,12 +918,16 @@ async def export_pdf(year: int = None, current_user: dict = Depends(get_current_
     elements = []
     
     # Title Style
-    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, spaceAfter=12, textColor=colors.HexColor('#10B981'), alignment=TA_CENTER)
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, spaceAfter=6, textColor=colors.HexColor('#10B981'), alignment=TA_CENTER)
+    tagline_style = ParagraphStyle('Tagline', parent=styles['Normal'], fontSize=10, textColor=colors.HexColor('#6B7280'), alignment=TA_CENTER, spaceAfter=2)
+    business_style = ParagraphStyle('Business', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#9CA3AF'), alignment=TA_CENTER, spaceAfter=12)
     subtitle_style = ParagraphStyle('Subtitle', parent=styles['Normal'], fontSize=10, textColor=colors.grey, alignment=TA_CENTER, spaceAfter=20)
     header_style = ParagraphStyle('Header', parent=styles['Heading2'], fontSize=12, textColor=colors.HexColor('#1F2937'), spaceBefore=16, spaceAfter=8)
     
-    # Header
-    elements.append(Paragraph("Multi Mile Tracker", title_style))
+    # Header with new branding
+    elements.append(Paragraph("Mileage Tracker AI", title_style))
+    elements.append(Paragraph("AI-Powered Mileage & Tax Intelligence", tagline_style))
+    elements.append(Paragraph("Multisystems and Multisystem LLC", business_style))
     elements.append(Paragraph(f"IRS Mileage Report - {year}", subtitle_style))
     elements.append(Paragraph(f"Generated: {now_dt.strftime('%B %d, %Y')} | User: {current_user.get('name', current_user.get('email', 'User'))}", subtitle_style))
     
