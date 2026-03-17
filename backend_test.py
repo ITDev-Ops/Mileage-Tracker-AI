@@ -1,231 +1,352 @@
+#!/usr/bin/env python3
 """
-Multi Mile Tracker - Backend API Test for NEW Features
-Testing the specific endpoints mentioned in the review request:
-- PDF Report Export
-- Bulk AI Classification 
-- Auth flow
-- Seed Data
+Backend API Testing Suite for Mileage Tracker AI
+Focused on testing report exports with branding validation
 """
 
 import requests
 import json
-import time
-import uuid
-from datetime import datetime
+import datetime
+from typing import Dict, Any, Optional
 
-# Base URL from review request
-BASE_URL = "https://gps-mileage-mvp.preview.emergentagent.com/api"
-
-def test_auth_flow():
-    """Test registration, login, and profile endpoints"""
-    print("🔐 Testing Auth Flow...")
-    
-    # Generate unique email for testing
-    unique_id = int(time.time())
-    test_email = f"tester_{unique_id}@testmile.com"
-    test_password = "testpass123"
-    test_name = f"Test User {unique_id}"
-    
-    # 1. Register new user
-    register_data = {
-        "email": test_email,
-        "password": test_password,
-        "name": test_name
-    }
-    
-    print(f"   Registering user: {test_email}")
-    register_resp = requests.post(f"{BASE_URL}/auth/register", json=register_data)
-    print(f"   Register Status: {register_resp.status_code}")
-    
-    if register_resp.status_code != 200:
-        print(f"   Register Error: {register_resp.text}")
-        return None, None
-    
-    register_result = register_resp.json()
-    print(f"   ✅ User registered successfully")
-    
-    # 2. Login with registered user
-    login_data = {
-        "email": test_email,
-        "password": test_password
-    }
-    
-    print(f"   Logging in user: {test_email}")
-    login_resp = requests.post(f"{BASE_URL}/auth/login", json=login_data)
-    print(f"   Login Status: {login_resp.status_code}")
-    
-    if login_resp.status_code != 200:
-        print(f"   Login Error: {login_resp.text}")
-        return None, None
+class MileageTrackerTester:
+    def __init__(self):
+        self.base_url = "https://gps-mileage-mvp.preview.emergentagent.com/api"
+        self.token = None
+        self.user_id = None
+        self.session = requests.Session()
+        self.session.timeout = 30
         
-    login_result = login_resp.json()
-    token = login_result["token"]
-    print(f"   ✅ Login successful, token obtained")
-    
-    # 3. Test GET /auth/me
-    headers = {"Authorization": f"Bearer {token}"}
-    me_resp = requests.get(f"{BASE_URL}/auth/me", headers=headers)
-    print(f"   Profile Status: {me_resp.status_code}")
-    
-    if me_resp.status_code == 200:
-        me_result = me_resp.json()
-        print(f"   ✅ Profile retrieved: {me_result.get('name', 'Unknown')}")
-    else:
-        print(f"   ❌ Profile Error: {me_resp.text}")
+    def log(self, message: str, level: str = "INFO"):
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] [{level}] {message}")
         
-    return token, headers
-
-def test_seed_trips(headers):
-    """Test POST /seed/trips to add sample data"""
-    print("🌱 Testing Seed Data...")
-    
-    seed_resp = requests.post(f"{BASE_URL}/seed/trips", headers=headers)
-    print(f"   Seed Status: {seed_resp.status_code}")
-    
-    if seed_resp.status_code == 200:
-        seed_result = seed_resp.json()
-        seeded_count = seed_result.get("seeded", 0)
-        print(f"   ✅ Seeded {seeded_count} sample trips")
-        return True
-    else:
-        print(f"   ❌ Seed Error: {seed_resp.text}")
-        return False
-
-def test_bulk_ai_classification(headers):
-    """Test POST /ai/classify-all for bulk classification"""
-    print("🤖 Testing Bulk AI Classification...")
-    
-    classify_resp = requests.post(f"{BASE_URL}/ai/classify-all", headers=headers, timeout=60)
-    print(f"   Bulk Classify Status: {classify_resp.status_code}")
-    
-    if classify_resp.status_code == 200:
-        classify_result = classify_resp.json()
-        classified_count = classify_result.get("classified", 0)
-        total_deductions = classify_result.get("total_deductions", 0)
-        print(f"   ✅ Classified {classified_count} trips")
-        print(f"   💰 Total deductions: ${total_deductions}")
+    def make_request(self, method: str, endpoint: str, data: Dict[Any, Any] = None, 
+                    headers: Dict[str, str] = None, params: Dict[str, str] = None) -> Optional[requests.Response]:
+        """Make HTTP request with error handling"""
+        url = f"{self.base_url}{endpoint}"
         
-        # Print some sample results
-        results = classify_result.get("results", [])
-        for i, result in enumerate(results[:3]):
-            if "classification" in result:
-                print(f"      Trip {i+1}: {result['classification']} (confidence: {result.get('confidence', 'N/A')})")
+        default_headers = {'Content-Type': 'application/json'}
+        if self.token:
+            default_headers['Authorization'] = f'Bearer {self.token}'
         
-        return True
-    else:
-        print(f"   ❌ Bulk Classify Error: {classify_resp.text}")
-        return False
-
-def test_pdf_export(headers):
-    """Test GET /reports/export/pdf?year=2026"""
-    print("📄 Testing PDF Report Export...")
+        if headers:
+            default_headers.update(headers)
+            
+        try:
+            self.log(f"Making {method} request to {url}")
+            if data:
+                self.log(f"Request data: {json.dumps(data, indent=2)}")
+                
+            response = self.session.request(
+                method=method,
+                url=url,
+                json=data,
+                headers=default_headers,
+                params=params
+            )
+            
+            self.log(f"Response status: {response.status_code}")
+            self.log(f"Response headers: {dict(response.headers)}")
+            
+            # Always return response, even for non-2xx status codes
+            return response
+            
+        except Exception as e:
+            self.log(f"Request failed: {str(e)}", "ERROR")
+            return None
     
-    pdf_resp = requests.get(f"{BASE_URL}/reports/export/pdf?year=2026", headers=headers)
-    print(f"   PDF Export Status: {pdf_resp.status_code}")
-    
-    if pdf_resp.status_code == 200:
-        # Check if response is actually PDF
-        content_type = pdf_resp.headers.get("content-type", "")
-        content_length = len(pdf_resp.content)
+    def test_register_user(self) -> bool:
+        """Test user registration with specific test credentials"""
+        self.log("=== Testing User Registration ===")
         
-        print(f"   Content-Type: {content_type}")
-        print(f"   Content-Length: {content_length} bytes")
+        user_data = {
+            "email": "reporttest@test.com",
+            "password": "test123",
+            "name": "Report Test"
+        }
         
-        if "pdf" in content_type.lower() and content_length > 100:
-            print(f"   ✅ PDF export successful - {content_length} bytes")
+        response = self.make_request('POST', '/auth/register', user_data)
+        
+        if not response:
+            self.log("Registration request failed", "ERROR")
+            return False
+            
+        # Log response content for debugging
+        try:
+            response_text = response.text
+            self.log(f"Registration response: {response_text}")
+        except:
+            self.log("Could not decode response text")
+            
+        if response.status_code in [200, 201]:
+            result = response.json()
+            self.log("✅ User registration successful (or user already exists)")
+            # Handle different response formats
+            if 'user_id' in result:
+                self.user_id = result.get('user_id')
+            elif 'user' in result and 'user_id' in result['user']:
+                self.user_id = result['user'].get('user_id')
+            
+            # If we got a token in registration response, use it
+            if 'token' in result:
+                self.token = result.get('token')
+                self.log("✅ Token received from registration")
+            
+            self.log(f"User ID: {self.user_id}")
+            return True
+        elif response.status_code == 400:
+            # User might already exist
+            try:
+                error_data = response.json()
+                self.log(f"Registration returned 400: {error_data}")
+            except:
+                self.log(f"Registration returned 400: {response.text}")
+            self.log("User already exists, will proceed with login", "WARN")
             return True
         else:
-            print(f"   ❌ Response doesn't appear to be a valid PDF")
-            print(f"   First 100 chars: {pdf_resp.text[:100]}")
+            self.log(f"❌ Registration failed with status {response.status_code}: {response.text}", "ERROR")
             return False
-    else:
-        print(f"   ❌ PDF Export Error: {pdf_resp.text}")
-        return False
-
-def test_csv_export(headers):
-    """Test GET /reports/export/csv for comparison"""
-    print("📊 Testing CSV Export...")
     
-    csv_resp = requests.get(f"{BASE_URL}/reports/export/csv?year=2026", headers=headers)
-    print(f"   CSV Export Status: {csv_resp.status_code}")
+    def test_login_user(self) -> bool:
+        """Test user login and token retrieval"""
+        self.log("=== Testing User Login ===")
+        
+        login_data = {
+            "email": "reporttest@test.com",
+            "password": "test123"
+        }
+        
+        response = self.make_request('POST', '/auth/login', login_data)
+        
+        if not response:
+            self.log("Login request failed", "ERROR")
+            return False
+            
+        if response.status_code == 200:
+            result = response.json()
+            
+            # Handle different token field names
+            token_fields = ['access_token', 'token', 'jwt', 'auth_token']
+            for field in token_fields:
+                if field in result:
+                    self.token = result[field]
+                    break
+            
+            # Handle user_id extraction
+            if 'user_id' in result:
+                self.user_id = result['user_id']
+            elif 'user' in result and 'user_id' in result['user']:
+                self.user_id = result['user']['user_id']
+                
+            self.log("✅ User login successful")
+            self.log(f"Token received: {self.token[:20] + '...' if self.token else 'No token'}")
+            self.log(f"User ID: {self.user_id}")
+            self.log(f"Full login response: {json.dumps(result, indent=2)}")
+            
+            if self.token:
+                return True
+            else:
+                self.log("❌ No token received in login response", "ERROR")
+                return False
+        else:
+            self.log(f"❌ Login failed with status {response.status_code}: {response.text}", "ERROR")
+            return False
     
-    if csv_resp.status_code == 200:
-        content_type = csv_resp.headers.get("content-type", "")
-        content_length = len(csv_resp.content)
+    def test_create_test_trip(self) -> bool:
+        """Create a test trip for report data"""
+        self.log("=== Creating Test Trip Data ===")
         
-        print(f"   Content-Type: {content_type}")
-        print(f"   Content-Length: {content_length} bytes")
+        trip_data = {
+            "distance": 10.5,
+            "classification": "business",
+            "start_location": "Test Start Location",
+            "end_location": "Test End Location",
+            "purpose": "Report testing trip"
+        }
         
-        if content_length > 0:
-            print(f"   ✅ CSV export successful - {content_length} bytes")
-            # Show first few lines
-            lines = csv_resp.text.split('\n')[:3]
-            print(f"   Preview: {lines}")
+        response = self.make_request('POST', '/trips/direct', trip_data)
+        
+        if not response:
+            self.log("Trip creation request failed", "ERROR")
+            return False
+            
+        if response.status_code in [200, 201]:
+            result = response.json()
+            self.log("✅ Test trip created successfully")
+            self.log(f"Trip ID: {result.get('trip_id')}")
+            self.log(f"Distance: {result.get('distance', 'N/A')} miles")
+            self.log(f"Classification: {result.get('classification', 'N/A')}")
             return True
         else:
-            print(f"   ❌ Empty CSV response")
+            self.log(f"❌ Trip creation failed with status {response.status_code}: {response.text}", "ERROR")
             return False
-    else:
-        print(f"   ❌ CSV Export Error: {csv_resp.text}")
-        return False
-
-def main():
-    """Run all tests in sequence"""
-    print("=" * 60)
-    print("🧪 Multi Mile Tracker - Backend API Tests")
-    print("=" * 60)
     
-    results = {
-        "auth_flow": False,
-        "seed_trips": False,
-        "bulk_classification": False,
-        "pdf_export": False,
-        "csv_export": False
-    }
-    
-    # 1. Test auth flow first
-    token, headers = test_auth_flow()
-    if token and headers:
-        results["auth_flow"] = True
+    def test_csv_export(self) -> bool:
+        """Test CSV export and verify branding"""
+        self.log("=== Testing CSV Export with Branding Verification ===")
         
-        # 2. Seed sample data
-        if test_seed_trips(headers):
-            results["seed_trips"] = True
+        params = {"year": "2026"}
+        response = self.make_request('GET', '/reports/export/csv', params=params)
+        
+        if not response:
+            self.log("CSV export request failed", "ERROR")
+            return False
             
-            # 3. Test bulk classification
-            if test_bulk_ai_classification(headers):
-                results["bulk_classification"] = True
+        if response.status_code == 200:
+            self.log("✅ CSV export request successful")
             
-            # 4. Test PDF export
-            if test_pdf_export(headers):
-                results["pdf_export"] = True
+            # Get CSV content
+            csv_content = response.text
+            self.log(f"CSV content length: {len(csv_content)} characters")
             
-            # 5. Test CSV export for comparison
-            if test_csv_export(headers):
-                results["csv_export"] = True
+            # Split into lines for verification
+            lines = csv_content.strip().split('\n')
+            self.log(f"CSV has {len(lines)} lines")
+            
+            # Print first 10 lines as requested
+            self.log("=== FIRST 10 LINES OF CSV CONTENT ===")
+            for i, line in enumerate(lines[:10], 1):
+                self.log(f"Line {i}: {line}")
+            
+            # Verify branding requirements
+            branding_checks = []
+            
+            # Check FIRST ROW contains "Mileage Tracker AI"
+            if len(lines) > 0:
+                first_row_check = "Mileage Tracker AI" in lines[0]
+                branding_checks.append(("First row contains 'Mileage Tracker AI'", first_row_check))
+                if first_row_check:
+                    self.log("✅ FIRST ROW: Contains 'Mileage Tracker AI'")
+                else:
+                    self.log(f"❌ FIRST ROW: Missing 'Mileage Tracker AI'. Content: {lines[0]}", "ERROR")
+            
+            # Check SECOND ROW contains "AI-Powered Mileage & Tax Intelligence"
+            if len(lines) > 1:
+                second_row_check = "AI-Powered Mileage & Tax Intelligence" in lines[1]
+                branding_checks.append(("Second row contains 'AI-Powered Mileage & Tax Intelligence'", second_row_check))
+                if second_row_check:
+                    self.log("✅ SECOND ROW: Contains 'AI-Powered Mileage & Tax Intelligence'")
+                else:
+                    self.log(f"❌ SECOND ROW: Missing 'AI-Powered Mileage & Tax Intelligence'. Content: {lines[1]}", "ERROR")
+            
+            # Check THIRD ROW contains "Multisystems and Multisystem LLC"
+            if len(lines) > 2:
+                third_row_check = "Multisystems and Multisystem LLC" in lines[2]
+                branding_checks.append(("Third row contains 'Multisystems and Multisystem LLC'", third_row_check))
+                if third_row_check:
+                    self.log("✅ THIRD ROW: Contains 'Multisystems and Multisystem LLC'")
+                else:
+                    self.log(f"❌ THIRD ROW: Missing 'Multisystems and Multisystem LLC'. Content: {lines[2]}", "ERROR")
+            
+            # Overall branding verification
+            all_branding_passed = all(check[1] for check in branding_checks)
+            if all_branding_passed:
+                self.log("✅ ALL CSV BRANDING REQUIREMENTS VERIFIED")
+                return True
+            else:
+                failed_checks = [check[0] for check in branding_checks if not check[1]]
+                self.log(f"❌ BRANDING VERIFICATION FAILED: {', '.join(failed_checks)}", "ERROR")
+                return False
+                
+        else:
+            self.log(f"❌ CSV export failed with status {response.status_code}: {response.text}", "ERROR")
+            return False
     
-    # Summary
-    print("\n" + "=" * 60)
-    print("📋 TEST RESULTS SUMMARY")
-    print("=" * 60)
+    def test_pdf_export(self) -> bool:
+        """Test PDF export and verify it returns valid PDF"""
+        self.log("=== Testing PDF Export ===")
+        
+        params = {"year": "2026"}
+        response = self.make_request('GET', '/reports/export/pdf', params=params)
+        
+        if not response:
+            self.log("PDF export request failed", "ERROR")
+            return False
+            
+        if response.status_code == 200:
+            # Verify content-type header
+            content_type = response.headers.get('content-type', '').lower()
+            self.log(f"Content-Type header: {content_type}")
+            
+            if 'application/pdf' in content_type:
+                self.log("✅ PDF export has correct content-type header")
+            else:
+                self.log(f"❌ PDF export has incorrect content-type. Expected 'application/pdf', got '{content_type}'", "ERROR")
+                return False
+            
+            # Check PDF content
+            pdf_content = response.content
+            self.log(f"PDF content length: {len(pdf_content)} bytes")
+            
+            # Basic PDF validation - check for PDF header
+            if pdf_content.startswith(b'%PDF'):
+                self.log("✅ PDF export returns valid PDF file")
+                return True
+            else:
+                self.log("❌ PDF export does not return valid PDF content", "ERROR")
+                return False
+                
+        else:
+            self.log(f"❌ PDF export failed with status {response.status_code}: {response.text}", "ERROR")
+            return False
     
-    for test_name, passed in results.items():
-        status = "✅ PASSED" if passed else "❌ FAILED"
-        print(f"{test_name.replace('_', ' ').title():<25} {status}")
-    
-    passed_count = sum(results.values())
-    total_count = len(results)
-    
-    print(f"\nOverall: {passed_count}/{total_count} tests passed")
-    
-    if passed_count == total_count:
-        print("🎉 All tests PASSED!")
-    elif passed_count >= 3:
-        print("⚠️  Most tests passed, some issues found")
-    else:
-        print("🚨 Critical issues found!")
-    
-    return results
+    def run_report_export_tests(self):
+        """Run all report export tests"""
+        self.log("🚀 Starting Report Export Testing Suite")
+        self.log(f"Testing against: {self.base_url}")
+        
+        test_results = {}
+        
+        # Test 1: Try to register user (but continue if user already exists)
+        test_results['register'] = self.test_register_user()
+        
+        # Test 2: Login user (always attempt login regardless of registration result)
+        test_results['login'] = self.test_login_user()
+        
+        # Test 3: Create test trip
+        if test_results['login']:
+            test_results['create_trip'] = self.test_create_test_trip()
+        else:
+            self.log("Skipping trip creation due to login failure", "ERROR")
+            test_results['create_trip'] = False
+        
+        # Test 4: CSV export with branding verification
+        if test_results['login']:
+            test_results['csv_export'] = self.test_csv_export()
+        else:
+            self.log("Skipping CSV export due to login failure", "ERROR")
+            test_results['csv_export'] = False
+        
+        # Test 5: PDF export validation
+        if test_results['login']:
+            test_results['pdf_export'] = self.test_pdf_export()
+        else:
+            self.log("Skipping PDF export due to login failure", "ERROR")
+            test_results['pdf_export'] = False
+        
+        # Summary
+        self.log("\n" + "="*60)
+        self.log("REPORT EXPORT TEST SUMMARY")
+        self.log("="*60)
+        
+        passed_tests = sum(1 for result in test_results.values() if result)
+        total_tests = len(test_results)
+        
+        for test_name, result in test_results.items():
+            status = "✅ PASSED" if result else "❌ FAILED"
+            self.log(f"{test_name.upper():<20} {status}")
+        
+        self.log(f"\nOVERALL: {passed_tests}/{total_tests} tests passed")
+        
+        if passed_tests == total_tests:
+            self.log("🎉 ALL REPORT EXPORT TESTS PASSED!")
+            return True
+        else:
+            self.log(f"⚠️  {total_tests - passed_tests} tests failed")
+            return False
 
 if __name__ == "__main__":
-    main()
+    tester = MileageTrackerTester()
+    success = tester.run_report_export_tests()
+    exit(0 if success else 1)
