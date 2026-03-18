@@ -5,6 +5,8 @@ const STORAGE_KEYS = {
   SELECTED_CATEGORY: 'inspiration_category',
   CUSTOM_MESSAGE: 'inspiration_custom_message',
   APP_OPENED_TIME: 'app_opened_time',
+  AI_MESSAGE_CACHE: 'ai_inspiration_cache',
+  AI_MESSAGE_DAY: 'ai_inspiration_day',
 };
 
 // Inspirational categories with messages and colors
@@ -117,7 +119,35 @@ export async function setCustomMessage(message: string): Promise<void> {
   await AsyncStorage.setItem(STORAGE_KEYS.CUSTOM_MESSAGE, message);
 }
 
-// Get daily message based on category and day
+// Get cached AI message for today
+export async function getCachedAIMessage(): Promise<{ message: string; color: string } | null> {
+  try {
+    const cachedDay = await AsyncStorage.getItem(STORAGE_KEYS.AI_MESSAGE_DAY);
+    const today = new Date().toDateString();
+    
+    if (cachedDay === today) {
+      const cached = await AsyncStorage.getItem(STORAGE_KEYS.AI_MESSAGE_CACHE);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Cache AI message for today
+export async function cacheAIMessage(message: string, color: string): Promise<void> {
+  try {
+    await AsyncStorage.setItem(STORAGE_KEYS.AI_MESSAGE_DAY, new Date().toDateString());
+    await AsyncStorage.setItem(STORAGE_KEYS.AI_MESSAGE_CACHE, JSON.stringify({ message, color }));
+  } catch (e) {
+    console.log('Error caching AI message:', e);
+  }
+}
+
+// Get daily message based on category and day (fallback for offline)
 export async function getDailyMessage(): Promise<{ message: string; color: string }> {
   const categoryId = await getSelectedCategory();
   

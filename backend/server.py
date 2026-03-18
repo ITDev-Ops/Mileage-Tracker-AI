@@ -740,6 +740,88 @@ Return ONLY JSON: {{"insights": [{{"title": "...", "description": "...", "action
         logger.error(f"AI insights error: {e}")
         return {"insights": [{"title": "AI Insights Ready", "description": "Track more trips to unlock personalized AI insights.", "action": "Start Tracking", "type": "tip"}]}
 
+@api_router.get("/ai/inspiration")
+async def get_ai_inspiration(category: str = "potential", current_user: dict = Depends(get_current_user)):
+    """Generate AI-powered daily inspirational message based on user's category preference and driving data."""
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        
+        # Get user's stats for personalized inspiration
+        now = datetime.now(timezone.utc)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        trips = await db.trips.find(
+            {"user_id": current_user["user_id"], "start_time": {"$gte": month_start}},
+            {"_id": 0, "distance": 1, "deduction_value": 1}
+        ).limit(100).to_list(100)
+        
+        total_miles = sum(t.get("distance", 0) for t in trips)
+        total_deductions = sum(t.get("deduction_value", 0) for t in trips)
+        trip_count = len(trips)
+        
+        # Category themes for AI to use
+        category_themes = {
+            "potential": "unleashing potential, achieving goals, personal growth, success mindset",
+            "mindful": "mindfulness, being present, inner peace, meditation, calm in motion",
+            "connection": "human connection, relationships, community, meaningful interactions",
+            "spiritual": "faith, spiritual growth, gratitude, divine purpose, inner strength",
+            "curiosity": "lifelong learning, curiosity, discovery, exploration, knowledge",
+            "custom": "general positivity, motivation, encouragement"
+        }
+        
+        theme = category_themes.get(category, category_themes["potential"])
+        day_of_year = now.timetuple().tm_yday
+        
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"inspiration_{current_user['user_id']}_{day_of_year}",
+            system_message="You are an inspirational message generator. Generate unique, uplifting messages. Be concise (under 100 words). No generic quotes - make it fresh and memorable."
+        ).with_model("openai", "gpt-4o")
+        
+        response = await chat.send_message(UserMessage(text=f"""Generate a unique inspirational message for today (day {day_of_year} of the year).
+
+Theme: {theme}
+User context: Has tracked {trip_count} trips this month, {total_miles:.1f} miles, ${total_deductions:.2f} in tax deductions.
+
+Create a fresh, unique message (not a famous quote) that:
+1. Relates to the journey theme (driving, traveling, path of life)
+2. Incorporates the {category} theme
+3. Is motivating and uplifting
+4. Under 100 words
+
+Just return the inspirational message text, nothing else."""))
+        
+        # Determine color based on category
+        category_colors = {
+            "potential": "#FFD700",
+            "mindful": "#87CEEB",
+            "connection": "#FF69B4",
+            "spiritual": "#DDA0DD",
+            "curiosity": "#32CD32",
+            "custom": "#00CED1"
+        }
+        
+        return {
+            "message": response.strip(),
+            "color": category_colors.get(category, "#FFD700"),
+            "category": category,
+            "day": day_of_year
+        }
+    except Exception as e:
+        logger.error(f"AI inspiration error: {e}")
+        # Fallback messages
+        fallbacks = [
+            "Every mile you drive is a step toward your dreams. Keep moving forward!",
+            "The road of life has many turns, but each one leads to new opportunities.",
+            "Your journey matters. Every trip you take builds your success story."
+        ]
+        import random
+        return {
+            "message": random.choice(fallbacks),
+            "color": "#FFD700",
+            "category": category,
+            "day": now.timetuple().tm_yday
+        }
+
 # ============================================================
 # DASHBOARD
 # ============================================================

@@ -15,10 +15,11 @@ const STORAGE_KEYS = {
 };
 
 // Speed thresholds (in m/s)
-const DRIVING_SPEED_THRESHOLD = 2.2; // ~5 mph - start tracking
+// 5 mph = 2.2352 m/s (exact conversion)
+const DRIVING_SPEED_THRESHOLD = 2.2352; // 5 mph - start tracking
 const STOPPED_SPEED_THRESHOLD = 0.5; // ~1 mph - consider stopped
 const MIN_TRIP_DISTANCE = 0.1; // Minimum 0.1 miles to count as trip
-const STOP_TIMEOUT = 120000; // 2 minutes of being stopped = end trip
+const STOP_TIMEOUT = 120000; // 2 minutes of being stopped = end auto trip
 const AUTO_START_DELAY = 60000; // 1 minute delay before auto-tracking starts a trip
 
 // Types

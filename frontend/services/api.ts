@@ -178,6 +178,11 @@ class APIService {
   async seedTrips(token: string) {
     return this.request('/seed/trips', { method: 'POST' }, token);
   }
+
+  // AI Inspiration
+  async getAIInspiration(token: string, category: string = 'potential') {
+    return this.request(`/ai/inspiration?category=${category}`, {}, token);
+  }
 }
 
 export const API = new APIService();

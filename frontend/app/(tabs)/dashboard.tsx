@@ -103,6 +103,10 @@ export default function DashboardScreen() {
   const scrollAnim = useRef(new Animated.Value(0)).current;
   const magnifyAnim = useRef(new Animated.Value(0)).current;
   
+  // Auto trip location tracking
+  const [autoStartAddress, setAutoStartAddress] = useState('');
+  const [autoEndAddress, setAutoEndAddress] = useState('');
+  
   // Manual trip auto-end tracking
   const [lastManualMovementTime, setLastManualMovementTime] = useState<number>(Date.now());
   const manualStopCheckRef = useRef<NodeJS.Timeout | null>(null);
@@ -128,16 +132,45 @@ export default function DashboardScreen() {
     }
   }, [token]);
 
-  // Load inspiration messages and check magnification
+  // Load inspiration messages - try AI first, fallback to local
   useEffect(() => {
     const loadInspiration = async () => {
       try {
+        // First load local messages as fallback
         const daily = await getDailyMessage();
+        const all = await getAllCategoryMessages();
+        
         setInspirationMessage(daily.message);
         setInspirationColor(daily.color);
-        
-        const all = await getAllCategoryMessages();
         setAllMessages(all.messages);
+        
+        // Try to get AI-powered message if online and has token
+        if (token && isOnline) {
+          try {
+            const { getSelectedCategory, getCachedAIMessage, cacheAIMessage } = await import('../../services/inspirationService');
+            const category = await getSelectedCategory();
+            
+            // Check if we have a cached AI message for today
+            const cached = await getCachedAIMessage();
+            if (cached) {
+              setInspirationMessage(cached.message);
+              setInspirationColor(cached.color);
+              setAllMessages([cached.message, ...all.messages.slice(0, 3)]);
+            } else {
+              // Fetch fresh AI message
+              const aiResponse = await API.getAIInspiration(token, category);
+              if (aiResponse && aiResponse.message) {
+                setInspirationMessage(aiResponse.message);
+                setInspirationColor(aiResponse.color || daily.color);
+                setAllMessages([aiResponse.message, ...all.messages.slice(0, 3)]);
+                // Cache for today
+                await cacheAIMessage(aiResponse.message, aiResponse.color || daily.color);
+              }
+            }
+          } catch (aiErr) {
+            console.log('[Dashboard] AI inspiration not available, using local:', aiErr);
+          }
+        }
         
         const shouldMagnify = await shouldShowMagnified();
         setIsMagnified(shouldMagnify);
@@ -172,7 +205,7 @@ export default function DashboardScreen() {
     }, 8000);
     
     return () => clearInterval(scrollInterval);
-  }, [allMessages.length]);
+  }, [token, isOnline, allMessages.length]);
 
   // Monitor network status and auto-tracking
   useEffect(() => {
@@ -212,19 +245,33 @@ export default function DashboardScreen() {
           setLiveDuration(hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`);
         }
         
-        // Get current location for address
+        // Get start and current location addresses
         try {
           const route = status.currentTrip.route;
           if (route && route.length > 0) {
+            // Get start address (first point)
+            const startPoint = route[0];
+            const startGeo = await Location.reverseGeocodeAsync({ 
+              latitude: startPoint.latitude, 
+              longitude: startPoint.longitude 
+            });
+            if (startGeo.length > 0) {
+              const g = startGeo[0];
+              const startAddr = [g.street, g.city, g.region].filter(Boolean).join(', ');
+              setAutoStartAddress(startAddr || 'Current Location');
+            }
+            
+            // Get current/end address (last point)
             const lastPoint = route[route.length - 1];
-            const geo = await Location.reverseGeocodeAsync({ 
+            const endGeo = await Location.reverseGeocodeAsync({ 
               latitude: lastPoint.latitude, 
               longitude: lastPoint.longitude 
             });
-            if (geo.length > 0) {
-              const g = geo[0];
-              const address = [g.street, g.city, g.region].filter(Boolean).join(', ');
-              setAutoTripAddress(address || 'Current Location');
+            if (endGeo.length > 0) {
+              const g = endGeo[0];
+              const endAddr = [g.street, g.city, g.region].filter(Boolean).join(', ');
+              setAutoEndAddress(endAddr || 'Current Location');
+              setAutoTripAddress(endAddr || 'Current Location');
             }
           }
         } catch (geoError) {
@@ -235,6 +282,8 @@ export default function DashboardScreen() {
       } else {
         setIsAutoTrip(false);
         setAutoTripAddress('Current Location');
+        setAutoStartAddress('');
+        setAutoEndAddress('');
       }
     } catch (e) {
       console.log('[Dashboard] Error checking auto-tracking:', e);
@@ -765,9 +814,27 @@ export default function DashboardScreen() {
                 {isAutoTrip && !stats?.active_trip ? 'AUTO TRACKER IN PROGRESS' : 'TRIP IN PROGRESS'}
               </Text>
             </View>
-            <Text style={styles.activeTripRoute} numberOfLines={1}>
-              {stats?.active_trip?.start_address || autoTripAddress || 'Current Location'}
-            </Text>
+            
+            {/* Location Display - Shows start and current/end location */}
+            <View style={styles.tripLocationContainer}>
+              <View style={styles.tripLocationRow}>
+                <Text style={styles.tripLocationLabel}>
+                  {isAutoTrip && !stats?.active_trip ? 'Auto-detect start' : 'Start'}
+                </Text>
+                <Text style={styles.tripLocationValue} numberOfLines={1}>
+                  [{stats?.active_trip?.start_address || autoStartAddress || autoTripAddress || 'Current Location'}]
+                </Text>
+              </View>
+              <View style={styles.tripLocationRow}>
+                <Text style={styles.tripLocationLabel}>
+                  {isAutoTrip && !stats?.active_trip ? 'Auto-detect end' : 'Current'}
+                </Text>
+                <Text style={styles.tripLocationValue} numberOfLines={1}>
+                  [{autoEndAddress || autoTripAddress || 'Tracking...'}]
+                </Text>
+              </View>
+            </View>
+            
             <View style={styles.activeTripStats}>
               <View style={styles.activeTripStat}>
                 <Feather name="navigation" size={14} color={isAutoTrip && !stats?.active_trip ? '#60A5FA' : Colors.brand.primary} />
@@ -1060,6 +1127,24 @@ const styles = StyleSheet.create({
   },
   inspirationText: {
     fontWeight: '600',
+    fontStyle: 'italic',
+  },
+  // Trip location styles
+  tripLocationContainer: {
+    marginVertical: 8,
+    gap: 4,
+  },
+  tripLocationRow: {
+    flexDirection: 'column',
+  },
+  tripLocationLabel: {
+    color: Colors.text.tertiary,
+    fontSize: FontSize.xs,
+    fontWeight: '500',
+  },
+  tripLocationValue: {
+    color: Colors.text.secondary,
+    fontSize: FontSize.sm,
     fontStyle: 'italic',
   },
 });
