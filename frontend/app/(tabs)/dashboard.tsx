@@ -291,12 +291,8 @@ export default function DashboardScreen() {
     }
   };
 
-  // Auto-end manual trip after 10 minutes of no movement
-  const checkManualTripMovement = useCallback((speed: number) => {
-    if (speed >= 2.2352) { // 5 mph, driving speed
-      setLastManualMovementTime(Date.now());
-    }
-  }, []);
+  // Speed threshold for driving detection (5 mph = 2.2352 m/s)
+  const DRIVING_SPEED_THRESHOLD = 2.2352;
 
   // Monitor manual trip for auto-end after 10 minutes of no movement
   useEffect(() => {
@@ -306,26 +302,37 @@ export default function DashboardScreen() {
       manualStopCheckRef.current = null;
     }
     
-    if (stats?.active_trip && !isAutoTrip) {
+    // Only apply to manual trips (not auto trips)
+    const hasActiveManualTrip = stats?.active_trip && !isAutoTrip;
+    
+    if (hasActiveManualTrip) {
       // Manual trip is active - set up monitoring
-      console.log('[Dashboard] Setting up 10-minute auto-end monitoring for manual trip');
+      console.log('[Dashboard] ✅ Setting up 10-minute auto-end monitoring for manual trip:', stats?.active_trip?.trip_id);
       
       // Initialize movement time when trip starts if not already set
       if (!lastManualMovementTime) {
-        setLastManualMovementTime(Date.now());
+        const now = Date.now();
+        console.log('[Dashboard] Initializing lastManualMovementTime to:', new Date(now).toISOString());
+        setLastManualMovementTime(now);
       }
       
       manualStopCheckRef.current = setInterval(async () => {
         // Only check if we have a valid movement time
-        if (!lastManualMovementTime) return;
+        if (!lastManualMovementTime) {
+          console.log('[Dashboard] ⏳ Auto-end check skipped - no movement time set yet');
+          return;
+        }
         
-        const stoppedDuration = Date.now() - lastManualMovementTime;
+        const now = Date.now();
+        const stoppedDuration = now - lastManualMovementTime;
+        const stoppedMinutes = Math.floor(stoppedDuration / 60000);
+        const stoppedSeconds = Math.floor((stoppedDuration % 60000) / 1000);
         
-        console.log('[Dashboard] Auto-end check - no driving detected for:', Math.round(stoppedDuration / 1000), 'seconds');
+        console.log(`[Dashboard] ⏱️ Auto-end check - no driving detected for: ${stoppedMinutes}m ${stoppedSeconds}s (threshold: 10m)`);
         
         // Auto-end if no driving detected for 10 minutes
         if (stoppedDuration >= MANUAL_TRIP_STOP_TIMEOUT) {
-          console.log('[Dashboard] Manual trip auto-ending after 10 minutes of no driving detected');
+          console.log('[Dashboard] 🛑 Manual trip auto-ending after 10 minutes of no driving detected');
           
           // Clear interval immediately to prevent duplicate calls
           if (manualStopCheckRef.current) {
@@ -378,7 +385,10 @@ export default function DashboardScreen() {
       }, 30000); // Check every 30 seconds
     } else {
       // No active manual trip - reset tracking
-      setLastManualMovementTime(null);
+      if (lastManualMovementTime !== null) {
+        console.log('[Dashboard] 🔄 Resetting manual movement tracking (no active manual trip)');
+        setLastManualMovementTime(null);
+      }
     }
     
     return () => {
@@ -387,7 +397,7 @@ export default function DashboardScreen() {
         manualStopCheckRef.current = null;
       }
     };
-  }, [stats?.active_trip?.trip_id, isAutoTrip, token]);
+  }, [stats?.active_trip?.trip_id, isAutoTrip, token, lastManualMovementTime]);
 
   const loadData = useCallback(async () => {
     if (!token) return;
@@ -481,8 +491,16 @@ export default function DashboardScreen() {
             const newLat = location.coords.latitude;
             const newLng = location.coords.longitude;
             const speed = location.coords.speed || 0;
+            const speedMph = speed * 2.237;
             
-            console.log('[Dashboard] Location update:', { lat: newLat.toFixed(6), lng: newLng.toFixed(6), speed: (speed * 2.237).toFixed(1) + ' mph' });
+            console.log('[Dashboard] Location update:', { lat: newLat.toFixed(6), lng: newLng.toFixed(6), speed: speedMph.toFixed(1) + ' mph' });
+            
+            // CRITICAL: Update movement time when driving is detected (5+ mph)
+            // This resets the 10-minute auto-end timer for manual trips
+            if (speed >= DRIVING_SPEED_THRESHOLD) {
+              console.log('[Dashboard] Driving detected at', speedMph.toFixed(1), 'mph - resetting movement timer');
+              setLastManualMovementTime(Date.now());
+            }
             
             if (lastLocationRef.current) {
               // Calculate distance using Haversine formula
