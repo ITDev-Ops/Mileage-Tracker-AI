@@ -587,26 +587,22 @@ export default function DashboardScreen() {
         // Stop background tracking to end the current auto trip
         await stopBackgroundTracking();
         
-        // The trip will be saved to pending trips by the background service
-        // Refresh the pending trips count
-        await checkOfflineTrips();
-        
         // Reset state
         setIsAutoTrip(false);
         setLiveDistance(0);
         setLiveDuration('0m');
         setAutoTripAddress('Current Location');
+        setAutoStartAddress('');
+        setAutoEndAddress('');
         
         Alert.alert(
           'Auto Trip Ended ✅',
-          `Your ${distance.toFixed(1)} mile auto-tracked trip has been saved and will sync shortly.`,
+          `Your ${distance.toFixed(1)} mile auto-tracked trip has been saved.`,
           [{ text: 'OK' }]
         );
         
-        // Sync if online
-        if (isOnline && token) {
-          setTimeout(() => handleSyncOfflineTrips(), 1000);
-        }
+        // Refresh dashboard to show updated stats
+        await loadData();
         
         // CRITICAL: Restart background tracking to continue monitoring for new drives
         // This ensures auto-tracking remains "always on" even after manual stop
@@ -645,9 +641,6 @@ export default function DashboardScreen() {
         });
         
         console.log('[Dashboard] Saved offline trip:', offlineTrip.id);
-        
-        // Update offline trips count
-        await checkOfflineTrips();
         
         Alert.alert(
           'Trip Saved Offline 📱',
@@ -693,8 +686,6 @@ export default function DashboardScreen() {
             classification: 'business',
             notes: 'Saved offline due to connection error',
           });
-          
-          await checkOfflineTrips();
           
           Alert.alert(
             'Trip Saved Offline',
