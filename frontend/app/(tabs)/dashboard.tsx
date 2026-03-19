@@ -313,7 +313,6 @@ export default function DashboardScreen() {
       // Initialize movement time when trip starts if not already set
       if (!lastManualMovementTime) {
         setLastManualMovementTime(Date.now());
-        setTripStartTime(Date.now());
       }
       
       manualStopCheckRef.current = setInterval(async () => {
@@ -321,15 +320,12 @@ export default function DashboardScreen() {
         if (!lastManualMovementTime) return;
         
         const stoppedDuration = Date.now() - lastManualMovementTime;
-        const tripDuration = tripStartTime ? Date.now() - tripStartTime : 0;
         
-        console.log('[Dashboard] Auto-end check - stopped for:', Math.round(stoppedDuration / 1000), 's, trip duration:', Math.round(tripDuration / 1000), 's');
+        console.log('[Dashboard] Auto-end check - no driving detected for:', Math.round(stoppedDuration / 1000), 'seconds');
         
-        // Only auto-end if:
-        // 1. Stopped for 10+ minutes
-        // 2. Trip has been active for at least 10 minutes (grace period)
-        if (stoppedDuration >= MANUAL_TRIP_STOP_TIMEOUT && tripDuration >= MANUAL_TRIP_STOP_TIMEOUT) {
-          console.log('[Dashboard] Manual trip auto-ending after 10 minutes of no movement');
+        // Auto-end if no driving detected for 10 minutes
+        if (stoppedDuration >= MANUAL_TRIP_STOP_TIMEOUT) {
+          console.log('[Dashboard] Manual trip auto-ending after 10 minutes of no driving detected');
           
           // Clear interval immediately to prevent duplicate calls
           if (manualStopCheckRef.current) {
@@ -367,24 +363,22 @@ export default function DashboardScreen() {
             setLiveDistance(0);
             setLiveDuration('0m');
             setLastManualMovementTime(null);
-            setTripStartTime(null);
             await resetAutoTrackingState();
             await loadData();
             
             Alert.alert(
               'Trip Auto-Ended',
-              `Your trip was automatically ended after 10 minutes of no movement.\n\nDistance: ${liveDistance.toFixed(1)} miles`,
+              `Your trip was automatically ended after 10 minutes of no driving detected.\n\nDistance: ${liveDistance.toFixed(1)} miles`,
               [{ text: 'OK' }]
             );
           } catch (e: any) {
             console.log('[Dashboard] Error auto-ending trip:', e.message);
           }
         }
-      }, 60000); // Check every 60 seconds (not 30) for better accuracy
+      }, 30000); // Check every 30 seconds
     } else {
       // No active manual trip - reset tracking
       setLastManualMovementTime(null);
-      setTripStartTime(null);
     }
     
     return () => {
