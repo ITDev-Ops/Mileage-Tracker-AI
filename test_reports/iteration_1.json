@@ -1,5 +1,5 @@
 {
-  "summary": "Full backend and frontend testing of Multi Mile Tracker app. All 15 backend API tests passed (100%). All major frontend features verified working including login, dashboard, trips with classify, expenses, reports, settings, AI assistant, subscription page, and new user registration.",
+  "summary": "Full backend and frontend testing of Mileage Tracker AI app. All 15 backend API tests passed (100%). All major frontend features verified working including login, dashboard, trips with classify, expenses, reports, settings, AI assistant, subscription page, and new user registration.",
   "backend_issues": {
     "critical": [],
     "minor": [

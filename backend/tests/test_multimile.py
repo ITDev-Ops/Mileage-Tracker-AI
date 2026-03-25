@@ -1,4 +1,4 @@
-"""Multi Mile Tracker - Backend API Tests"""
+""" Mileage Tracker AI - Backend API Tests"""
 import pytest
 import requests
 import os
