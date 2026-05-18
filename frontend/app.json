@@ -37,7 +37,10 @@
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Auto-detect trip starts and stops in background",
         "NSCameraUsageDescription": "Scan receipts to automatically track business expenses",
         "NSPhotoLibraryUsageDescription": "Upload receipt photos from your gallery",
-        "UIBackgroundModes": ["location", "fetch"]
+        "UIBackgroundModes": [
+          "location",
+          "fetch"
+        ]
       },
       "config": {
         "usesNonExemptEncryption": false

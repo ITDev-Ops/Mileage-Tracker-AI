@@ -43,12 +43,18 @@ class APIService {
     const url = `${BACKEND_URL}/api${path}`;
     console.log('[API] Request:', options.method || 'GET', url);
     
+    // Create an explicit timeout of 10-seconds to prevent fetch from hanging indefinitely
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    
     try {
       const res = await fetch(url, {
         ...options,
+        signal: controller.signal as any, // Cast to any to bypass TS DOM types issue in React Native
         headers: { ...this.getHeaders(token), ...(options.headers as Record<string, string> || {}) },
       });
       
+      clearTimeout(timeoutId);
       console.log('[API] Response status:', res.status);
       
       if (!res.ok) {
@@ -58,7 +64,11 @@ class APIService {
       }
       return res.json();
     } catch (error: any) {
+      clearTimeout(timeoutId);
       console.log('[API] Fetch error:', error.message);
+      if (error.name === 'AbortError' || error.message.includes('aborted')) {
+         throw new Error('Network request failed - Timeout');
+      }
       // Better error message for network issues
       if (error.message === 'Network request failed' || error.message.includes('fetch')) {
         throw new Error('Unable to connect to server. Please check your internet connection and try again.');
@@ -68,14 +78,11 @@ class APIService {
   }
 
   // Auth
-  async login(email: string, password: string) {
-    return this.request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+  async authLogin(data: Record<string, unknown>) {
+    return this.request('/auth/login', { method: 'POST', body: JSON.stringify(data) });
   }
-  async register(email: string, password: string, name: string) {
-    return this.request('/auth/register', { method: 'POST', body: JSON.stringify({ email, password, name }) });
-  }
-  async googleAuth(session_id: string) {
-    return this.request('/auth/google', { method: 'POST', body: JSON.stringify({ session_id }) });
+  async authRegister(data: Record<string, unknown>) {
+    return this.request('/auth/register', { method: 'POST', body: JSON.stringify(data) });
   }
   async getMe(token: string) {
     return this.request('/auth/me', {}, token);
@@ -83,13 +90,6 @@ class APIService {
   async updateProfile(token: string, data: Record<string, string>) {
     return this.request('/auth/profile', { method: 'PUT', body: JSON.stringify(data) }, token);
   }
-  async forgotPassword(email: string) {
-    return this.request('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
-  }
-  async verifyResetCode(email: string, code: string, new_password: string) {
-    return this.request('/auth/verify-reset-code', { method: 'POST', body: JSON.stringify({ email, code, new_password }) });
-  }
-
   // Trips
   async getTrips(token: string, classification?: string) {
     const q = classification && classification !== 'all' ? `?classification=${classification}` : '';

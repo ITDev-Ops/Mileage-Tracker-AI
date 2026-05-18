@@ -110,11 +110,11 @@ export default function DashboardScreen() {
   // Manual trip auto-end tracking
   const [lastManualMovementTime, setLastManualMovementTime] = useState<number | null>(null);
   const [tripStartTime, setTripStartTime] = useState<number | null>(null);
-  const manualStopCheckRef = useRef<NodeJS.Timeout | null>(null);
+  const manualStopCheckRef = useRef<NodeJS.Timeout | number | null>(null);
   const MANUAL_TRIP_STOP_TIMEOUT = 10 * 60 * 1000; // 10 minutes
   
   const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | number | null>(null);
   const lastLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const { user, token } = useAuth();
   const router = useRouter();
@@ -211,9 +211,21 @@ export default function DashboardScreen() {
   // Monitor network status and auto-tracking
   useEffect(() => {
     setIsOnline(isNetworkOnline());
-    const unsubscribe = onNetworkChange((online) => {
+    const unsubscribe = onNetworkChange(async (online) => {
       setIsOnline(online);
       console.log('[Dashboard] Network status changed:', online ? 'online' : 'offline');
+      if (online && token) {
+        console.log('[Dashboard] Connectivity restored - sweeping offline queues...');
+        try {
+          const { syncOfflineTrips } = await import('../../services/offlineService');
+          const { syncPendingTrips } = await import('../../services/backgroundTracking');
+          await syncOfflineTrips(token, API.createTrip);
+          await syncPendingTrips(token, API.createTrip);
+          await loadData();
+        } catch (e) {
+          console.log('[Dashboard] Queue sweep error:', e);
+        }
+      }
     });
     
     // Check for auto-tracking status
@@ -359,12 +371,14 @@ export default function DashboardScreen() {
               } catch {}
             }
             
-            await API.endTrip(token!, stats.active_trip.trip_id, { 
-              end_lat: endLat, 
-              end_lng: endLng, 
-              end_address: endAddress, 
-              distance: liveDistance 
-            });
+            if (stats?.active_trip) {
+              await API.endTrip(token!, stats.active_trip.trip_id, { 
+                end_lat: endLat, 
+                end_lng: endLng, 
+                end_address: endAddress, 
+                distance: liveDistance 
+              });
+            }
             
             // Reset state
             setLiveDistance(0);
@@ -585,40 +599,76 @@ export default function DashboardScreen() {
         } catch {}
       }
 
-      // Check if online - if not, start trip offline
+      // ALWAYS start a background manual trip instance whether online or offline
+      // This ensures distance perfectly tracks even when the screen locks!
+      const { startTrip: startOfflineTrip } = await import('../../services/offlineService');
+      const { startBackgroundTracking } = await import('../../services/backgroundTracking');
+      
+      const offlineTrip = await startOfflineTrip(startLat || 0, startLng || 0);
+      await startBackgroundTracking();
+
+      // Check if online - if not, start trip offline natively
       if (!isOnline || !token) {
         console.log('[Dashboard] Starting trip in OFFLINE mode');
-        
-        // Import offline service functions
-        const { startTrip: startOfflineTrip } = await import('../../services/offlineService');
-        
-        const offlineTrip = await startOfflineTrip({
-          start_lat: startLat,
-          start_lng: startLng,
-          start_address: startAddress,
-        });
         
         // Set local state to track the trip
         setLiveDistance(0);
         setLiveDuration('0m');
+        
+        
+        // Inject a mock active trip into stats so the UI can render the trip banner immediately while offline
+        setStats(prev => ({
+          ...(prev || { monthly_miles: 0, monthly_deductions: 0, monthly_trips: 0, yearly_miles: 0, yearly_deductions: 0, yearly_trips: 0, recent_trips: [], unclassified_count: 0, chart_data: [], irs_rate: 0.70 }),
+          active_trip: {
+            trip_id: offlineTrip.id,
+            start_time: offlineTrip.start_time,
+            start_lat: startLat,
+            start_lng: startLng,
+            start_address: startAddress,
+            distance: 0
+          }
+        }));
         
         Alert.alert(
           'Trip Started Offline! 🚗📱', 
           `Tracking your drive from ${startAddress}\n\nTrip will sync when you reconnect.`, 
           [{ text: 'OK' }]
         );
-        
-        // Reload to show the trip banner
-        await loadData();
         return;
       }
 
       // Online mode - use API
-      const trip = await API.createTrip(token!, { start_lat: startLat, start_lng: startLng, start_address: startAddress });
-      await loadData();
-      Alert.alert('Trip Started! 🚗', `Tracking your drive from ${startAddress}`, [{ text: 'OK' }]);
+      try {
+        const trip = await API.createTrip(token!, { start_lat: startLat, start_lng: startLng, start_address: startAddress });
+        await loadData();
+        Alert.alert('Trip Started! 🚗', `Tracking your drive from ${startAddress}`, [{ text: 'OK' }]);
+      } catch (apiError: any) {
+        console.log('[Dashboard] API Start trip error:', apiError.message);
+        // Fallback to offline start if network failed
+        if (apiError.message?.includes('network') || apiError.message?.includes('Network') || apiError.message?.includes('Timeout') || apiError.message?.includes('timeout')) {
+          setLiveDistance(0);
+          setLiveDuration('0m');
+          
+          // Inject a mock active trip into stats so the UI can render the trip banner immediately while offline
+          setStats(prev => ({
+            ...(prev || { monthly_miles: 0, monthly_deductions: 0, monthly_trips: 0, yearly_miles: 0, yearly_deductions: 0, yearly_trips: 0, recent_trips: [], unclassified_count: 0, chart_data: [], irs_rate: 0.70 }),
+            active_trip: {
+              trip_id: `offline_${Date.now()}`,
+              start_time: new Date().toISOString(),
+              start_lat: startLat,
+              start_lng: startLng,
+              start_address: startAddress,
+              distance: 0
+            }
+          }));
+          
+          Alert.alert('Trip Started Offline! 🚗📱', `Network unreachable. Tracking your drive from ${startAddress}\n\nTrip will sync when you reconnect.`, [{ text: 'OK' }]);
+        } else {
+          Alert.alert('Error', apiError.message || 'Could not start trip');
+        }
+      }
     } catch (e: any) {
-      console.log('[Dashboard] Start trip error:', e.message);
+      console.log('[Dashboard] Start trip process error:', e.message);
       Alert.alert('Error', e.message || 'Could not start trip');
     } finally {
       setStartingTrip(false);
@@ -656,7 +706,7 @@ export default function DashboardScreen() {
 
         // If no liveDistance was recorded (e.g., on web or GPS failed), 
         // fall back to straight-line distance as minimum
-        if (distance === 0 && isManualTrip && stats.active_trip.start_lat && stats.active_trip.start_lng) {
+        if (distance === 0 && isManualTrip && stats?.active_trip?.start_lat && stats?.active_trip?.start_lng) {
           distance = haversineDistance(stats.active_trip.start_lat, stats.active_trip.start_lng, endLat, endLng);
           console.log('[Dashboard] Using fallback straight-line distance:', distance);
         }
@@ -711,13 +761,13 @@ export default function DashboardScreen() {
         
         // Save the trip offline
         const offlineTrip = await saveOfflineTrip({
-          start_time: stats.active_trip.start_time,
+          start_time: stats?.active_trip?.start_time || new Date().toISOString(),
           end_time: new Date().toISOString(),
-          start_lat: stats.active_trip.start_lat || 0,
-          start_lng: stats.active_trip.start_lng || 0,
+          start_lat: stats?.active_trip?.start_lat || 0,
+          start_lng: stats?.active_trip?.start_lng || 0,
           end_lat: endLat || 0,
           end_lng: endLng || 0,
-          start_address: stats.active_trip.start_address || 'Unknown start',
+          start_address: stats?.active_trip?.start_address || 'Unknown start',
           end_address: endAddress,
           distance: distance,
           classification: 'business',
@@ -739,8 +789,31 @@ export default function DashboardScreen() {
         return;
       }
       
+      // ==============================================================
+      // UNIFIED BACKGROUND ENGINE: PULL TRUE LOCKED-SCREEN DISTANCE
+      // ==============================================================
+      const { getCurrentTrip, clearCurrentTrip } = await import('../../services/offlineService');
+      const backgroundManualTrip = await getCurrentTrip();
+      
+      let backgroundDistance = 0;
+      if (backgroundManualTrip && backgroundManualTrip.distance > 0) {
+         backgroundDistance = backgroundManualTrip.distance;
+         console.log('[Dashboard] Picked up true background tracked manual distance:', backgroundDistance);
+      }
+      
+      // Override standard liveDistance ONLY if background engine accumulated more miles (which happens reliably when screen is locked)
+      if (backgroundDistance > distance) {
+         distance = backgroundDistance;
+      }
+      
+      // Clean up the background tracking storage state without duplicating the trip into the offline sync queue!
+      await clearCurrentTrip();
+      // ==============================================================
+
       // Online - send to server
-      await API.endTrip(token!, stats.active_trip.trip_id, { end_lat: endLat, end_lng: endLng, end_address: endAddress, distance });
+      if (stats?.active_trip) {
+        await API.endTrip(token!, stats.active_trip.trip_id, { end_lat: endLat, end_lng: endLng, end_address: endAddress, distance });
+      }
       
       // Reset live tracking state
       setLiveDistance(0);
@@ -750,12 +823,16 @@ export default function DashboardScreen() {
       await resetAutoTrackingState();
       
       await loadData();
-      router.push(`/trip/${stats.active_trip.trip_id}`);
+      if (stats?.active_trip) {
+        router.push(`/trip/${stats.active_trip.trip_id}`);
+      } else {
+        router.push('/(tabs)/dashboard');
+      }
     } catch (e: any) {
       console.log('[Dashboard] End trip error:', e.message);
       
       // If the API call failed (maybe went offline mid-request), save locally
-      if (!isOnline || e.message?.includes('network') || e.message?.includes('Network')) {
+      if (!isOnline || e.message?.includes('network') || e.message?.includes('Network') || e.message?.includes('Timeout') || e.message?.includes('timeout')) {
         try {
           const offlineTrip = await saveOfflineTrip({
             start_time: stats?.active_trip?.start_time || new Date().toISOString(),
@@ -777,8 +854,9 @@ export default function DashboardScreen() {
             [{ text: 'OK' }]
           );
           
-          setLiveDistance(0);
-          setLiveDuration('0m');
+          
+          // Clear active trip from stats explicitly so the banner goes away
+          setStats(prev => prev ? { ...prev, active_trip: null } : null);
           return;
         } catch (saveError) {
           console.log('[Dashboard] Failed to save offline:', saveError);
@@ -817,7 +895,7 @@ export default function DashboardScreen() {
       <ScrollView
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.brand.primary} />}
-        contentContainerStyle={{ paddingBottom: 100 }}
+        contentContainerStyle={{ paddingBottom: 150 }}
       >
         {/* Header */}
         <View style={styles.header}>

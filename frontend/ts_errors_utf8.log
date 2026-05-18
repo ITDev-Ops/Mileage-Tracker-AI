@@ -1,0 +1,3 @@
+﻿app/auth-callback.tsx(20,53): error TS2339: Property 'primary' does not exist on type '{ bg: { primary: string; secondary: string; tertiary: string; overlay: string; card: string; }; text: { primary: string; secondary: string; tertiary: string; inverse: string; }; brand: { primary: string; ... 7 more ...; purple: string; }; status: { ...; }; border: string; borderLight: string; }'.
+services/notificationService.ts(6,35): error TS2322: Type 'Promise<{ shouldShowAlert: true; shouldPlaySound: false; shouldSetBadge: true; }>' is not assignable to type 'Promise<NotificationBehavior>'.
+  Type '{ shouldShowAlert: true; shouldPlaySound: false; shouldSetBadge: true; }' is missing the following properties from type 'NotificationBehavior': shouldShowBanner, shouldShowList

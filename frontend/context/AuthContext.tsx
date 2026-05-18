@@ -1,6 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { Platform, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
 import { API } from '../services/api';
 
 export interface User {
@@ -18,16 +18,15 @@ interface AuthContextType {
   user: User | null;
   token: string | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, name: string) => Promise<void>;
-  loginWithGoogle: (sessionId: string) => Promise<void>;
+  login: (email?: string, password?: string) => Promise<void>;
+  register: (name?: string, email?: string, password?: string) => Promise<void>;
+  loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType);
 
-// Helper to log with platform info
 const authLog = (message: string, data?: any) => {
   const prefix = `[Auth][${Platform.OS}]`;
   if (data !== undefined) {
@@ -37,158 +36,119 @@ const authLog = (message: string, data?: any) => {
   }
 };
 
-// Safe AsyncStorage wrapper with detailed error logging
-const safeStorage = {
-  async getItem(key: string): Promise<string | null> {
-    try {
-      const value = await AsyncStorage.getItem(key);
-      authLog(`Storage GET '${key}':`, value ? 'found' : 'null');
-      return value;
-    } catch (error: any) {
-      authLog(`Storage GET ERROR '${key}':`, error.message);
-      return null;
-    }
-  },
-  async setItem(key: string, value: string): Promise<boolean> {
-    try {
-      await AsyncStorage.setItem(key, value);
-      authLog(`Storage SET '${key}': success`);
-      return true;
-    } catch (error: any) {
-      authLog(`Storage SET ERROR '${key}':`, error.message);
-      return false;
-    }
-  },
-  async removeItem(key: string): Promise<boolean> {
-    try {
-      await AsyncStorage.removeItem(key);
-      authLog(`Storage REMOVE '${key}': success`);
-      return true;
-    } catch (error: any) {
-      authLog(`Storage REMOVE ERROR '${key}':`, error.message);
-      return false;
-    }
-  }
-};
+const TOKEN_KEY = '@multimile_jwt_token';
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  // We should set loading to false for web, but for mobile, wait until AsyncStorage checks out
+  const [loading, setLoading] = useState(Platform.OS !== 'web');
 
-  const checkAuth = useCallback(async () => {
-    authLog('checkAuth: starting...');
-    try {
-      const storedToken = await safeStorage.getItem('auth_token');
-      if (storedToken) {
-        authLog('checkAuth: token found, fetching user...');
-        const userData = await API.getMe(storedToken);
-        authLog('checkAuth: user fetched', userData?.email);
-        setToken(storedToken);
-        setUser(userData);
-      } else {
-        authLog('checkAuth: no stored token');
-      }
-    } catch (error: any) {
-      authLog('checkAuth: ERROR', error.message);
-      await safeStorage.removeItem('auth_token');
-    } finally {
-      authLog('checkAuth: complete, setting loading=false');
-      setLoading(false);
-    }
+  // Load token on startup
+  useEffect(() => {
+    loadStoredSession();
   }, []);
 
-  useEffect(() => {
-    checkAuth();
-  }, [checkAuth]);
-
-  const login = async (email: string, password: string) => {
-    authLog('login: starting...', email);
+  const loadStoredSession = async () => {
     try {
-      const res = await API.login(email, password);
-      authLog('login: API success, saving token...');
-      
-      const saved = await safeStorage.setItem('auth_token', res.token);
-      if (!saved) {
-        throw new Error('Failed to save authentication token');
+      if (Platform.OS !== 'web') {
+        const storedToken = await AsyncStorage.getItem(TOKEN_KEY);
+        if (storedToken) {
+          authLog('loadStoredSession: Found token, verifying...');
+          setToken(storedToken);
+          // Try validating with the backend
+          const userData = await API.getMe(storedToken);
+          setUser(userData);
+          authLog('loadStoredSession: User verified successfully.');
+        } else {
+          authLog('loadStoredSession: No token found.');
+        }
       }
-      
-      setToken(res.token);
-      setUser(res.user);
-      authLog('login: complete, user set', res.user?.email);
+    } catch (error: any) {
+      authLog('loadStoredSession: ERROR restoring session', error.message);
+      // Clean up invalid session
+      if (Platform.OS !== 'web') {
+         await AsyncStorage.removeItem(TOKEN_KEY);
+      }
+      setToken(null);
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const persistSession = async (jwtToken: string, userData: User) => {
+    setToken(jwtToken);
+    setUser(userData);
+    if (Platform.OS !== 'web') {
+      try {
+        await AsyncStorage.setItem(TOKEN_KEY, jwtToken);
+      } catch (e) {
+        authLog('persistSession: failed to save token', e);
+      }
+    }
+  };
+
+  const login = async (email?: string, password?: string) => {
+    setLoading(true);
+    authLog('login: Calling custom backend login API...');
+    try {
+      if (!email || !password) {
+        throw new Error('Email and password required');
+      }
+      const response = await API.authLogin({ email, password });
+      await persistSession(response.access_token, response.user);
+      authLog('login: Custom login complete');
     } catch (error: any) {
       authLog('login: ERROR', error.message);
-      throw error; // Re-throw to show user the error
+      throw error;
+    } finally {
+      setLoading(false);
     }
   };
 
-  const register = async (email: string, password: string, name: string) => {
-    authLog('register: starting...', email);
+  const register = async (name?: string, email?: string, password?: string) => {
+    setLoading(true);
+    authLog('register: Calling custom backend register API...');
     try {
-      const res = await API.register(email, password, name);
-      authLog('register: API success, saving token...');
-      
-      const saved = await safeStorage.setItem('auth_token', res.token);
-      if (!saved) {
-        throw new Error('Failed to save authentication token');
+      if (!email || !password || !name) {
+        throw new Error('Name, email, and password required');
       }
-      
-      setToken(res.token);
-      setUser(res.user);
-      authLog('register: complete, user set', res.user?.email);
+      const response = await API.authRegister({ name, email, password });
+      await persistSession(response.access_token, response.user);
+      authLog('register: Custom register complete');
     } catch (error: any) {
       authLog('register: ERROR', error.message);
-      throw error; // Re-throw to show user the error
+      throw error;
+    } finally {
+      setLoading(false);
     }
   };
 
-  const loginWithGoogle = async (sessionId: string) => {
-    authLog('loginWithGoogle: starting...');
-    try {
-      const res = await API.googleAuth(sessionId);
-      authLog('loginWithGoogle: API success, saving token...');
-      
-      const saved = await safeStorage.setItem('auth_token', res.token);
-      if (!saved) {
-        throw new Error('Failed to save authentication token');
-      }
-      
-      setToken(res.token);
-      setUser(res.user);
-      authLog('loginWithGoogle: complete');
-    } catch (error: any) {
-      authLog('loginWithGoogle: ERROR', error.message);
-      throw error;
-    }
+  const loginWithGoogle = async () => {
+    Alert.alert('Coming Soon', 'Google Authentication will be implemented in a future update.');
   };
 
   const logout = async () => {
-    authLog('logout: starting...');
-    try {
-      await safeStorage.removeItem('auth_token');
-      setToken(null);
-      setUser(null);
-      authLog('logout: complete');
-    } catch (error: any) {
-      authLog('logout: ERROR', error.message);
-      // Still clear state even if storage fails
-      setToken(null);
-      setUser(null);
+    authLog('logout: clearing session...');
+    setUser(null);
+    setToken(null);
+    if (Platform.OS !== 'web') {
+      await AsyncStorage.removeItem(TOKEN_KEY);
     }
+    authLog('logout: complete');
   };
 
   const refreshUser = async () => {
-    if (!token) {
-      authLog('refreshUser: no token, skipping');
-      return;
-    }
-    authLog('refreshUser: starting...');
+    if (!token) return;
     try {
       const userData = await API.getMe(token);
       setUser(userData);
-      authLog('refreshUser: complete', userData?.email);
     } catch (error: any) {
       authLog('refreshUser: ERROR', error.message);
+      if (error.message.includes('401')) {
+         await logout();
+      }
     }
   };
 

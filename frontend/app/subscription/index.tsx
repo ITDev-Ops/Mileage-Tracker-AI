@@ -4,6 +4,7 @@ import {
   Alert, ActivityIndicator, Platform, Linking
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import * as ExpoLinking from 'expo-linking';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
@@ -115,13 +116,25 @@ export default function SubscriptionScreen() {
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         originUrl = window.location.origin;
       } else {
-        originUrl = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://gps-mileage-mvp.preview.emergentagent.com';
+        // Must use the Expo deep linking origin to route backward into the app after session creation!
+        originUrl = ExpoLinking.createURL('');
+        // Clean up trailing slashes so deep link parses gracefully
+        if (originUrl.endsWith('/')) {
+            originUrl = originUrl.slice(0, -1);
+        }
       }
       const result = await API.createCheckout(token!, planKey, originUrl);
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         window.location.href = result.url;
       } else {
-        await Linking.openURL(result.url);
+        // Prevent hard reloading Expo during mocked mock integrations when URL is actually a local app deep link.
+        if (result.url.includes('/subscription?')) {
+            const qs = result.url.split('/subscription?')[1];
+            router.push(`/subscription?${qs}`);
+        } else {
+            // Live Stripe URL
+            await Linking.openURL(result.url);
+        }
       }
     } catch (e: any) {
       const errMsg = e.message || 'Could not initiate checkout';

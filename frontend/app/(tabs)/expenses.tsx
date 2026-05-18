@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
   RefreshControl, Alert, ActivityIndicator, Modal, TextInput, ScrollView
@@ -17,6 +17,29 @@ const CATEGORIES = [
   { key: 'meals', label: 'Meals', icon: 'coffee', color: Colors.brand.purple },
   { key: 'other', label: 'Other', icon: 'tag', color: Colors.text.tertiary },
 ];
+
+const ExpenseItem = memo(({ item, onDelete }: { item: any, onDelete: (id: string) => void }) => {
+  const catColor = (cat: string) => CATEGORIES.find(c => c.key === cat)?.color || Colors.text.tertiary;
+  const catIcon = (cat: string) => CATEGORIES.find(c => c.key === cat)?.icon || 'tag';
+  return (
+    <View testID={`expense-${item.expense_id}`} style={styles.expenseRow}>
+      <View style={[styles.expenseIcon, { backgroundColor: catColor(item.category) + '20' }]}>
+        <Feather name={catIcon(item.category) as any} size={18} color={catColor(item.category)} />
+      </View>
+      <View style={styles.expenseInfo}>
+        <Text style={styles.expenseMerchant}>{item.merchant}</Text>
+        <Text style={styles.expenseMeta}>{item.category} · {new Date(item.created_at).toLocaleDateString()}</Text>
+      </View>
+      <View style={styles.expenseRight}>
+        <Text style={styles.expenseAmount}>${item.amount.toFixed(2)}</Text>
+        <TouchableOpacity testID={`delete-expense-${item.expense_id}`} onPress={() => onDelete(item.expense_id)}>
+          <Feather name="trash-2" size={16} color={Colors.text.tertiary} />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+});
+
 
 export default function ExpensesScreen() {
   const [expenses, setExpenses] = useState<any[]>([]);
@@ -106,7 +129,7 @@ export default function ExpensesScreen() {
     }
   };
 
-  const handleDelete = (expenseId: string) => {
+  const handleDelete = useCallback((expenseId: string) => {
     Alert.alert('Delete Expense', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -116,11 +139,32 @@ export default function ExpensesScreen() {
         }
       }
     ]);
-  };
+  }, [token, loadExpenses]);
 
-  const total = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-  const catColor = (cat: string) => CATEGORIES.find(c => c.key === cat)?.color || Colors.text.tertiary;
-  const catIcon = (cat: string) => CATEGORIES.find(c => c.key === cat)?.icon || 'tag';
+  const total = useMemo(() => expenses.reduce((sum, e) => sum + (e.amount || 0), 0), [expenses]);
+  
+  const categoryTotals = useMemo(() => {
+    const totals: Record<string, number> = {};
+    CATEGORIES.forEach(c => totals[c.key] = 0);
+    expenses.forEach(e => {
+      if (totals[e.category] !== undefined) {
+        totals[e.category] += e.amount || 0;
+      }
+    });
+    return totals;
+  }, [expenses]);
+
+  const renderExpenseItem = useCallback(({ item }: { item: any }) => (
+    <ExpenseItem item={item} onDelete={handleDelete} />
+  ), [handleDelete]);
+
+  const ListEmpty = useCallback(() => (
+    <View style={styles.empty}>
+      <Feather name="credit-card" size={48} color={Colors.text.tertiary} />
+      <Text style={styles.emptyTitle}>No expenses yet</Text>
+      <Text style={styles.emptyText}>Tap "Scan" to scan a receipt or "+" to add manually</Text>
+    </View>
+  ), []);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -144,7 +188,7 @@ export default function ExpensesScreen() {
       {/* Category Summary */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.catScroll} contentContainerStyle={{ paddingHorizontal: Spacing.screen, gap: 8 }}>
         {CATEGORIES.map(cat => {
-          const catTotal = expenses.filter(e => e.category === cat.key).reduce((s, e) => s + e.amount, 0);
+          const catTotal = categoryTotals[cat.key] || 0;
           return (
             <View key={cat.key} style={[styles.catChip, { borderColor: cat.color + '40' }]}>
               <Feather name={cat.icon as any} size={14} color={cat.color} />
@@ -161,31 +205,12 @@ export default function ExpensesScreen() {
         <FlatList
           data={expenses}
           keyExtractor={item => item.expense_id}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.brand.primary} />}
-          renderItem={({ item }) => (
-            <View testID={`expense-${item.expense_id}`} style={styles.expenseRow}>
-              <View style={[styles.expenseIcon, { backgroundColor: catColor(item.category) + '20' }]}>
-                <Feather name={catIcon(item.category) as any} size={18} color={catColor(item.category)} />
-              </View>
-              <View style={styles.expenseInfo}>
-                <Text style={styles.expenseMerchant}>{item.merchant}</Text>
-                <Text style={styles.expenseMeta}>{item.category} · {new Date(item.created_at).toLocaleDateString()}</Text>
-              </View>
-              <View style={styles.expenseRight}>
-                <Text style={styles.expenseAmount}>${item.amount.toFixed(2)}</Text>
-                <TouchableOpacity testID={`delete-expense-${item.expense_id}`} onPress={() => handleDelete(item.expense_id)}>
-                  <Feather name="trash-2" size={16} color={Colors.text.tertiary} />
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Feather name="credit-card" size={48} color={Colors.text.tertiary} />
-              <Text style={styles.emptyTitle}>No expenses yet</Text>
-              <Text style={styles.emptyText}>Tap "Scan" to scan a receipt or "+" to add manually</Text>
-            </View>
-          }
+          renderItem={renderExpenseItem}
+          ListEmptyComponent={ListEmpty}
           contentContainerStyle={{ paddingHorizontal: Spacing.screen, paddingTop: 8, paddingBottom: 100 }}
         />
       )}

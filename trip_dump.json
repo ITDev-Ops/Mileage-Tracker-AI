@@ -1,0 +1,22 @@
+{
+  "trip_id": "trip_9c9eef66bc97",
+  "user_id": "mock_user_123",
+  "start_time": "2026-04-01T17:40:14.235275+00:00",
+  "end_time": null,
+  "distance": 0.0,
+  "start_lat": 38.7987518,
+  "start_lng": -77.5089148,
+  "end_lat": null,
+  "end_lng": null,
+  "start_address": "Butterfield Street, Manassas, Virginia",
+  "end_address": null,
+  "classification": "unclassified",
+  "ai_confidence": 0.0,
+  "risk_score": null,
+  "notes": "",
+  "purpose": null,
+  "client_name": null,
+  "is_active": true,
+  "deduction_value": 0.0,
+  "created_at": "2026-04-01T17:40:14.235299+00:00"
+}

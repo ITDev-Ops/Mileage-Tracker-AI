@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Colors, FontSize, Radius, Spacing, ClassificationColor } from '../constants/theme';
@@ -37,7 +37,7 @@ function formatTime(dateStr: string): string {
   } catch { return dateStr; }
 }
 
-export default function TripCard({ trip, onPress, onClassify }: Props) {
+const TripCard = memo(({ trip, onPress, onClassify }: Props) => {
   const clsColor = ClassificationColor[trip.classification] || Colors.text.tertiary;
   const isUnclassified = trip.classification === 'unclassified';
 
@@ -92,7 +92,9 @@ export default function TripCard({ trip, onPress, onClassify }: Props) {
       )}
     </TouchableOpacity>
   );
-}
+});
+
+export default TripCard;
 
 const styles = StyleSheet.create({
   card: {

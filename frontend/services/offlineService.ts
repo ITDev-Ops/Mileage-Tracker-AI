@@ -454,6 +454,16 @@ export async function endTrip(classification?: string): Promise<OfflineTrip | nu
   }
 }
 
+// Clear current trip completely without saving to offline sync (prevents duplicates)
+export async function clearCurrentTrip(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(CURRENT_TRIP_KEY);
+    log('Cleared current trip state');
+  } catch (e) {
+    log('Error clearing current trip:', e);
+  }
+}
+
 // Get current active trip
 export async function getCurrentTrip(): Promise<ActiveTrip | null> {
   try {

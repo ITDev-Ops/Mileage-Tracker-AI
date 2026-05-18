@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
   TextInput, RefreshControl, Alert, ActivityIndicator
@@ -18,6 +18,36 @@ const FILTERS = [
   { key: 'medical', label: 'Medical' },
   { key: 'unclassified', label: 'Unclassified' },
 ];
+
+const TripListItem = memo(({ item, isClassifying, onClassify, onAIClassify }: any) => {
+  const router = useRouter();
+  const handlePress = useCallback(() => router.push(`/trip/${item.trip_id}`), [item.trip_id, router]);
+  const handleClassify = useCallback((cls: string) => onClassify(item.trip_id, cls), [item.trip_id, onClassify]);
+  const handleAI = useCallback(() => onAIClassify(item.trip_id), [item.trip_id, onAIClassify]);
+  return (
+    <View>
+      <TripCard
+        trip={item}
+        onPress={handlePress}
+        onClassify={handleClassify}
+      />
+      {item.classification === 'unclassified' && (
+        <TouchableOpacity
+          testID={`ai-classify-${item.trip_id}`}
+          style={styles.aiClassifyRow}
+          onPress={handleAI}
+          disabled={isClassifying}
+        >
+          {isClassifying ? (
+            <ActivityIndicator size="small" color={Colors.brand.primary} />
+          ) : (
+            <><Feather name="zap" size={13} color={Colors.brand.primary} /><Text style={styles.aiClassifyText}>Auto-classify with AI</Text></>
+          )}
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+});
 
 export default function TripsScreen() {
   const [trips, setTrips] = useState<any[]>([]);
@@ -69,7 +99,7 @@ export default function TripsScreen() {
     setRefreshing(false);
   };
 
-  const handleClassify = async (tripId: string, classification: string) => {
+  const handleClassify = useCallback(async (tripId: string, classification: string) => {
     if (!token) return;
     try {
       await API.updateTrip(token, tripId, { classification });
@@ -77,9 +107,9 @@ export default function TripsScreen() {
     } catch (e: any) {
       Alert.alert('Error', e.message);
     }
-  };
+  }, [token, loadTrips]);
 
-  const handleAIClassify = async (tripId: string) => {
+  const handleAIClassify = useCallback(async (tripId: string) => {
     if (!token) return;
     setClassifying(tripId);
     try {
@@ -91,7 +121,7 @@ export default function TripsScreen() {
     } finally {
       setClassifying(null);
     }
-  };
+  }, [token, loadTrips]);
 
   const handleBulkClassify = async () => {
     if (!token) return;
@@ -140,8 +170,25 @@ export default function TripsScreen() {
     ]);
   };
 
-  const totalMiles = filtered.reduce((sum, t) => sum + (t.distance || 0), 0);
-  const totalDeductions = filtered.reduce((sum, t) => sum + (t.deduction_value || 0), 0);
+  const totalMiles = useMemo(() => filtered.reduce((sum, t) => sum + (t.distance || 0), 0), [filtered]);
+  const totalDeductions = useMemo(() => filtered.reduce((sum, t) => sum + (t.deduction_value || 0), 0), [filtered]);
+
+  const renderTripItem = useCallback(({ item }: { item: any }) => (
+    <TripListItem 
+      item={item} 
+      isClassifying={classifying === item.trip_id}
+      onClassify={handleClassify}
+      onAIClassify={handleAIClassify}
+    />
+  ), [classifying, handleClassify, handleAIClassify]);
+
+  const ListEmpty = useCallback(() => (
+    <View style={styles.empty}>
+      <Feather name="map" size={48} color={Colors.text.tertiary} />
+      <Text style={styles.emptyTitle}>No trips found</Text>
+      <Text style={styles.emptyText}>Start a drive from the Dashboard to begin tracking</Text>
+    </View>
+  ), []);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -212,37 +259,12 @@ export default function TripsScreen() {
         <FlatList
           data={filtered}
           keyExtractor={(item) => item.trip_id}
-          renderItem={({ item }) => (
-            <View>
-              <TripCard
-                trip={item}
-                onPress={() => router.push(`/trip/${item.trip_id}`)}
-                onClassify={(cls) => handleClassify(item.trip_id, cls)}
-              />
-              {item.classification === 'unclassified' && (
-                <TouchableOpacity
-                  testID={`ai-classify-${item.trip_id}`}
-                  style={styles.aiClassifyRow}
-                  onPress={() => handleAIClassify(item.trip_id)}
-                  disabled={classifying === item.trip_id}
-                >
-                  {classifying === item.trip_id ? (
-                    <ActivityIndicator size="small" color={Colors.brand.primary} />
-                  ) : (
-                    <><Feather name="zap" size={13} color={Colors.brand.primary} /><Text style={styles.aiClassifyText}>Auto-classify with AI</Text></>
-                  )}
-                </TouchableOpacity>
-              )}
-            </View>
-          )}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          renderItem={renderTripItem}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.brand.primary} />}
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Feather name="map" size={48} color={Colors.text.tertiary} />
-              <Text style={styles.emptyTitle}>No trips found</Text>
-              <Text style={styles.emptyText}>Start a drive from the Dashboard to begin tracking</Text>
-            </View>
-          }
+          ListEmptyComponent={ListEmpty}
           contentContainerStyle={{ paddingHorizontal: Spacing.screen, paddingBottom: 100, paddingTop: 8 }}
         />
       )}

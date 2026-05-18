@@ -1,0 +1,62 @@
+TXT:
+{
+    "Strings":  [
+                    "authSource=admin\u0026replicaSet=atlas-ywcghv-shard-0"
+                ],
+    "Name":  "cluster0.zxoldq6.mongodb.net",
+    "Type":  16,
+    "CharacterSet":  1,
+    "Section":  1,
+    "DataLength":  16,
+    "TTL":  60,
+    "QueryType":  16,
+    "Text":  [
+                 "authSource=admin\u0026replicaSet=atlas-ywcghv-shard-0"
+             ]
+}
+
+SRV:
+[
+    {
+        "NameTarget":  "ac-qdlptgc-shard-00-00.zxoldq6.mongodb.net",
+        "Priority":  0,
+        "Weight":  0,
+        "Port":  27017,
+        "Name":  "_mongodb._tcp.cluster0.zxoldq6.mongodb.net",
+        "Type":  33,
+        "CharacterSet":  1,
+        "Section":  1,
+        "DataLength":  16,
+        "TTL":  60,
+        "QueryType":  33,
+        "Target":  "ac-qdlptgc-shard-00-00.zxoldq6.mongodb.net"
+    },
+    {
+        "NameTarget":  "ac-qdlptgc-shard-00-01.zxoldq6.mongodb.net",
+        "Priority":  0,
+        "Weight":  0,
+        "Port":  27017,
+        "Name":  "_mongodb._tcp.cluster0.zxoldq6.mongodb.net",
+        "Type":  33,
+        "CharacterSet":  1,
+        "Section":  1,
+        "DataLength":  16,
+        "TTL":  60,
+        "QueryType":  33,
+        "Target":  "ac-qdlptgc-shard-00-01.zxoldq6.mongodb.net"
+    },
+    {
+        "NameTarget":  "ac-qdlptgc-shard-00-02.zxoldq6.mongodb.net",
+        "Priority":  0,
+        "Weight":  0,
+        "Port":  27017,
+        "Name":  "_mongodb._tcp.cluster0.zxoldq6.mongodb.net",
+        "Type":  33,
+        "CharacterSet":  1,
+        "Section":  1,
+        "DataLength":  16,
+        "TTL":  60,
+        "QueryType":  33,
+        "Target":  "ac-qdlptgc-shard-00-02.zxoldq6.mongodb.net"
+    }
+]

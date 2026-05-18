@@ -19,8 +19,9 @@ const STORAGE_KEYS = {
 const DRIVING_SPEED_THRESHOLD = 2.2352; // 5 mph - start tracking
 const STOPPED_SPEED_THRESHOLD = 0.5; // ~1 mph - consider stopped
 const MIN_TRIP_DISTANCE = 0.1; // Minimum 0.1 miles to count as trip
-const STOP_TIMEOUT = 120000; // 2 minutes of being stopped = end auto trip
-const AUTO_START_DELAY = 60000; // 1 minute delay before auto-tracking starts a trip
+const AUTO_STOP_TIMEOUT = 300000; // 5 minutes of being stopped = end auto trip
+const MANUAL_STOP_TIMEOUT = 600000; // 10 minutes of being stopped = end manual trip
+const AUTO_START_DELAY = 15000; // 15 seconds delay before auto-tracking starts a trip
 
 // Types
 interface LocationPoint {
@@ -141,7 +142,8 @@ async function startAutoTrip(location: LocationPoint): Promise<PendingTrip> {
 }
 
 // Storage key for auth token (to send trips directly to server)
-const AUTH_TOKEN_KEY = 'auth_token';
+// Must match AuthContext's TOKEN_KEY
+const AUTH_TOKEN_KEY = 'user_token';
 
 // Get auth token from storage
 async function getAuthToken(): Promise<string | null> {
@@ -188,8 +190,8 @@ async function endAutoTrip(trip: PendingTrip, endLocation: LocationPoint): Promi
           start_lng: trip.start_lng,
           end_lat: trip.end_lat,
           end_lng: trip.end_lng,
-          start_address: trip.start_address || 'Auto-detected start',
-          end_address: trip.end_address || 'Auto-detected end',
+          start_address: trip.start_address ? `Auto - detect start, ${trip.start_address}` : 'Auto - detect start, Unknown Location',
+          end_address: trip.end_address ? `Auto - detect end, ${trip.end_address}` : 'Auto - detect end, Unknown Location',
           distance: trip.distance,
           classification: 'business',
           notes: 'Auto-tracked trip',
@@ -243,7 +245,9 @@ async function processLocationUpdate(locations: Location.LocationObject[]): Prom
   
   log('Location update', { lat: point.latitude, lng: point.longitude, speed: speed * 2.237 }); // Log speed in mph
   
-  let currentTrip = await getCurrentTrip();
+  let currentAutoTrip = await getCurrentTrip();
+  const manualTripJson = await AsyncStorage.getItem('current_active_trip');
+  let currentManualTrip = manualTripJson ? JSON.parse(manualTripJson) : null;
   
   // Check if moving at driving speed
   const isDriving = speed >= DRIVING_SPEED_THRESHOLD;
@@ -251,60 +255,91 @@ async function processLocationUpdate(locations: Location.LocationObject[]): Prom
   
   if (isDriving) {
     lastMovementTime = Date.now();
-    
-    if (!currentTrip) {
-      // Driving detected but no trip yet
-      if (drivingDetectedTime === null) {
-        // First time detecting driving - start the delay timer
-        drivingDetectedTime = Date.now();
-        log('Driving detected - waiting 1 minute before starting auto trip...');
+  }
+
+  // Handle Manual Trips entirely first
+  if (currentManualTrip && currentManualTrip.is_active) {
+    if (isDriving) {
+      const lastPoint = currentManualTrip.route[currentManualTrip.route.length - 1];
+      const segmentDistance = haversineDistance(
+        lastPoint.latitude, lastPoint.longitude,
+        point.latitude, point.longitude
+      );
+      
+      if (segmentDistance > 0.002) { // Lowered to ~10 feet to ensure we don't drop GPS updates during slow traffic
+        currentManualTrip.distance += segmentDistance;
+        currentManualTrip.route.push(point);
+        currentManualTrip.current_lat = point.latitude;
+        currentManualTrip.current_lng = point.longitude;
+        await AsyncStorage.setItem('current_active_trip', JSON.stringify(currentManualTrip));
+      }
+    } else if (isStopped) {
+      const stoppedDuration = Date.now() - lastMovementTime;
+      if (stoppedDuration >= MANUAL_STOP_TIMEOUT) {
+        log('Manual trip ending - stopped for 10 minutes');
+        const { endTrip } = await import('./offlineService');
+        await endTrip('business');
+        if (dashboardRefreshFn) {
+          await dashboardRefreshFn();
+        }
       } else {
-        // Check if we've waited long enough (1 minute)
+        const remainingTime = Math.round((MANUAL_STOP_TIMEOUT - stoppedDuration) / 1000);
+        log('Manual trip waiting...', { stoppedFor: Math.round(stoppedDuration / 1000) + 's', willEndIn: remainingTime + 's' });
+      }
+    }
+    return; // Bypass auto-tracking completely while manual trip is active
+  }
+  
+  if (isDriving) {
+    if (!currentAutoTrip) {
+      if (drivingDetectedTime === null) {
+        drivingDetectedTime = Date.now();
+        log('Driving detected - waiting 15 seconds before starting auto trip...');
+      } else {
         const waitedTime = Date.now() - drivingDetectedTime;
         if (waitedTime >= AUTO_START_DELAY) {
-          // Start new trip - user didn't start manually within 1 minute
-          currentTrip = await startAutoTrip(point);
+          currentAutoTrip = await startAutoTrip(point);
           drivingDetectedTime = null; // Reset
-          log('Auto trip started after 1 minute delay', { tripId: currentTrip.id });
+          log('Auto trip started after 15 second delay', { tripId: currentAutoTrip.id });
         } else {
           const remainingWait = Math.round((AUTO_START_DELAY - waitedTime) / 1000);
           log('Still waiting...', { waited: Math.round(waitedTime / 1000) + 's', remaining: remainingWait + 's' });
         }
       }
     } else {
-      // Continue existing trip - add location and update distance
-      const lastPoint = currentTrip.route[currentTrip.route.length - 1];
+      const lastPoint = currentAutoTrip.route[currentAutoTrip.route.length - 1];
       const segmentDistance = haversineDistance(
         lastPoint.latitude, lastPoint.longitude,
         point.latitude, point.longitude
       );
       
-      if (segmentDistance > 0.005) { // Only add if moved > ~26 feet
-        currentTrip.distance += segmentDistance;
-        currentTrip.route.push(point);
-        await saveCurrentTrip(currentTrip);
-        log('Trip distance updated', { distance: currentTrip.distance, segment: segmentDistance });
+      if (segmentDistance > 0.002) { // Lowered to ~10 feet to capture more precise movements
+        currentAutoTrip.distance += segmentDistance;
+        currentAutoTrip.route.push(point);
+        await saveCurrentTrip(currentAutoTrip);
+        log('Auto trip distance updated', { distance: currentAutoTrip.distance });
       }
     }
   } else {
-    // Not driving - reset the driving detection timer
-    if (!currentTrip) {
-      drivingDetectedTime = null;
+    // Not driving
+    if (!currentAutoTrip) {
+      // Don't reset instantly! GPS speeds fluctuate. Only reset if we've stopped moving for 60 seconds
+      if (drivingDetectedTime && Date.now() - lastMovementTime > 60000) {
+        drivingDetectedTime = null;
+        log('Driving detection reset due to 60s of inactivity');
+      }
     }
     
-    if (currentTrip && isStopped) {
-      // Check if stopped for too long
+    if (currentAutoTrip && isStopped) {
       const stoppedDuration = Date.now() - lastMovementTime;
       
-      if (stoppedDuration >= STOP_TIMEOUT) {
-        // End trip after being stopped for 2 minutes
-        log('Trip ending - stopped for 2 minutes', { tripId: currentTrip.id, distance: currentTrip.distance });
-        await endAutoTrip(currentTrip, point);
-        log('Auto trip completed and saved - ready for sync');
+      if (stoppedDuration >= AUTO_STOP_TIMEOUT) {
+        log('Auto Trip ending - stopped for 5 minutes', { tripId: currentAutoTrip.id });
+        await endAutoTrip(currentAutoTrip, point);
         drivingDetectedTime = null; // Reset for next trip
       } else {
-        const remainingTime = Math.round((STOP_TIMEOUT - stoppedDuration) / 1000);
-        log('Stopped but waiting...', { stoppedFor: Math.round(stoppedDuration / 1000) + 's', willEndIn: remainingTime + 's' });
+        const remainingTime = Math.round((AUTO_STOP_TIMEOUT - stoppedDuration) / 1000);
+        log('Auto trip stopped but waiting...', { stoppedFor: Math.round(stoppedDuration / 1000) + 's', willEndIn: remainingTime + 's' });
       }
     }
   }
@@ -318,8 +353,12 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   }
   
   if (data) {
-    const { locations } = data as { locations: Location.LocationObject[] };
-    await processLocationUpdate(locations);
+    try {
+      const { locations } = data as { locations: Location.LocationObject[] };
+      await processLocationUpdate(locations);
+    } catch (e: any) {
+      log('Fatal error in background task processor - caught to prevent OS crash', e.message);
+    }
   }
 });
 
