@@ -22,6 +22,14 @@ import httpx
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
+# Override DNS resolver for Heroku/restrictive environments
+try:
+    import dns.resolver
+    dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
+    dns.resolver.default_resolver.nameservers = ['8.8.8.8', '8.8.4.4']
+except Exception:
+    pass
+
 # MongoDB
 MONGO_URI = os.environ.get('MONGO_URI', os.environ.get('MONGO_URL', 'mongodb://localhost:27017'))
 DB_NAME = os.environ.get('DB_NAME', 'multimile_db')
@@ -62,7 +70,8 @@ logger = logging.getLogger(__name__)
 async def startup_db_client():
     global client, db
     logger.info("Connecting to MongoDB Atlas...")
-    client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
+    import certifi
+    client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
     db = client[DB_NAME]
     
     logger.info("Initializing MongoDB Indexes...")
