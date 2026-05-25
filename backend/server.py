@@ -22,14 +22,6 @@ import httpx
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# Override DNS resolver for Heroku/restrictive environments
-try:
-    import dns.resolver
-    dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
-    dns.resolver.default_resolver.nameservers = ['8.8.8.8', '8.8.4.4']
-except Exception:
-    pass
-
 # MongoDB
 MONGO_URI = os.environ.get('MONGO_URI', os.environ.get('MONGO_URL', 'mongodb://localhost:27017'))
 DB_NAME = os.environ.get('DB_NAME', 'multimile_db')
