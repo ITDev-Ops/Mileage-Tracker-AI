@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: mileage-tracker-ai-backend
+    env: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MONGO_URI
+        sync: false
+      - key: DB_NAME
+        value: multimile_db
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: STRIPE_API_KEY
+        sync: false
+      - key: AUTH0_DOMAIN
+        value: dev-j470s7j0sap6h6us.us.auth0.com
+      - key: AUTH0_API_AUDIENCE
+        value: https://dev-j470s7j0sap6h6us.us.auth0.com/api/v2/
+      - key: AUTH0_ALGORITHMS
+        value: RS256
