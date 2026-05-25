@@ -61,6 +61,18 @@ logger = logging.getLogger(__name__)
 @app.on_event("startup")
 async def startup_db_client():
     global client, db
+    
+    # Configure custom DNS resolver on Heroku to bypass internal DNS issues with MongoDB Atlas
+    if "DYNO" in os.environ:
+        try:
+            import dns.resolver
+            custom_resolver = dns.resolver.Resolver()
+            custom_resolver.nameservers = ['8.8.8.8', '1.1.1.1']
+            dns.resolver.default_resolver = custom_resolver
+            logger.info("Running on Heroku: Custom DNS resolver configured successfully (8.8.8.8, 1.1.1.1).")
+        except Exception as e:
+            logger.warning(f"Failed to configure custom DNS resolver: {e}")
+            
     logger.info("Connecting to MongoDB Atlas...")
     import certifi
     client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
