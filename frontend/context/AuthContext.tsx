@@ -49,6 +49,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loadStoredSession();
   }, []);
 
+  // Synchronize tax_country to AsyncStorage for non-React utility modules
+  useEffect(() => {
+    const syncCountry = async () => {
+      if (user) {
+        try {
+          await AsyncStorage.setItem('tax_country', user.tax_country || 'US');
+        } catch (e) {
+          console.log('[AuthContext] Failed to save tax_country to AsyncStorage:', e);
+        }
+      } else {
+        try {
+          await AsyncStorage.removeItem('tax_country');
+        } catch {}
+      }
+    };
+    syncCountry();
+  }, [user]);
+
   const loadStoredSession = async () => {
     try {
       if (Platform.OS !== 'web') {

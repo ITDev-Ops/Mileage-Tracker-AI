@@ -10,13 +10,7 @@ import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
 import TripMapView from '../../components/TripMapView';
 import { Colors, FontSize, Spacing, Radius, ClassificationColor } from '../../constants/theme';
-
-const CLASSIFICATIONS = [
-  { key: 'business', label: 'Business', icon: 'briefcase', desc: 'Tax deductible at $0.67/mi' },
-  { key: 'personal', label: 'Personal', icon: 'user', desc: 'Not deductible' },
-  { key: 'medical', label: 'Medical', icon: 'activity', desc: 'Deductible at $0.21/mi' },
-  { key: 'charity', label: 'Charity', icon: 'heart', desc: 'Deductible at $0.14/mi' },
-];
+import { getCurrencySymbol, getDistanceUnitAbbr } from '../../services/countryService';
 
 function formatDateTime(dateStr: string): string {
   try {
@@ -43,7 +37,28 @@ export default function TripDetailScreen() {
   const [classifying, setClassifying] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [form, setForm] = useState({ classification: '', purpose: '', client_name: '', notes: '', start_address: '', end_address: '', distance: '' });
-  const { token } = useAuth();
+
+  const { user, token } = useAuth();
+  const country = user?.tax_country || 'US';
+  const currencySymbol = getCurrencySymbol(country);
+  const distanceUnit = getDistanceUnitAbbr(country);
+
+  let businessRate = 0.70;
+  if (country === 'CAN') businessRate = 0.73;
+  else if (country === 'GB') businessRate = 0.55;
+  else if (country === 'AUS') businessRate = 0.88;
+
+  const classifications = [
+    { key: 'business', label: 'Business', icon: 'briefcase', desc: `Tax deductible at ${currencySymbol}${businessRate.toFixed(2)}/${distanceUnit}` },
+    { key: 'personal', label: 'Personal', icon: 'user', desc: 'Not deductible' },
+  ];
+  if (country === 'US') {
+    classifications.push(
+      { key: 'medical', label: 'Medical', icon: 'activity', desc: 'Deductible at $0.22/mi' },
+      { key: 'charity', label: 'Charity', icon: 'heart', desc: 'Deductible at $0.14/mi' }
+    );
+  }
+
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
@@ -144,7 +159,7 @@ export default function TripDetailScreen() {
               {trip.ai_confidence > 0 && <Text style={styles.aiConf}>AI {Math.round(trip.ai_confidence * 100)}%</Text>}
             </View>
             <Text style={styles.clsDeduction}>
-              {trip.deduction_value > 0 ? `$${trip.deduction_value.toFixed(2)} deductible` : 'No deduction'}
+              {trip.deduction_value > 0 ? `${currencySymbol}${trip.deduction_value.toFixed(2)} deductible` : 'No deduction'}
             </Text>
           </View>
           <TouchableOpacity testID="ai-classify-detail-btn" style={styles.aiBtn} onPress={handleAIClassify} disabled={classifying}>
@@ -157,7 +172,7 @@ export default function TripDetailScreen() {
         {/* Stats Row */}
         <View style={styles.statsRow}>
           <View style={styles.statItem}>
-            <Text style={styles.statVal}>{trip.distance?.toFixed(1)} mi</Text>
+            <Text style={styles.statVal}>{trip.distance?.toFixed(1)} {distanceUnit}</Text>
             <Text style={styles.statLbl}>Distance</Text>
           </View>
           <View style={styles.statDivider} />
@@ -167,7 +182,7 @@ export default function TripDetailScreen() {
           </View>
           <View style={styles.statDivider} />
           <View style={styles.statItem}>
-            <Text style={[styles.statVal, { color: Colors.brand.primary }]}>${trip.deduction_value?.toFixed(2)}</Text>
+            <Text style={[styles.statVal, { color: Colors.brand.primary }]}>{currencySymbol}{trip.deduction_value?.toFixed(2)}</Text>
             <Text style={styles.statLbl}>Deduction</Text>
           </View>
         </View>
@@ -179,7 +194,7 @@ export default function TripDetailScreen() {
 
             <Text style={styles.label}>Classification</Text>
             <View style={styles.classifyGrid}>
-              {CLASSIFICATIONS.map(cls => (
+              {classifications.map(cls => (
                 <TouchableOpacity
                   key={cls.key}
                   testID={`cls-${cls.key}`}

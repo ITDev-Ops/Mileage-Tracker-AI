@@ -201,6 +201,12 @@ export default function SettingsScreen() {
   const tier = subscription?.tier || user?.subscription_tier || 'free';
   const tierData = tierInfo[tier] || tierInfo.free;
 
+  const dynamicCountryLabel = country === 'CAN' ? 'CRA' : country === 'GB' ? 'HMRC' : country === 'AUS' ? 'ATO' : 'IRS';
+  let dynamicRateStr = '$0.70/mi';
+  if (country === 'CAN') dynamicRateStr = '$0.73/km';
+  else if (country === 'GB') dynamicRateStr = '£0.55/mi';
+  else if (country === 'AUS') dynamicRateStr = '$0.88/km';
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
@@ -405,8 +411,8 @@ export default function SettingsScreen() {
             <View style={styles.divider} />
             <View style={styles.listRow}>
               <Feather name="shield" size={18} color={Colors.brand.primary} />
-              <Text style={styles.listRowText}>IRS Mileage Rate {new Date().getFullYear()}</Text>
-              <Text style={styles.listRowValue}>$0.67/mi</Text>
+              <Text style={styles.listRowText}>{dynamicCountryLabel} Mileage Rate {new Date().getFullYear()}</Text>
+              <Text style={styles.listRowValue}>{dynamicRateStr}</Text>
             </View>
             <View style={styles.divider} />
             <View style={styles.listRow}>

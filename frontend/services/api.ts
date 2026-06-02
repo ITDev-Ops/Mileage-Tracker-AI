@@ -39,13 +39,14 @@ class APIService {
     return headers;
   }
 
-  private async request(path: string, options: RequestInit = {}, token?: string | null) {
+  private async request(path: string, options: RequestInit & { timeout?: number } = {}, token?: string | null) {
     const url = `${BACKEND_URL}/api${path}`;
     console.log('[API] Request:', options.method || 'GET', url);
     
-    // Create an explicit timeout of 10-seconds to prevent fetch from hanging indefinitely
+    // Create an explicit timeout to prevent fetch from hanging indefinitely
+    const timeoutMs = options.timeout || 10000;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     
     try {
       const res = await fetch(url, {
@@ -133,7 +134,7 @@ class APIService {
     return this.request(`/expenses/${expenseId}`, { method: 'DELETE' }, token);
   }
   async scanReceipt(token: string, receipt_base64: string) {
-    return this.request('/expenses/scan', { method: 'POST', body: JSON.stringify({ receipt_base64 }) }, token);
+    return this.request('/expenses/scan', { method: 'POST', body: JSON.stringify({ receipt_base64 }), timeout: 35000 } as any, token);
   }
 
   // AI

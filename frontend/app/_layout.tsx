@@ -4,7 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { Platform, Alert } from 'react-native';
 import { AuthProvider } from '../context/AuthContext';
 import { Colors } from '../constants/theme';
-import { initializeAutoTracking, startBackgroundTracking, requestTrackingPermissions } from '../services/backgroundTracking';
+import { initializeAutoTracking, startBackgroundTracking, requestTrackingPermissions, setAutoTrackingEnabled } from '../services/backgroundTracking';
 import { initializeOfflineService } from '../services/offlineService';
 
 export default function RootLayout() {
@@ -39,7 +39,16 @@ export default function RootLayout() {
               'For accurate mileage tracking, please allow location access. The app will automatically detect and track your drives.',
               [
                 { text: 'Maybe Later', style: 'cancel' },
-                { text: 'Enable', onPress: () => requestTrackingPermissions() }
+                { 
+                  text: 'Enable', 
+                  onPress: async () => {
+                    const granted = await requestTrackingPermissions();
+                    if (granted) {
+                      await setAutoTrackingEnabled(true);
+                      console.log('[App] Auto-tracking enabled and started after user permission grant');
+                    }
+                  } 
+                }
               ]
             );
           }

@@ -9,8 +9,9 @@ import json
 import time
 from datetime import datetime, timezone
 
-# Base URL from review request
-BASE_URL = "https://gps-mileage-mvp.preview.emergentagent.com/api"
+import os
+# Base URL from review request or environment variable
+BASE_URL = os.environ.get('BACKEND_URL', "https://gps-mileage-mvp.preview.emergentagent.com/api").rstrip('/')
 
 def test_sync_flow():
     """Test the exact sync flow as specified in the review request"""
@@ -46,8 +47,8 @@ def test_sync_flow():
             user_id = register_result.get('user', {}).get('user_id', 'N/A')
             print(f"   ✅ Registration successful - User ID: {user_id}")
             results["user_registration"] = True
-        elif register_resp.status_code == 400 and "already exists" in register_resp.text:
-            print(f"   ⚠️  User already exists - proceeding to login")
+        elif register_resp.status_code == 400 and ("already registered" in register_resp.text or "already exists" in register_resp.text):
+            print(f"   ⚠️  User already registered - proceeding to login")
             results["user_registration"] = True  # Consider this success for sync test
         else:
             print(f"   ❌ Registration failed: {register_resp.text}")
@@ -71,7 +72,7 @@ def test_sync_flow():
         
         if login_resp.status_code == 200:
             login_result = login_resp.json()
-            token = login_result.get("token")
+            token = login_result.get("access_token") or login_result.get("token")
             headers = {"Authorization": f"Bearer {token}"}
             print(f"   ✅ Login successful - Token obtained")
             results["user_login"] = True

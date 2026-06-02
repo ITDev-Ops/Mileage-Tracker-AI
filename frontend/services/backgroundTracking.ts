@@ -2,6 +2,7 @@ import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
+import * as OfflineService from './offlineService';
 
 // Task name for background location tracking
 export const BACKGROUND_LOCATION_TASK = 'background-location-tracking';
@@ -56,9 +57,8 @@ const log = (message: string, data?: any) => {
   }
 };
 
-// Haversine distance calculation
-function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 3958.8; // Earth's radius in miles
+// Haversine distance calculation (with dynamic Earth radius)
+function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number, R: number = 3958.8): number {
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
   const a = Math.sin(dLat / 2) ** 2 +
@@ -143,7 +143,7 @@ async function startAutoTrip(location: LocationPoint): Promise<PendingTrip> {
 
 // Storage key for auth token (to send trips directly to server)
 // Must match AuthContext's TOKEN_KEY
-const AUTH_TOKEN_KEY = 'user_token';
+const AUTH_TOKEN_KEY = '@multimile_jwt_token';
 
 // Get auth token from storage
 async function getAuthToken(): Promise<string | null> {
@@ -174,6 +174,14 @@ async function endAutoTrip(trip: PendingTrip, endLocation: LocationPoint): Promi
   trip.end_time = new Date().toISOString();
   trip.end_lat = endLocation.latitude;
   trip.end_lng = endLocation.longitude;
+  
+  // Set the auto trip ended cooldown timestamp in AsyncStorage
+  try {
+    await AsyncStorage.setItem('last_auto_trip_ended_time', Date.now().toString());
+    log('Set last_auto_trip_ended_time for 3-minute cooldown');
+  } catch (e) {
+    log('Error saving last_auto_trip_ended_time', e);
+  }
   
   // Only process trips with meaningful distance
   if (trip.distance >= MIN_TRIP_DISTANCE) {
@@ -225,123 +233,276 @@ async function endAutoTrip(trip: PendingTrip, endLocation: LocationPoint): Promi
   await saveCurrentTrip(null);
 }
 
-// Variables for stop detection and auto-start delay
-let lastMovementTime = Date.now();
-let drivingDetectedTime: number | null = null; // When driving was first detected
-let stopCheckTimer: NodeJS.Timeout | null = null;
-
 // Process location update from background task
-async function processLocationUpdate(locations: Location.LocationObject[]): Promise<void> {
+// Process location update from background task
+export async function processLocationUpdate(locations: Location.LocationObject[]): Promise<void> {
   if (!locations || locations.length === 0) return;
   
-  const location = locations[locations.length - 1]; // Get most recent
-  const speed = location.coords.speed || 0;
-  const point: LocationPoint = {
-    latitude: location.coords.latitude,
-    longitude: location.coords.longitude,
-    speed: speed,
-    timestamp: location.timestamp,
-  };
-  
-  log('Location update', { lat: point.latitude, lng: point.longitude, speed: speed * 2.237 }); // Log speed in mph
+  // Load State from storage ONCE at the start of the batch
+  const masterEnabled = await AsyncStorage.getItem('master_tracking_enabled');
+  if (masterEnabled === 'false') {
+    log('processLocationUpdate blocked: master tracking is disabled');
+    return;
+  }
+
+  const autoEnabled = await AsyncStorage.getItem(STORAGE_KEYS.AUTO_TRACKING_ENABLED);
+  const autoTrackingEnabled = autoEnabled === 'true';
   
   let currentAutoTrip = await getCurrentTrip();
   const manualTripJson = await AsyncStorage.getItem('current_active_trip');
   let currentManualTrip = manualTripJson ? JSON.parse(manualTripJson) : null;
   
-  // Check if moving at driving speed
-  const isDriving = speed >= DRIVING_SPEED_THRESHOLD;
-  const isStopped = speed < STOPPED_SPEED_THRESHOLD;
+  let drivingDetectedTime: number | null = null;
+  try {
+    const drivingTimeStr = await AsyncStorage.getItem('auto_driving_detected_time');
+    if (drivingTimeStr) drivingDetectedTime = parseInt(drivingTimeStr, 10);
+  } catch {}
   
-  if (isDriving) {
-    lastMovementTime = Date.now();
-  }
+  let lastMovementTime = Date.now();
+  try {
+    const lastMoveStr = await AsyncStorage.getItem('auto_last_movement_time');
+    if (lastMoveStr) lastMovementTime = parseInt(lastMoveStr, 10);
+  } catch {}
+  
+  let lastLocationPoint: LocationPoint | null = null;
+  try {
+    const lastLocJson = await AsyncStorage.getItem(STORAGE_KEYS.LAST_LOCATION);
+    if (lastLocJson) lastLocationPoint = JSON.parse(lastLocJson);
+  } catch {}
 
-  // Handle Manual Trips entirely first
-  if (currentManualTrip && currentManualTrip.is_active) {
-    if (isDriving) {
-      const lastPoint = currentManualTrip.route[currentManualTrip.route.length - 1];
-      const segmentDistance = haversineDistance(
-        lastPoint.latitude, lastPoint.longitude,
-        point.latitude, point.longitude
-      );
-      
-      if (segmentDistance > 0.002) { // Lowered to ~10 feet to ensure we don't drop GPS updates during slow traffic
-        currentManualTrip.distance += segmentDistance;
-        currentManualTrip.route.push(point);
-        currentManualTrip.current_lat = point.latitude;
-        currentManualTrip.current_lng = point.longitude;
-        await AsyncStorage.setItem('current_active_trip', JSON.stringify(currentManualTrip));
-      }
-    } else if (isStopped) {
-      const stoppedDuration = Date.now() - lastMovementTime;
-      if (stoppedDuration >= MANUAL_STOP_TIMEOUT) {
-        log('Manual trip ending - stopped for 10 minutes');
-        const { endTrip } = await import('./offlineService');
-        await endTrip('business');
-        if (dashboardRefreshFn) {
-          await dashboardRefreshFn();
-        }
-      } else {
-        const remainingTime = Math.round((MANUAL_STOP_TIMEOUT - stoppedDuration) / 1000);
-        log('Manual trip waiting...', { stoppedFor: Math.round(stoppedDuration / 1000) + 's', willEndIn: remainingTime + 's' });
-      }
-    }
-    return; // Bypass auto-tracking completely while manual trip is active
-  }
+  let lastAutoTripEndedTime = 0;
+  try {
+    const endedTimeStr = await AsyncStorage.getItem('last_auto_trip_ended_time');
+    if (endedTimeStr) lastAutoTripEndedTime = parseInt(endedTimeStr, 10);
+  } catch {}
   
-  if (isDriving) {
-    if (!currentAutoTrip) {
-      if (drivingDetectedTime === null) {
-        drivingDetectedTime = Date.now();
-        log('Driving detected - waiting 15 seconds before starting auto trip...');
-      } else {
-        const waitedTime = Date.now() - drivingDetectedTime;
-        if (waitedTime >= AUTO_START_DELAY) {
-          currentAutoTrip = await startAutoTrip(point);
-          drivingDetectedTime = null; // Reset
-          log('Auto trip started after 15 second delay', { tripId: currentAutoTrip.id });
-        } else {
-          const remainingWait = Math.round((AUTO_START_DELAY - waitedTime) / 1000);
-          log('Still waiting...', { waited: Math.round(waitedTime / 1000) + 's', remaining: remainingWait + 's' });
-        }
-      }
-    } else {
-      const lastPoint = currentAutoTrip.route[currentAutoTrip.route.length - 1];
-      const segmentDistance = haversineDistance(
-        lastPoint.latitude, lastPoint.longitude,
-        point.latitude, point.longitude
-      );
-      
-      if (segmentDistance > 0.002) { // Lowered to ~10 feet to capture more precise movements
-        currentAutoTrip.distance += segmentDistance;
-        currentAutoTrip.route.push(point);
-        await saveCurrentTrip(currentAutoTrip);
-        log('Auto trip distance updated', { distance: currentAutoTrip.distance });
-      }
+  // Track if we need to write state back to storage
+  let currentAutoTripChanged = false;
+  let currentManualTripChanged = false;
+  let drivingDetectedTimeChanged = false;
+  let lastMovementTimeChanged = false;
+  let lastLocationPointChanged = false;
+
+  let country = 'US';
+  try {
+    const storedCountry = await AsyncStorage.getItem('tax_country');
+    if (storedCountry) country = storedCountry;
+  } catch {}
+  const isKm = country === 'CAN' || country === 'AUS';
+  const trackingR = isKm ? 6371.0 : 3958.8;
+  const threshold = isKm ? 0.0032 : 0.002; // ~10 feet in miles vs km
+
+  for (const location of locations) {
+    // Ignore duplicate or out-of-order locations to prevent double-processing or race condition pings
+    if (lastLocationPoint && location.timestamp <= lastLocationPoint.timestamp) {
+      continue;
     }
-  } else {
-    // Not driving
-    if (!currentAutoTrip) {
-      // Don't reset instantly! GPS speeds fluctuate. Only reset if we've stopped moving for 60 seconds
-      if (drivingDetectedTime && Date.now() - lastMovementTime > 60000) {
-        drivingDetectedTime = null;
-        log('Driving detection reset due to 60s of inactivity');
+
+    let speed = location.coords.speed || 0;
+    if (speed < 0) speed = 0; // Fix negative speed values from GPS
+    
+    const point: LocationPoint = {
+      latitude: location.coords.latitude,
+      longitude: location.coords.longitude,
+      speed: speed,
+      timestamp: location.timestamp,
+    };
+    
+    // Calculate fallback speed if coords.speed reports 0 or null (common during starting movement)
+    if ((speed === 0 || speed === null) && lastLocationPoint) {
+      const timeDiffSeconds = (point.timestamp - lastLocationPoint.timestamp) / 1000;
+      if (timeDiffSeconds > 0 && timeDiffSeconds < 60) { // Only calculate if updates are reasonably continuous (under 1 min)
+        const distMiles = haversineDistance(
+          lastLocationPoint.latitude, lastLocationPoint.longitude,
+          point.latitude, point.longitude
+        );
+        const distMeters = distMiles * 1609.34;
+        speed = distMeters / timeDiffSeconds; // meters per second
+        point.speed = speed;
       }
     }
     
-    if (currentAutoTrip && isStopped) {
-      const stoppedDuration = Date.now() - lastMovementTime;
-      
-      if (stoppedDuration >= AUTO_STOP_TIMEOUT) {
-        log('Auto Trip ending - stopped for 5 minutes', { tripId: currentAutoTrip.id });
-        await endAutoTrip(currentAutoTrip, point);
-        drivingDetectedTime = null; // Reset for next trip
+    lastLocationPoint = point;
+    lastLocationPointChanged = true;
+    
+    // Log location update inside the processing loop
+    log('Processing batch location point', { lat: point.latitude, lng: point.longitude, speed: speed * 2.237 });
+    
+    // Check if moving at driving speed
+    const isDriving = speed >= DRIVING_SPEED_THRESHOLD;
+    const isStopped = speed < STOPPED_SPEED_THRESHOLD;
+    
+    if (isDriving) {
+      lastMovementTime = point.timestamp;
+      lastMovementTimeChanged = true;
+    }
+    
+    // Handle Manual Trips entirely first
+    if (currentManualTrip && currentManualTrip.is_active) {
+      if (isDriving) {
+        // Deep safety check for route array
+        if (currentManualTrip.route && currentManualTrip.route.length > 0) {
+          const lastPoint = currentManualTrip.route[currentManualTrip.route.length - 1];
+          const segmentDistance = haversineDistance(
+            lastPoint.latitude, lastPoint.longitude,
+            point.latitude, point.longitude,
+            trackingR
+          );
+          
+          if (segmentDistance > threshold) {
+            currentManualTrip.distance += segmentDistance;
+            currentManualTrip.route.push(point);
+            currentManualTrip.current_lat = point.latitude;
+            currentManualTrip.current_lng = point.longitude;
+            currentManualTripChanged = true;
+          }
+        } else {
+          // If route was somehow empty/undefined, initialize it safely
+          currentManualTrip.route = [point];
+          currentManualTrip.current_lat = point.latitude;
+          currentManualTrip.current_lng = point.longitude;
+          currentManualTripChanged = true;
+        }
+      } else if (isStopped) {
+        const stoppedDuration = point.timestamp - lastMovementTime;
+        if (stoppedDuration >= MANUAL_STOP_TIMEOUT) {
+          log('Manual trip ending automatically - stopped for 10 minutes');
+          await OfflineService.endTrip('business');
+          currentManualTrip = null;
+          currentManualTripChanged = true;
+          if (dashboardRefreshFn) {
+            await dashboardRefreshFn();
+          }
+        }
+      }
+      continue; // Bypass auto-tracking completely while manual trip is active
+    }
+    
+    // Skip auto-tracking if disabled
+    if (!autoTrackingEnabled) {
+      continue;
+    }
+    
+    if (isDriving) {
+      if (!currentAutoTrip) {
+        // Cooldown check: 3 minutes (180000 ms)
+        const timeSinceLastEnd = point.timestamp - lastAutoTripEndedTime;
+        if (timeSinceLastEnd < 180000) {
+          log('Driving detected but auto-trip start blocked due to 3-minute cooldown', { timeSinceLastEndMs: timeSinceLastEnd });
+          continue;
+        }
+
+        if (drivingDetectedTime === null) {
+          drivingDetectedTime = point.timestamp;
+          drivingDetectedTimeChanged = true;
+          log('Driving detected - waiting 15 seconds before starting auto trip...');
+        } else {
+          const waitedTime = point.timestamp - drivingDetectedTime;
+          if (waitedTime >= AUTO_START_DELAY) {
+            currentAutoTrip = await startAutoTrip(point);
+            currentAutoTripChanged = true;
+            drivingDetectedTime = null; // Reset
+            drivingDetectedTimeChanged = true;
+            log('Auto trip started after 15 second delay', { tripId: currentAutoTrip.id });
+          }
+        }
       } else {
-        const remainingTime = Math.round((AUTO_STOP_TIMEOUT - stoppedDuration) / 1000);
-        log('Auto trip stopped but waiting...', { stoppedFor: Math.round(stoppedDuration / 1000) + 's', willEndIn: remainingTime + 's' });
+        if (currentAutoTrip.route && currentAutoTrip.route.length > 0) {
+          const lastPoint = currentAutoTrip.route[currentAutoTrip.route.length - 1];
+          const segmentDistance = haversineDistance(
+            lastPoint.latitude, lastPoint.longitude,
+            point.latitude, point.longitude,
+            trackingR
+          );
+          
+          if (segmentDistance > threshold) {
+            currentAutoTrip.distance += segmentDistance;
+            currentAutoTrip.route.push(point);
+            currentAutoTripChanged = true;
+            log('Auto trip distance updated', { distance: currentAutoTrip.distance });
+          }
+        } else {
+          currentAutoTrip.route = [point];
+          currentAutoTripChanged = true;
+        }
+      }
+    } else {
+      // Not driving
+      if (!currentAutoTrip) {
+        // Don't reset instantly! GPS speeds fluctuate. Only reset if we've stopped moving for 60 seconds
+        if (drivingDetectedTime && point.timestamp - lastMovementTime > 60000) {
+          drivingDetectedTime = null;
+          drivingDetectedTimeChanged = true;
+          log('Driving detection reset due to 60s of inactivity');
+        }
+      }
+      
+      if (currentAutoTrip && isStopped) {
+        const stoppedDuration = point.timestamp - lastMovementTime;
+        
+        if (stoppedDuration >= AUTO_STOP_TIMEOUT) {
+          log('Auto Trip ending - stopped for 5 minutes', { tripId: currentAutoTrip.id });
+          await endAutoTrip(currentAutoTrip, point);
+          currentAutoTrip = null;
+          currentAutoTripChanged = true;
+          drivingDetectedTime = null; // Reset for next trip
+          drivingDetectedTimeChanged = true;
+        }
       }
     }
+  }
+  
+  // Save final state back to storage ONCE at the end of the batch
+  try {
+    if (lastLocationPointChanged && lastLocationPoint) {
+      await AsyncStorage.setItem(STORAGE_KEYS.LAST_LOCATION, JSON.stringify(lastLocationPoint));
+    }
+    if (currentAutoTripChanged) {
+      if (currentAutoTrip === null) {
+        await saveCurrentTrip(null);
+      } else {
+        // Solve race condition: verify if the trip has been ended or changed during processing
+        const latestTrip = await getCurrentTrip();
+        if (latestTrip && latestTrip.id === currentAutoTrip.id) {
+          await saveCurrentTrip(currentAutoTrip);
+        } else {
+          log('Bypassing saving auto-trip because it was ended or changed in the meantime');
+        }
+      }
+    }
+    if (currentManualTripChanged) {
+      if (currentManualTrip) {
+        // Solve race condition: verify if the manual trip ID has been changed (e.g. synced with server UUID)
+        const latestManualTripJson = await AsyncStorage.getItem('current_active_trip');
+        const latestManualTrip = latestManualTripJson ? JSON.parse(latestManualTripJson) : null;
+        
+        if (latestManualTrip && latestManualTrip.is_active) {
+          // If the ID in storage was changed (e.g. to a server UUID), we preserve that server UUID!
+          if (latestManualTrip.id !== currentManualTrip.id) {
+            log('Manual trip ID in storage was updated (e.g. to server UUID). Syncing ID before saving.', { oldId: currentManualTrip.id, newId: latestManualTrip.id });
+            currentManualTrip.id = latestManualTrip.id;
+          }
+          await AsyncStorage.setItem('current_active_trip', JSON.stringify(currentManualTrip));
+        } else if (!latestManualTrip) {
+          // If it was cleared, do not save it back!
+          log('Bypassing saving manual trip because it was ended or cleared in storage');
+        }
+      } else {
+        await AsyncStorage.removeItem('current_active_trip');
+      }
+    }
+    if (drivingDetectedTimeChanged) {
+      if (drivingDetectedTime !== null) {
+        await AsyncStorage.setItem('auto_driving_detected_time', drivingDetectedTime.toString());
+      } else {
+        await AsyncStorage.removeItem('auto_driving_detected_time');
+      }
+    }
+    if (lastMovementTimeChanged) {
+      await AsyncStorage.setItem('auto_last_movement_time', lastMovementTime.toString());
+    }
+  } catch (e: any) {
+    log('Error saving batch state to AsyncStorage', e.message);
   }
 }
 
@@ -419,6 +580,17 @@ export async function startBackgroundTracking(): Promise<boolean> {
     return false;
   }
   
+  // Check if master tracking is enabled
+  try {
+    const masterEnabled = await AsyncStorage.getItem('master_tracking_enabled');
+    if (masterEnabled === 'false') {
+      log('Background tracking start blocked: master tracking is disabled');
+      return false;
+    }
+  } catch (err) {
+    log('Error reading master_tracking_enabled from AsyncStorage', err);
+  }
+  
   try {
     // Check if already running
     const isRunning = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
@@ -439,8 +611,6 @@ export async function startBackgroundTracking(): Promise<boolean> {
       accuracy: Location.Accuracy.High,
       timeInterval: 5000, // Update every 5 seconds
       distanceInterval: 10, // Or every 10 meters
-      deferredUpdatesInterval: 5000,
-      deferredUpdatesDistance: 10,
       showsBackgroundLocationIndicator: true,
       foregroundService: {
         notificationTitle: 'Mileage Tracker AI',
@@ -569,9 +739,11 @@ export async function resetAutoTrackingState(): Promise<void> {
   // Clear any current auto trip
   await saveCurrentTrip(null);
   
-  // Reset the delay timer
-  drivingDetectedTime = null;
-  lastMovementTime = Date.now();
+  // Reset the delay timer in storage
+  try {
+    await AsyncStorage.removeItem('auto_driving_detected_time');
+    await AsyncStorage.setItem('auto_last_movement_time', Date.now().toString());
+  } catch {}
   
   log('Auto-tracking state reset - will start fresh for next trip');
 }
@@ -579,13 +751,26 @@ export async function resetAutoTrackingState(): Promise<void> {
 // Clear current auto trip (if there's an incomplete one)
 export async function clearCurrentAutoTrip(): Promise<void> {
   await saveCurrentTrip(null);
-  drivingDetectedTime = null;
+  try {
+    await AsyncStorage.removeItem('auto_driving_detected_time');
+  } catch {}
   log('Current auto trip cleared');
 }
 
 // Initialize auto-tracking on app start
 export async function initializeAutoTracking(): Promise<void> {
   if (Platform.OS === 'web') return;
+  
+  // Check if master tracking is enabled
+  try {
+    const masterEnabled = await AsyncStorage.getItem('master_tracking_enabled');
+    if (masterEnabled === 'false') {
+      log('Auto-tracking start blocked on boot: master tracking is disabled');
+      return;
+    }
+  } catch (err) {
+    log('Error reading master_tracking_enabled from AsyncStorage on boot', err);
+  }
   
   const enabled = await isAutoTrackingEnabled();
   if (enabled) {

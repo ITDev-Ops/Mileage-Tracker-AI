@@ -9,6 +9,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
 import TripCard from '../../components/TripCard';
+import { getCurrencySymbol, getDistanceUnitAbbr } from '../../services/countryService';
 import { Colors, FontSize, Spacing, Radius } from '../../constants/theme';
 
 const FILTERS = [
@@ -58,7 +59,10 @@ export default function TripsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [classifying, setClassifying] = useState<string | null>(null);
   const [bulkClassifying, setBulkClassifying] = useState(false);
-  const { token } = useAuth();
+  const { user, token } = useAuth();
+  const country = user?.tax_country || 'US';
+  const currencySymbol = getCurrencySymbol(country);
+  const distanceUnit = getDistanceUnitAbbr(country);
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
@@ -143,7 +147,7 @@ export default function TripsScreen() {
               await loadTrips();
               Alert.alert(
                 '✅ Bulk Classification Complete',
-                `${result.classified} trips classified\n$${result.total_deductions?.toFixed(2) || '0.00'} in potential deductions!`
+                `${result.classified} trips classified\n${currencySymbol}${result.total_deductions?.toFixed(2) || '0.00'} in potential deductions!`
               );
             } catch (e: any) {
               Alert.alert('Error', e.message);
@@ -247,8 +251,8 @@ export default function TripsScreen() {
       {/* Summary Row */}
       {filtered.length > 0 && (
         <View style={styles.summaryRow}>
-          <Text style={styles.summaryText}>{filtered.length} trips · {totalMiles.toFixed(1)} mi</Text>
-          <Text style={styles.summaryDeduction}>${totalDeductions.toFixed(2)} deductions</Text>
+          <Text style={styles.summaryText}>{filtered.length} trips · {totalMiles.toFixed(1)} {distanceUnit}</Text>
+          <Text style={styles.summaryDeduction}>{currencySymbol}{totalDeductions.toFixed(2)} deductions</Text>
         </View>
       )}
 

@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
 import { Colors, FontSize, Spacing, Radius } from '../../constants/theme';
+import { getCurrencySymbol, getDistanceUnitAbbr } from '../../services/countryService';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 
@@ -22,7 +23,10 @@ export default function ReportsScreen() {
   const [selectedMonth, setSelectedMonth] = useState<number | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(false);
-  const { token } = useAuth();
+  const { user, token } = useAuth();
+  const country = user?.tax_country || 'US';
+  const currencySymbol = getCurrencySymbol(country);
+  const distanceUnit = getDistanceUnitAbbr(country);
   const insets = useSafeAreaInsets();
 
   const loadSummary = useCallback(async () => {
@@ -240,11 +244,11 @@ export default function ReportsScreen() {
             <View testID="total-miles-card" style={[styles.summaryCard, styles.summaryCardLarge]}>
               <Feather name="navigation" size={20} color={Colors.brand.primary} />
               <Text style={styles.summaryValue}>{summary?.total_miles?.toFixed(1) || '0.0'}</Text>
-              <Text style={styles.summaryLabel}>Total Miles</Text>
+              <Text style={styles.summaryLabel}>{country === 'CAN' || country === 'AUS' ? 'Total Kilometres' : 'Total Miles'}</Text>
             </View>
             <View testID="total-deductions-card" style={[styles.summaryCard, styles.summaryCardLarge, { borderColor: Colors.brand.primary + '40' }]}>
               <Feather name="dollar-sign" size={20} color={Colors.brand.primary} />
-              <Text style={[styles.summaryValue, { color: Colors.brand.primary }]}>${summary?.total_deductions?.toFixed(2) || '0.00'}</Text>
+              <Text style={[styles.summaryValue, { color: Colors.brand.primary }]}>{currencySymbol}{summary?.total_deductions?.toFixed(2) || '0.00'}</Text>
               <Text style={styles.summaryLabel}>Tax Deductions</Text>
             </View>
           </View>
@@ -256,18 +260,28 @@ export default function ReportsScreen() {
             </View>
             <View style={styles.summaryCard}>
               <Text style={[styles.summaryValue, { color: Colors.status.business }]}>{summary?.business_miles?.toFixed(1) || '0.0'}</Text>
-              <Text style={styles.summaryLabel}>Business Miles</Text>
+              <Text style={styles.summaryLabel}>{country === 'CAN' || country === 'AUS' ? 'Business Km' : 'Business Miles'}</Text>
             </View>
             <View style={styles.summaryCard}>
               <Text style={[styles.summaryValue, { color: Colors.status.personal }]}>{summary?.personal_miles?.toFixed(1) || '0.0'}</Text>
-              <Text style={styles.summaryLabel}>Personal Miles</Text>
+              <Text style={styles.summaryLabel}>{country === 'CAN' || country === 'AUS' ? 'Personal Km' : 'Personal Miles'}</Text>
             </View>
           </View>
 
-          {/* IRS Rate Note */}
+          {/* Dynamic Rate Note */}
           <View style={styles.irsNote}>
             <Feather name="info" size={13} color={Colors.brand.secondary} />
-            <Text style={styles.irsNoteText}>IRS {new Date().getFullYear()} rate: ${summary?.irs_rate || 0.70}/mile business · $0.22/mile medical · $0.14/mile charity</Text>
+            <Text style={styles.irsNoteText}>
+              {country === 'US'
+                ? `IRS ${new Date().getFullYear()} rate: $0.70/mi business · $0.22/mi medical · $0.14/mi charity`
+                : country === 'CAN'
+                ? `CRA ${new Date().getFullYear()} rate: $0.73/km business`
+                : country === 'GB'
+                ? `HMRC ${new Date().getFullYear()} rate: £0.55/mi business`
+                : country === 'AUS'
+                ? `ATO ${new Date().getFullYear()} rate: $0.88/km business`
+                : `Standard rate: ${currencySymbol}${summary?.irs_rate || 0.70}/${distanceUnit}`}
+            </Text>
           </View>
 
           {/* Monthly Breakdown Chart */}
@@ -284,8 +298,8 @@ export default function ReportsScreen() {
                       <View style={[styles.breakdownFill, { width: `${Math.max((val.miles / maxMiles) * 100, 2)}%` }]} />
                     </View>
                     <View style={styles.breakdownStats}>
-                      <Text style={styles.breakdownMiles}>{val.miles?.toFixed(1)} mi</Text>
-                      <Text style={styles.breakdownDeduction}>${val.deductions?.toFixed(2)}</Text>
+                      <Text style={styles.breakdownMiles}>{val.miles?.toFixed(1)} {distanceUnit}</Text>
+                      <Text style={styles.breakdownDeduction}>{currencySymbol}{val.deductions?.toFixed(2)}</Text>
                     </View>
                   </View>
                 );
@@ -308,7 +322,9 @@ export default function ReportsScreen() {
             </TouchableOpacity>
             <View style={styles.exportNote}>
               <Feather name="lock" size={13} color={Colors.text.tertiary} />
-              <Text style={styles.exportNoteText}>IRS-compliant mileage log · Accountant-ready format</Text>
+              <Text style={styles.exportNoteText}>
+                {country === 'CAN' ? 'CRA' : country === 'GB' ? 'HMRC' : country === 'AUS' ? 'ATO' : 'IRS'}-compliant mileage log · Accountant-ready format
+              </Text>
             </View>
           </View>
 

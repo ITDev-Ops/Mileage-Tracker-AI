@@ -7,6 +7,7 @@ import { useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
 import { Colors, FontSize, Spacing, Radius, Shadow, ClassificationColor } from '../../constants/theme';
@@ -14,6 +15,16 @@ import {
   isNetworkOnline,
   onNetworkChange,
   saveOfflineTrip,
+  startTrip as startOfflineTrip,
+  endTrip as endOfflineTrip,
+  getCurrentTrip as getOfflineActiveTrip,
+  clearCurrentTrip as clearOfflineActiveTrip,
+  calculateDeduction,
+  updateTripLocation,
+  getOfflineTrips,
+  syncOfflineTrips,
+  setForceOfflineTracking,
+  getForceOfflineTracking,
 } from '../../services/offlineService';
 import {
   isAutoTrackingEnabled,
@@ -23,7 +34,21 @@ import {
   resetAutoTrackingState,
   setCreateTripFunction,
   setDashboardRefreshFunction,
+  syncPendingTrips,
+  getPendingTrips,
+  processLocationUpdate,
 } from '../../services/backgroundTracking';
+
+// Haversine distance formula (with dynamic Earth radius) to prevent ReferenceError crashes when GPS falls back
+function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number, R: number = 3958.8): number {
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+import { getCurrencySymbol, getDistanceUnitAbbr, getDistanceUnitFull } from '../../services/countryService';
 import {
   getDailyMessage,
   getAllCategoryMessages,
@@ -73,12 +98,12 @@ function formatDuration(startTime: string): string {
   return `${mins}m`;
 }
 
-function formatLiveTripInfo(distance: number, startTime: string): string {
+function formatLiveTripInfo(distance: number, startTime: string, unit: string = 'miles'): string {
   const diff = Date.now() - new Date(startTime).getTime();
   const mins = Math.floor(diff / 60000);
   const hrs = Math.floor(mins / 60);
   const durationStr = hrs > 0 ? `${hrs}h ${mins % 60}m` : `${mins}m`;
-  return `${distance.toFixed(1)} miles · ${durationStr}`;
+  return `${distance.toFixed(1)} ${unit} · ${durationStr}`;
 }
 
 export default function DashboardScreen() {
@@ -92,6 +117,9 @@ export default function DashboardScreen() {
   const [liveDuration, setLiveDuration] = useState('0m');
   const [isOnline, setIsOnline] = useState(true);
   const [isAutoTrip, setIsAutoTrip] = useState(false);
+  const [isOfflineTrackingTrip, setIsOfflineTrackingTrip] = useState(false);
+  const [forceOfflineTracking, setLocalForceOfflineTracking] = useState(false);
+  const [masterTrackingEnabled, setMasterTrackingEnabled] = useState(true);
   const [autoTripAddress, setAutoTripAddress] = useState('Current Location');
   
   // Inspiration banner states
@@ -106,6 +134,8 @@ export default function DashboardScreen() {
   // Auto trip location tracking
   const [autoStartAddress, setAutoStartAddress] = useState('');
   const [autoEndAddress, setAutoEndAddress] = useState('');
+  const [manualStartAddress, setManualStartAddress] = useState('');
+  const [manualEndAddress, setManualEndAddress] = useState('');
   
   // Manual trip auto-end tracking
   const [lastManualMovementTime, setLastManualMovementTime] = useState<number | null>(null);
@@ -117,6 +147,10 @@ export default function DashboardScreen() {
   const timerRef = useRef<NodeJS.Timeout | number | null>(null);
   const lastLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const { user, token } = useAuth();
+  const country = user?.tax_country || 'US';
+  const currencySymbol = getCurrencySymbol(country);
+  const distanceUnit = getDistanceUnitAbbr(country);
+  const distanceUnitFull = getDistanceUnitFull(country);
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
@@ -210,15 +244,29 @@ export default function DashboardScreen() {
 
   // Monitor network status and auto-tracking
   useEffect(() => {
+    // Load initial offline tracking and master tracking config
+    const loadOfflineTrackingConfig = async () => {
+      try {
+        const storedOfflineTrip = await AsyncStorage.getItem('is_offline_tracking_trip');
+        setIsOfflineTrackingTrip(storedOfflineTrip === 'true');
+        setLocalForceOfflineTracking(getForceOfflineTracking());
+        
+        const storedMasterTracking = await AsyncStorage.getItem('master_tracking_enabled');
+        setMasterTrackingEnabled(storedMasterTracking !== 'false');
+      } catch (err) {
+        console.log('[Dashboard] Error loading config:', err);
+      }
+    };
+    loadOfflineTrackingConfig();
+
     setIsOnline(isNetworkOnline());
     const unsubscribe = onNetworkChange(async (online) => {
       setIsOnline(online);
+      setLocalForceOfflineTracking(getForceOfflineTracking());
       console.log('[Dashboard] Network status changed:', online ? 'online' : 'offline');
       if (online && token) {
         console.log('[Dashboard] Connectivity restored - sweeping offline queues...');
         try {
-          const { syncOfflineTrips } = await import('../../services/offlineService');
-          const { syncPendingTrips } = await import('../../services/backgroundTracking');
           await syncOfflineTrips(token, API.createTrip);
           await syncPendingTrips(token, API.createTrip);
           await loadData();
@@ -228,22 +276,97 @@ export default function DashboardScreen() {
       }
     });
     
-    // Check for auto-tracking status
-    checkAutoTrackingStatus();
+    // Check for active manual/auto tracking status
+    checkActiveTripStatus();
     
-    // Poll for auto-tracking trip updates every 5 seconds
-    const autoTrackInterval = setInterval(checkAutoTrackingStatus, 5000);
+    // Poll for active trip updates every 2 seconds for high responsiveness
+    const activeTrackInterval = setInterval(checkActiveTripStatus, 2000);
     
     return () => {
       unsubscribe();
-      clearInterval(autoTrackInterval);
+      clearInterval(activeTrackInterval);
     };
   }, [token]);
 
-  const checkAutoTrackingStatus = async () => {
+  const checkActiveTripStatus = async () => {
     try {
       const status = await getTrackingStatus();
-      if (status.currentTrip && status.isRunning) {
+      const manualTrip = await getOfflineActiveTrip();
+      
+      if (manualTrip && manualTrip.is_active) {
+        // Manual trip is active (either online or offline tracked)
+        setIsAutoTrip(false);
+        setLiveDistance(manualTrip.distance || 0);
+        
+        try {
+          const storedOfflineTrip = await AsyncStorage.getItem('is_offline_tracking_trip');
+          setIsOfflineTrackingTrip(storedOfflineTrip === 'true');
+        } catch {}
+        
+        if (manualTrip.start_time) {
+          const startTime = new Date(manualTrip.start_time).getTime();
+          const diff = Date.now() - startTime;
+          const totalMins = Math.floor(diff / 60000);
+          const hrs = Math.floor(totalMins / 60);
+          const mins = totalMins % 60;
+          setLiveDuration(hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`);
+        }
+        
+        // Ensure active_trip is populated in stats state so the UI displays the manual active trip card
+        if (!stats?.active_trip) {
+          setStats(prev => ({
+            ...(prev || { monthly_miles: 0, monthly_deductions: 0, monthly_trips: 0, yearly_miles: 0, yearly_deductions: 0, yearly_trips: 0, recent_trips: [], unclassified_count: 0, chart_data: [], irs_rate: 0.70 }),
+            active_trip: {
+              trip_id: manualTrip.id,
+              start_time: manualTrip.start_time,
+              start_lat: manualTrip.start_lat,
+              start_lng: manualTrip.start_lng,
+              start_address: stats?.active_trip?.start_address || 'Current Location',
+              distance: manualTrip.distance || 0
+            }
+          }));
+        }
+
+        // Get manual trip start and current location addresses (Issue #10 fix)
+        try {
+          if (!manualStartAddress && manualTrip.start_lat && manualTrip.start_lng) {
+            const startGeo = await Location.reverseGeocodeAsync({
+              latitude: manualTrip.start_lat,
+              longitude: manualTrip.start_lng
+            });
+            if (startGeo.length > 0) {
+              const g = startGeo[0];
+              const addr = [g.street, g.city, g.region].filter(Boolean).join(', ');
+              setManualStartAddress(addr || 'Current Location');
+              
+              // Also update stats active_trip start_address if it says 'Current Location'
+              if (stats?.active_trip && stats.active_trip.start_address === 'Current Location') {
+                setStats(prev => prev ? {
+                  ...prev,
+                  active_trip: {
+                    ...prev.active_trip!,
+                    start_address: addr || 'Current Location'
+                  }
+                } : null);
+              }
+            }
+          }
+          
+          if (manualTrip.current_lat && manualTrip.current_lng) {
+            const endGeo = await Location.reverseGeocodeAsync({
+              latitude: manualTrip.current_lat,
+              longitude: manualTrip.current_lng
+            });
+            if (endGeo.length > 0) {
+              const g = endGeo[0];
+              const addr = [g.street, g.city, g.region].filter(Boolean).join(', ');
+              setManualEndAddress(addr || 'Current Location');
+            }
+          }
+        } catch (geoError) {
+          console.log('[Dashboard] Manual geo error:', geoError);
+        }
+      } else if (status.currentTrip) {
         // There's an active auto-tracked trip
         setIsAutoTrip(true);
         setLiveDistance(status.currentTrip.distance || 0);
@@ -257,6 +380,29 @@ export default function DashboardScreen() {
           const mins = totalMins % 60;
           setLiveDuration(hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`);
         }
+
+        // Check for 5-minute inactivity auto-end in the foreground (Issue #11 fix)
+        const lastMoveStr = await AsyncStorage.getItem('auto_last_movement_time');
+        const lastMovementTime = lastMoveStr ? parseInt(lastMoveStr, 10) : new Date(status.currentTrip.start_time).getTime();
+        const stoppedDuration = Date.now() - lastMovementTime;
+        if (stoppedDuration >= 5 * 60 * 1000) {
+          console.log('[Dashboard] Auto-ending inactive auto-trip due to 5 minutes of no driving detected');
+          await stopBackgroundTracking();
+          setIsAutoTrip(false);
+          setLiveDistance(0);
+          setLiveDuration('0m');
+          setAutoTripAddress('Current Location');
+          setAutoStartAddress('');
+          setAutoEndAddress('');
+          await loadData();
+          
+          Alert.alert(
+            'Drive Automatically Saved',
+            'Your auto-tracked drive was automatically saved after 5 minutes of inactivity.',
+            [{ text: 'OK' }]
+          );
+          return;
+        }
         
         // Get start and current location addresses
         try {
@@ -264,14 +410,16 @@ export default function DashboardScreen() {
           if (route && route.length > 0) {
             // Get start address (first point)
             const startPoint = route[0];
-            const startGeo = await Location.reverseGeocodeAsync({ 
-              latitude: startPoint.latitude, 
-              longitude: startPoint.longitude 
-            });
-            if (startGeo.length > 0) {
-              const g = startGeo[0];
-              const startAddr = [g.street, g.city, g.region].filter(Boolean).join(', ');
-              setAutoStartAddress(startAddr || 'Current Location');
+            if (!autoStartAddress) {
+              const startGeo = await Location.reverseGeocodeAsync({ 
+                latitude: startPoint.latitude, 
+                longitude: startPoint.longitude 
+              });
+              if (startGeo.length > 0) {
+                const g = startGeo[0];
+                const startAddr = [g.street, g.city, g.region].filter(Boolean).join(', ');
+                setAutoStartAddress(startAddr || 'Current Location');
+              }
             }
             
             // Get current/end address (last point)
@@ -290,16 +438,22 @@ export default function DashboardScreen() {
         } catch (geoError) {
           console.log('[Dashboard] Geocode error:', geoError);
         }
-        
-        console.log('[Dashboard] Auto trip in progress:', status.currentTrip.distance?.toFixed(2), 'miles');
       } else {
+        // No active trip
         setIsAutoTrip(false);
         setAutoTripAddress('Current Location');
         setAutoStartAddress('');
         setAutoEndAddress('');
+        setManualStartAddress('');
+        setManualEndAddress('');
+        
+        // If stats still has an active trip, clear it
+        if (stats?.active_trip) {
+          setStats(prev => prev ? { ...prev, active_trip: null } : null);
+        }
       }
     } catch (e) {
-      console.log('[Dashboard] Error checking auto-tracking:', e);
+      console.log('[Dashboard] Error checking active tracking:', e);
     }
   };
 
@@ -371,20 +525,78 @@ export default function DashboardScreen() {
               } catch {}
             }
             
+            const isOfflineTrip = stats?.active_trip?.trip_id?.startsWith('offline_');
+            
+            if (!isOnline || isOfflineTrip) {
+              console.log('[Dashboard] Auto-ending offline manual trip...');
+              const offlineTrip = await endOfflineTrip('business');
+              
+              setLiveDistance(0);
+              setLiveDuration('0m');
+              setLastManualMovementTime(null);
+              setManualStartAddress('');
+              setManualEndAddress('');
+              setStats(prev => prev ? { ...prev, active_trip: null } : null);
+              await resetAutoTrackingState();
+              
+              if (isOfflineTrackingTrip) {
+                await setForceOfflineTracking(false);
+                await AsyncStorage.removeItem('is_offline_tracking_trip');
+                setIsOfflineTrackingTrip(false);
+                setLocalForceOfflineTracking(false);
+              }
+              
+              const autoEnabled = await isAutoTrackingEnabled();
+              if (!autoEnabled) {
+                console.log('[Dashboard] Stopping background tracking after auto-end offline manual trip because auto-tracking is disabled');
+                await stopBackgroundTracking();
+              }
+              
+              await loadData();
+              
+              Alert.alert(
+                'Trip Auto-Ended Offline',
+                `Your trip was automatically saved offline after 10 minutes of no driving detected.\n\nDistance: ${liveDistance.toFixed(1)} miles`,
+                [{ text: 'OK' }]
+              );
+              return;
+            }
+            
             if (stats?.active_trip) {
               await API.endTrip(token!, stats.active_trip.trip_id, { 
                 end_lat: endLat, 
                 end_lng: endLng, 
                 end_address: endAddress, 
-                distance: liveDistance 
+                distance: liveDistance,
+                classification: 'business'
               });
             }
+            
+            // Clear current active trip in storage so checkActiveTripStatus knows it's ended
+            await clearOfflineActiveTrip();
             
             // Reset state
             setLiveDistance(0);
             setLiveDuration('0m');
             setLastManualMovementTime(null);
+            setManualStartAddress('');
+            setManualEndAddress('');
+            setStats(prev => prev ? { ...prev, active_trip: null } : null);
             await resetAutoTrackingState();
+            
+            if (isOfflineTrackingTrip) {
+              await setForceOfflineTracking(false);
+              await AsyncStorage.removeItem('is_offline_tracking_trip');
+              setIsOfflineTrackingTrip(false);
+              setLocalForceOfflineTracking(false);
+            }
+            
+            const autoEnabled = await isAutoTrackingEnabled();
+            if (!autoEnabled) {
+              console.log('[Dashboard] Stopping background tracking after auto-end manual trip because auto-tracking is disabled');
+              await stopBackgroundTracking();
+            }
+            
             await loadData();
             
             Alert.alert(
@@ -394,6 +606,41 @@ export default function DashboardScreen() {
             );
           } catch (e: any) {
             console.log('[Dashboard] Error auto-ending trip:', e.message);
+            // Fallback: save offline if ending online failed
+            try {
+              console.log('[Dashboard] Fallback: saving auto-ended trip offline...');
+              const offlineTrip = await endOfflineTrip('business');
+              setLiveDistance(0);
+              setLiveDuration('0m');
+              setLastManualMovementTime(null);
+              setManualStartAddress('');
+              setManualEndAddress('');
+              setStats(prev => prev ? { ...prev, active_trip: null } : null);
+              await resetAutoTrackingState();
+              
+              if (isOfflineTrackingTrip) {
+                await setForceOfflineTracking(false);
+                await AsyncStorage.removeItem('is_offline_tracking_trip');
+                setIsOfflineTrackingTrip(false);
+                setLocalForceOfflineTracking(false);
+              }
+              
+              const autoEnabled = await isAutoTrackingEnabled();
+              if (!autoEnabled) {
+                console.log('[Dashboard] Stopping background tracking after auto-end manual trip fallback because auto-tracking is disabled');
+                await stopBackgroundTracking();
+              }
+              
+              await loadData();
+              
+              Alert.alert(
+                'Trip Auto-Ended Offline (Fallback)',
+                `Connection lost. Your trip was automatically saved offline.\n\nDistance: ${liveDistance.toFixed(1)} miles`,
+                [{ text: 'OK' }]
+              );
+            } catch (fallbackErr: any) {
+              console.log('[Dashboard] Fallback offline end failed:', fallbackErr.message);
+            }
           }
         }
       }, 30000); // Check every 30 seconds
@@ -413,22 +660,128 @@ export default function DashboardScreen() {
     };
   }, [stats?.active_trip?.trip_id, isAutoTrip, token, lastManualMovementTime]);
 
+  const loadOfflineStats = useCallback(async () => {
+    console.log('[Dashboard] Loading and aggregating cached stats');
+    try {
+      const cachedJson = await AsyncStorage.getItem('cached_dashboard_stats');
+      let cachedStats: Stats = cachedJson ? JSON.parse(cachedJson) : {
+        monthly_miles: 0,
+        monthly_deductions: 0,
+        monthly_trips: 0,
+        yearly_miles: 0,
+        yearly_deductions: 0,
+        yearly_trips: 0,
+        active_trip: null,
+        recent_trips: [],
+        unclassified_count: 0,
+        chart_data: [],
+        irs_rate: 0.70
+      };
+
+      // Load all offline trips
+      const offlineTrips = await getOfflineTrips();
+      const unsyncedTrips = offlineTrips.filter(t => !t.synced);
+      
+      // Load all pending auto-tracked trips
+      const pendingAutoTrips = await getPendingTrips();
+      const unsyncedAutoTrips = pendingAutoTrips.filter(t => !t.synced);
+      
+      let offlineMiles = 0;
+      let offlineDeductions = 0;
+      let offlineTripsCount = unsyncedTrips.length + unsyncedAutoTrips.length;
+      
+      const mappedRecentTrips = unsyncedTrips.map(trip => {
+        const deduction = trip.deduction_value || calculateDeduction(trip.distance, trip.classification);
+        offlineMiles += trip.distance;
+        offlineDeductions += deduction;
+        
+        return {
+          trip_id: trip.id,
+          start_time: trip.start_time,
+          end_time: trip.end_time,
+          start_lat: trip.start_lat,
+          start_lng: trip.start_lng,
+          end_lat: trip.end_lat,
+          end_lng: trip.end_lng,
+          start_address: trip.start_address || 'Offline tracked',
+          end_address: trip.end_address || 'Offline tracked',
+          distance: trip.distance,
+          classification: trip.classification || 'unclassified',
+          notes: trip.notes || 'Tracked offline',
+          deduction_value: deduction,
+          synced: false
+        };
+      });
+
+      const mappedAutoTrips = unsyncedAutoTrips.map(trip => {
+        const deduction = calculateDeduction(trip.distance, 'business'); // Auto-detected trips are business
+        offlineMiles += trip.distance;
+        offlineDeductions += deduction;
+        
+        return {
+          trip_id: trip.id,
+          start_time: trip.start_time,
+          end_time: trip.end_time,
+          start_lat: trip.start_lat,
+          start_lng: trip.start_lng,
+          end_lat: trip.end_lat,
+          end_lng: trip.end_lng,
+          start_address: trip.start_address || 'Auto-detected start',
+          end_address: trip.end_address || 'Auto-detected end',
+          distance: trip.distance,
+          classification: 'business',
+          notes: 'Auto-tracked trip',
+          deduction_value: deduction,
+          synced: false
+        };
+      });
+
+      const aggregatedStats: Stats = {
+        ...cachedStats,
+        monthly_miles: cachedStats.monthly_miles + offlineMiles,
+        monthly_deductions: cachedStats.monthly_deductions + offlineDeductions,
+        monthly_trips: cachedStats.monthly_trips + offlineTripsCount,
+        yearly_miles: cachedStats.yearly_miles + offlineMiles,
+        yearly_deductions: cachedStats.yearly_deductions + offlineDeductions,
+        yearly_trips: cachedStats.yearly_trips + offlineTripsCount,
+        recent_trips: [...mappedRecentTrips, ...mappedAutoTrips, ...cachedStats.recent_trips].slice(0, 10),
+        unclassified_count: cachedStats.unclassified_count + unsyncedTrips.filter(t => t.classification === 'unclassified').length
+      };
+
+      setStats(aggregatedStats);
+    } catch (err) {
+      console.warn('[Dashboard] Error aggregating offline stats:', err);
+    }
+  }, []);
+
   const loadData = useCallback(async () => {
     if (!token) return;
     
-    // If offline, load from cache or show offline data
+    // If offline, load from cache and dynamically aggregate offline untransmitted trips
     if (!isOnline) {
-      console.log('[Dashboard] Offline mode - using cached data');
+      await loadOfflineStats();
       return;
+    }
+    
+    // If online, perform a quick sweep to sync any pending or offline trips first
+    try {
+      console.log('[Dashboard] Online - sweeping pending/offline trips on load...');
+      await syncOfflineTrips(token, API.createTrip);
+      await syncPendingTrips(token, API.createTrip);
+    } catch (syncErr) {
+      console.log('[Dashboard] Error sweeping queues on load:', syncErr);
     }
     
     try {
       const data = await API.getDashboardStats(token);
       setStats(data);
+      // Cache the successfully retrieved clean server stats
+      await AsyncStorage.setItem('cached_dashboard_stats', JSON.stringify(data));
     } catch (e: any) {
-      console.error('Dashboard load error:', e);
+      console.warn('Dashboard load server connection error - falling back to offline mode:', e.message || e);
+      await loadOfflineStats();
     }
-  }, [token, isOnline]);
+  }, [token, isOnline, loadOfflineStats]);
 
   const loadInsights = useCallback(async () => {
     if (!token) return;
@@ -450,8 +803,10 @@ export default function DashboardScreen() {
 
   // Live trip tracking - updates distance and duration in real-time
   useEffect(() => {
-    if (!stats?.active_trip) {
-      // Clean up when no active trip
+    const hasActiveManualTrip = stats?.active_trip && !isAutoTrip;
+    
+    if (!hasActiveManualTrip) {
+      // Clean up when no active manual trip
       if (locationWatchRef.current) {
         locationWatchRef.current.remove();
         locationWatchRef.current = null;
@@ -462,16 +817,10 @@ export default function DashboardScreen() {
       }
       setLiveDistance(0);
       setLiveDuration('0m');
-      lastLocationRef.current = null;
       return;
     }
 
-    // Initialize with current trip data
-    console.log('[Dashboard] Active trip detected:', stats.active_trip?.trip_id, 'start_time:', stats.active_trip?.start_time);
-    setLiveDistance(stats.active_trip.distance || 0);
-    lastLocationRef.current = stats.active_trip.start_lat && stats.active_trip.start_lng
-      ? { lat: stats.active_trip.start_lat, lng: stats.active_trip.start_lng }
-      : null;
+    console.log('[Dashboard] Starting manual foreground location tracking to feed background engine...');
 
     // Start duration timer - updates every second
     const updateDuration = () => {
@@ -481,9 +830,7 @@ export default function DashboardScreen() {
         const totalMins = Math.floor(diff / 60000);
         const hrs = Math.floor(totalMins / 60);
         const mins = totalMins % 60;
-        const newDuration = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
-        console.log('[Dashboard] Duration update - start:', stats.active_trip.start_time, 'diff:', diff, 'duration:', newDuration);
-        setLiveDuration(newDuration);
+        setLiveDuration(hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`);
       }
     };
     updateDuration();
@@ -493,54 +840,24 @@ export default function DashboardScreen() {
     const startLocationTracking = async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          console.log('[Dashboard] Location permission not granted');
-          return;
-        }
+        if (status !== 'granted') return;
 
-        console.log('[Dashboard] Starting location tracking...');
         locationWatchRef.current = await Location.watchPositionAsync(
           { accuracy: Location.Accuracy.High, distanceInterval: 10, timeInterval: 5000 },
-          (location) => {
+          async (location) => {
             const newLat = location.coords.latitude;
             const newLng = location.coords.longitude;
             const speed = location.coords.speed || 0;
             const speedMph = speed * 2.237;
             
-            console.log('[Dashboard] Location update:', { lat: newLat.toFixed(6), lng: newLng.toFixed(6), speed: speedMph.toFixed(1) + ' mph' });
-            
-            // CRITICAL: Update movement time when driving is detected (5+ mph)
-            // This resets the 10-minute auto-end timer for manual trips
             if (speed >= DRIVING_SPEED_THRESHOLD) {
-              console.log('[Dashboard] Driving detected at', speedMph.toFixed(1), 'mph - resetting movement timer');
               setLastManualMovementTime(Date.now());
             }
             
-            if (lastLocationRef.current) {
-              // Calculate distance using Haversine formula
-              const R = 3958.8; // Earth's radius in miles
-              const dLat = (newLat - lastLocationRef.current.lat) * Math.PI / 180;
-              const dLng = (newLng - lastLocationRef.current.lng) * Math.PI / 180;
-              const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                Math.cos(lastLocationRef.current.lat * Math.PI / 180) * Math.cos(newLat * Math.PI / 180) *
-                Math.sin(dLng/2) * Math.sin(dLng/2);
-              const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-              const dist = R * c;
-              
-              console.log('[Dashboard] Calculated segment distance:', dist.toFixed(4), 'miles');
-              
-              if (dist > 0.005) { // Only add if moved > ~26 feet
-                setLiveDistance(prev => {
-                  const newTotal = prev + dist;
-                  console.log('[Dashboard] Updated liveDistance:', newTotal.toFixed(2), 'miles');
-                  return newTotal;
-                });
-              }
-            }
-            lastLocationRef.current = { lat: newLat, lng: newLng };
+            // Atomically update the persistent active trip coordinates
+            await updateTripLocation(newLat, newLng, speed);
           }
         );
-        console.log('[Dashboard] Location tracking started successfully');
       } catch (e) {
         console.log('[Dashboard] Location tracking error:', e);
       }
@@ -560,7 +877,49 @@ export default function DashboardScreen() {
         timerRef.current = null;
       }
     };
-  }, [stats?.active_trip?.trip_id]);
+  }, [stats?.active_trip?.trip_id, isAutoTrip]);
+
+  // Foreground auto-tracking loop to ensure real-time UI updates
+  useEffect(() => {
+    let watchSubscription: Location.LocationSubscription | null = null;
+    
+    const startWatcher = async () => {
+      try {
+        const { status } = await Location.getForegroundPermissionsAsync();
+        if (status === 'granted') {
+          const autoEnabled = await isAutoTrackingEnabled();
+          if (autoEnabled) {
+            console.log('[Dashboard] Starting auto-tracking foreground watcher for real-time updates...');
+            watchSubscription = await Location.watchPositionAsync(
+              {
+                accuracy: Location.Accuracy.High,
+                timeInterval: 5000,
+                distanceInterval: 10,
+              },
+              async (location) => {
+                // Feed location updates to background tracking processor in the foreground
+                await processLocationUpdate([location]);
+              }
+            );
+          }
+        }
+      } catch (err) {
+        console.log('[Dashboard] Error starting auto-tracking foreground watcher:', err);
+      }
+    };
+    
+    const hasActiveManualTrip = stats?.active_trip && !isAutoTrip;
+    if (!hasActiveManualTrip && token && Platform.OS !== 'web') {
+      startWatcher();
+    }
+    
+    return () => {
+      if (watchSubscription) {
+        watchSubscription.remove();
+        console.log('[Dashboard] Auto-tracking foreground watcher stopped');
+      }
+    };
+  }, [token, stats?.active_trip?.trip_id, isAutoTrip]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -573,7 +932,6 @@ export default function DashboardScreen() {
     setStartingTrip(true);
     try {
       // Reset auto-tracking state so it doesn't interfere with manual trip
-      // and starts fresh after manual trip ends
       await resetAutoTrackingState();
       
       // Reset the manual movement time and trip start time when starting a new trip
@@ -600,10 +958,6 @@ export default function DashboardScreen() {
       }
 
       // ALWAYS start a background manual trip instance whether online or offline
-      // This ensures distance perfectly tracks even when the screen locks!
-      const { startTrip: startOfflineTrip } = await import('../../services/offlineService');
-      const { startBackgroundTracking } = await import('../../services/backgroundTracking');
-      
       const offlineTrip = await startOfflineTrip(startLat || 0, startLng || 0);
       await startBackgroundTracking();
 
@@ -614,7 +968,6 @@ export default function DashboardScreen() {
         // Set local state to track the trip
         setLiveDistance(0);
         setLiveDuration('0m');
-        
         
         // Inject a mock active trip into stats so the UI can render the trip banner immediately while offline
         setStats(prev => ({
@@ -640,6 +993,31 @@ export default function DashboardScreen() {
       // Online mode - use API
       try {
         const trip = await API.createTrip(token!, { start_lat: startLat, start_lng: startLng, start_address: startAddress });
+        
+        // Sync server trip ID to the local current active trip!
+        if (trip && trip.trip_id) {
+          const currentTripStr = await AsyncStorage.getItem('current_active_trip');
+          if (currentTripStr) {
+            const currentTripObj = JSON.parse(currentTripStr);
+            currentTripObj.id = trip.trip_id;
+            await AsyncStorage.setItem('current_active_trip', JSON.stringify(currentTripObj));
+            console.log('[Dashboard] Successfully synced server trip ID in storage:', trip.trip_id);
+          }
+          
+          // Inject correct server trip ID immediately to prevent race conditions during polling
+          setStats(prev => ({
+            ...(prev || { monthly_miles: 0, monthly_deductions: 0, monthly_trips: 0, yearly_miles: 0, yearly_deductions: 0, yearly_trips: 0, recent_trips: [], unclassified_count: 0, chart_data: [], irs_rate: 0.70 }),
+            active_trip: {
+              trip_id: trip.trip_id,
+              start_time: new Date().toISOString(),
+              start_lat: startLat || 0,
+              start_lng: startLng || 0,
+              start_address: startAddress,
+              distance: 0
+            }
+          }));
+        }
+
         await loadData();
         Alert.alert('Trip Started! 🚗', `Tracking your drive from ${startAddress}`, [{ text: 'OK' }]);
       } catch (apiError: any) {
@@ -653,8 +1031,8 @@ export default function DashboardScreen() {
           setStats(prev => ({
             ...(prev || { monthly_miles: 0, monthly_deductions: 0, monthly_trips: 0, yearly_miles: 0, yearly_deductions: 0, yearly_trips: 0, recent_trips: [], unclassified_count: 0, chart_data: [], irs_rate: 0.70 }),
             active_trip: {
-              trip_id: `offline_${Date.now()}`,
-              start_time: new Date().toISOString(),
+              trip_id: offlineTrip.id,
+              start_time: offlineTrip.start_time,
               start_lat: startLat,
               start_lng: startLng,
               start_address: startAddress,
@@ -680,6 +1058,17 @@ export default function DashboardScreen() {
     const isManualTrip = stats?.active_trip;
     
     if (!isManualTrip && !isAutoTrip) return;
+    
+    const cleanupOfflineTrackingTrip = async () => {
+      try {
+        await setForceOfflineTracking(false);
+        await AsyncStorage.removeItem('is_offline_tracking_trip');
+        setIsOfflineTrackingTrip(false);
+        setLocalForceOfflineTracking(false);
+      } catch (err) {
+        console.log('[Dashboard] Error cleaning up offline tracking trip:', err);
+      }
+    };
     
     setEndingTrip(true);
     try {
@@ -718,6 +1107,9 @@ export default function DashboardScreen() {
       if (isAutoTrip && !isManualTrip) {
         console.log('[Dashboard] Ending AUTO trip manually');
         
+        // Save cooldown timestamp in AsyncStorage directly from dashboard too to ensure immediate effect
+        await AsyncStorage.setItem('last_auto_trip_ended_time', Date.now().toString());
+        
         // Stop background tracking to end the current auto trip
         await stopBackgroundTracking();
         
@@ -743,8 +1135,14 @@ export default function DashboardScreen() {
         console.log('[Dashboard] Restarting background tracking for continuous monitoring...');
         setTimeout(async () => {
           try {
-            await startBackgroundTracking();
-            console.log('[Dashboard] Background tracking restarted successfully');
+            const masterEnabled = await AsyncStorage.getItem('master_tracking_enabled');
+            const autoEnabled = await isAutoTrackingEnabled();
+            if (masterEnabled !== 'false' && autoEnabled) {
+              await startBackgroundTracking();
+              console.log('[Dashboard] Background tracking restarted successfully');
+            } else {
+              console.log('[Dashboard] Background tracking restart bypassed: master tracking or auto tracking is disabled');
+            }
           } catch (e) {
             console.log('[Dashboard] Failed to restart background tracking:', e);
           }
@@ -756,44 +1154,48 @@ export default function DashboardScreen() {
       
       // Handle Manual Trip End
       // Check if online - if not, save locally for later sync
-      if (!isOnline) {
+      if (!isOnline || !token) {
         console.log('[Dashboard] Offline - saving trip locally for later sync');
         
-        // Save the trip offline
-        const offlineTrip = await saveOfflineTrip({
-          start_time: stats?.active_trip?.start_time || new Date().toISOString(),
-          end_time: new Date().toISOString(),
-          start_lat: stats?.active_trip?.start_lat || 0,
-          start_lng: stats?.active_trip?.start_lng || 0,
-          end_lat: endLat || 0,
-          end_lng: endLng || 0,
-          start_address: stats?.active_trip?.start_address || 'Unknown start',
-          end_address: endAddress,
-          distance: distance,
-          classification: 'business',
-          notes: 'Tracked offline - pending sync',
-        });
-        
-        console.log('[Dashboard] Saved offline trip:', offlineTrip.id);
-        
-        Alert.alert(
-          'Trip Saved Offline 📱',
-          `Your ${distance.toFixed(1)} mile trip has been saved. It will sync automatically when you reconnect.`,
-          [{ text: 'OK' }]
-        );
+        // Save and end the trip offline
+        const offlineTrip = await endOfflineTrip('business');
         
         // Reset live tracking state
         setLiveDistance(0);
         setLiveDuration('0m');
+        setManualStartAddress('');
+        setManualEndAddress('');
         
+        if (offlineTrip) {
+          console.log('[Dashboard] Saved offline trip:', offlineTrip.id);
+          Alert.alert(
+            'Trip Saved Offline 📱',
+            `Your ${offlineTrip.distance.toFixed(1)} mile trip has been saved. It will sync automatically when you reconnect.`,
+            [{ text: 'OK' }]
+          );
+        }
+        
+        // Reset active trip from stats explicitly so the banner goes away
+        setStats(prev => prev ? { ...prev, active_trip: null } : null);
+        
+        if (isOfflineTrackingTrip) {
+          await cleanupOfflineTrackingTrip();
+        }
+        
+        const autoEnabled = await isAutoTrackingEnabled();
+        if (!autoEnabled) {
+          console.log('[Dashboard] Stopping background tracking after offline manual trip end because auto-tracking is disabled');
+          await stopBackgroundTracking();
+        }
+        
+        await loadData();
         return;
       }
       
       // ==============================================================
       // UNIFIED BACKGROUND ENGINE: PULL TRUE LOCKED-SCREEN DISTANCE
       // ==============================================================
-      const { getCurrentTrip, clearCurrentTrip } = await import('../../services/offlineService');
-      const backgroundManualTrip = await getCurrentTrip();
+      const backgroundManualTrip = await getOfflineActiveTrip();
       
       let backgroundDistance = 0;
       if (backgroundManualTrip && backgroundManualTrip.distance > 0) {
@@ -807,20 +1209,32 @@ export default function DashboardScreen() {
       }
       
       // Clean up the background tracking storage state without duplicating the trip into the offline sync queue!
-      await clearCurrentTrip();
+      await clearOfflineActiveTrip();
       // ==============================================================
 
       // Online - send to server
       if (stats?.active_trip) {
-        await API.endTrip(token!, stats.active_trip.trip_id, { end_lat: endLat, end_lng: endLng, end_address: endAddress, distance });
+        await API.endTrip(token!, stats.active_trip.trip_id, { end_lat: endLat, end_lng: endLng, end_address: endAddress, distance, classification: 'business' });
       }
       
       // Reset live tracking state
       setLiveDistance(0);
       setLiveDuration('0m');
+      setManualStartAddress('');
+      setManualEndAddress('');
       
       // Reset auto-tracking state so next auto trip starts fresh from 0 miles
       await resetAutoTrackingState();
+      
+      if (isOfflineTrackingTrip) {
+        await cleanupOfflineTrackingTrip();
+      }
+      
+      const autoEnabled = await isAutoTrackingEnabled();
+      if (!autoEnabled) {
+        console.log('[Dashboard] Stopping background tracking after manual trip end because auto-tracking is disabled');
+        await stopBackgroundTracking();
+      }
       
       await loadData();
       if (stats?.active_trip) {
@@ -834,29 +1248,32 @@ export default function DashboardScreen() {
       // If the API call failed (maybe went offline mid-request), save locally
       if (!isOnline || e.message?.includes('network') || e.message?.includes('Network') || e.message?.includes('Timeout') || e.message?.includes('timeout')) {
         try {
-          const offlineTrip = await saveOfflineTrip({
-            start_time: stats?.active_trip?.start_time || new Date().toISOString(),
-            end_time: new Date().toISOString(),
-            start_lat: stats?.active_trip?.start_lat || 0,
-            start_lng: stats?.active_trip?.start_lng || 0,
-            end_lat: 0,
-            end_lng: 0,
-            start_address: stats?.active_trip?.start_address || 'Unknown',
-            end_address: 'Unknown',
-            distance: liveDistance,
-            classification: 'business',
-            notes: 'Saved offline due to connection error',
-          });
+          const offlineTrip = await endOfflineTrip('business');
           
-          Alert.alert(
-            'Trip Saved Offline',
-            'Connection lost. Your trip has been saved and will sync when connected.',
-            [{ text: 'OK' }]
-          );
-          
+          if (offlineTrip) {
+            Alert.alert(
+              'Trip Saved Offline',
+              'Connection lost. Your trip has been saved and will sync when connected.',
+              [{ text: 'OK' }]
+            );
+          }
           
           // Clear active trip from stats explicitly so the banner goes away
           setStats(prev => prev ? { ...prev, active_trip: null } : null);
+          setManualStartAddress('');
+          setManualEndAddress('');
+          
+          if (isOfflineTrackingTrip) {
+            await cleanupOfflineTrackingTrip();
+          }
+          
+          const autoEnabled = await isAutoTrackingEnabled();
+          if (!autoEnabled) {
+            console.log('[Dashboard] Stopping background tracking after fallback manual trip end because auto-tracking is disabled');
+            await stopBackgroundTracking();
+          }
+          
+          await loadData();
           return;
         } catch (saveError) {
           console.log('[Dashboard] Failed to save offline:', saveError);
@@ -957,14 +1374,31 @@ export default function DashboardScreen() {
         {(stats?.active_trip || isAutoTrip) ? (
           <View testID="active-trip-banner" style={[
             styles.activeTripCard,
-            isAutoTrip && !stats?.active_trip && styles.autoTripCard
+            isAutoTrip && !stats?.active_trip && styles.autoTripCard,
+            isOfflineTrackingTrip && styles.offlineTrackingTripCard
           ]}>
             <View style={styles.activeTripPulse}>
-              <View style={[styles.pulseOuter, isAutoTrip && !stats?.active_trip && styles.autoPulseOuter]}>
-                <View style={[styles.pulseInner, isAutoTrip && !stats?.active_trip && styles.autoPulseInner]} />
+              <View style={[
+                styles.pulseOuter,
+                isAutoTrip && !stats?.active_trip && styles.autoPulseOuter,
+                isOfflineTrackingTrip && styles.offlinePulseOuter
+              ]}>
+                <View style={[
+                  styles.pulseInner,
+                  isAutoTrip && !stats?.active_trip && styles.autoPulseInner,
+                  isOfflineTrackingTrip && styles.offlinePulseInner
+                ]} />
               </View>
-              <Text style={[styles.activeTripLabel, isAutoTrip && !stats?.active_trip && styles.autoTripLabel]}>
-                {isAutoTrip && !stats?.active_trip ? 'AUTO TRACKER IN PROGRESS' : 'TRIP IN PROGRESS'}
+              <Text style={[
+                styles.activeTripLabel,
+                isAutoTrip && !stats?.active_trip && styles.autoTripLabel,
+                isOfflineTrackingTrip && styles.offlineTripLabel
+              ]}>
+                {isAutoTrip && !stats?.active_trip 
+                  ? 'AUTO TRACKER IN PROGRESS' 
+                  : isOfflineTrackingTrip 
+                    ? 'OFFLINE TRACKING IN PROGRESS' 
+                    : 'TRIP IN PROGRESS'}
               </Text>
             </View>
             
@@ -975,7 +1409,7 @@ export default function DashboardScreen() {
                   {isAutoTrip && !stats?.active_trip ? 'Auto-detect start' : 'Start'}
                 </Text>
                 <Text style={styles.tripLocationValue} numberOfLines={1}>
-                  [{stats?.active_trip?.start_address || autoStartAddress || autoTripAddress || 'Current Location'}]
+                  [{stats?.active_trip?.start_address && stats?.active_trip?.start_address !== 'Current Location' ? stats.active_trip.start_address : (manualStartAddress || autoStartAddress || autoTripAddress || 'Current Location')}]
                 </Text>
               </View>
               <View style={styles.tripLocationRow}>
@@ -983,32 +1417,70 @@ export default function DashboardScreen() {
                   {isAutoTrip && !stats?.active_trip ? 'Auto-detect end' : 'Current'}
                 </Text>
                 <Text style={styles.tripLocationValue} numberOfLines={1}>
-                  [{autoEndAddress || autoTripAddress || 'Tracking...'}]
+                  [{manualEndAddress || autoEndAddress || autoTripAddress || 'Tracking...'}]
                 </Text>
               </View>
             </View>
             
             <View style={styles.activeTripStats}>
               <View style={styles.activeTripStat}>
-                <Feather name="navigation" size={14} color={isAutoTrip && !stats?.active_trip ? '#60A5FA' : Colors.brand.primary} />
-                <Text style={[styles.activeTripStatText, isAutoTrip && !stats?.active_trip && styles.autoTripStatText]}>
-                  {liveDistance.toFixed(1)} miles
+                <Feather 
+                  name="navigation" 
+                  size={14} 
+                  color={
+                    isOfflineTrackingTrip 
+                      ? '#F59E0B' 
+                      : (isAutoTrip && !stats?.active_trip ? '#60A5FA' : Colors.brand.primary)
+                  } 
+                />
+                <Text style={[
+                  styles.activeTripStatText, 
+                  isAutoTrip && !stats?.active_trip && styles.autoTripStatText,
+                  isOfflineTrackingTrip && styles.offlineTripStatText
+                ]}>
+                  {liveDistance.toFixed(1)} {distanceUnitFull}
                 </Text>
               </View>
               <View style={styles.activeTripStatDivider} />
               <View style={styles.activeTripStat}>
-                <Feather name="clock" size={14} color={Colors.brand.secondary} />
-                <Text style={styles.activeTripStatText}>{liveDuration}</Text>
+                <Feather name="clock" size={14} color={isOfflineTrackingTrip ? '#F59E0B' : Colors.brand.secondary} />
+                <Text style={[
+                  styles.activeTripStatText,
+                  isOfflineTrackingTrip && styles.offlineTripStatText
+                ]}>{liveDuration}</Text>
               </View>
             </View>
-            <TouchableOpacity testID="end-trip-btn" style={styles.endTripBtn} onPress={handleEndTrip} disabled={endingTrip}>
+            <TouchableOpacity 
+              testID="end-trip-btn" 
+              style={[
+                styles.endTripBtn,
+                isOfflineTrackingTrip && styles.offlineEndTripBtn
+              ]} 
+              onPress={handleEndTrip} 
+              disabled={endingTrip}
+            >
               {endingTrip ? <ActivityIndicator color="#FFF" size="small" /> : (
                 <><Feather name="square" size={16} color="#FFF" /><Text style={styles.endTripBtnText}>End Trip</Text></>
               )}
             </TouchableOpacity>
           </View>
         ) : (
-          <TouchableOpacity testID="start-trip-btn" style={styles.startTripCard} onPress={handleStartTrip} disabled={startingTrip} activeOpacity={0.85}>
+          <TouchableOpacity 
+            testID="start-trip-btn" 
+            style={[
+              styles.startTripCard,
+              !masterTrackingEnabled && { opacity: 0.5 }
+            ]} 
+            onPress={() => {
+              if (!masterTrackingEnabled) {
+                Alert.alert('Tracking Stopped', 'All tracking processes are currently stopped. Please press "Start tracking" below to enable tracking.');
+                return;
+              }
+              handleStartTrip();
+            }} 
+            disabled={startingTrip} 
+            activeOpacity={0.85}
+          >
             {startingTrip ? (
               <ActivityIndicator color={Colors.bg.primary} size="small" />
             ) : (
@@ -1028,10 +1500,10 @@ export default function DashboardScreen() {
         <View testID="stats-row" style={styles.statsRow}>
           <View style={[styles.statCard, { borderColor: Colors.brand.primary + '40' }]}>
             <Text style={styles.statValue}>{stats?.monthly_miles?.toFixed(1) || '0.0'}</Text>
-            <Text style={styles.statLabel}>Miles This Month</Text>
+            <Text style={styles.statLabel}>{country === 'CAN' || country === 'AUS' ? 'Kilometres This Month' : 'Miles This Month'}</Text>
           </View>
           <View style={[styles.statCard, { borderColor: Colors.brand.secondary + '40' }]}>
-            <Text style={[styles.statValue, { color: Colors.brand.primary }]}>${stats?.monthly_deductions?.toFixed(2) || '0.00'}</Text>
+            <Text style={[styles.statValue, { color: Colors.brand.primary }]}>{currencySymbol}{stats?.monthly_deductions?.toFixed(2) || '0.00'}</Text>
             <Text style={styles.statLabel}>Deductions</Text>
           </View>
           <View style={[styles.statCard, { borderColor: Colors.brand.warning + '40' }]}>
@@ -1045,10 +1517,10 @@ export default function DashboardScreen() {
           <View style={styles.yearlySummary}>
             <View>
               <Text style={styles.yearlyTitle}>{new Date().getFullYear()} YTD Summary</Text>
-              <Text style={styles.yearlyMiles}>{stats?.yearly_miles?.toFixed(1) || '0.0'} miles</Text>
+              <Text style={styles.yearlyMiles}>{stats?.yearly_miles?.toFixed(1) || '0.0'} {distanceUnitFull}</Text>
             </View>
             <View style={styles.yearlyRight}>
-              <Text style={styles.yearlyDeduction}>${stats?.yearly_deductions?.toFixed(2) || '0.00'}</Text>
+              <Text style={styles.yearlyDeduction}>{currencySymbol}{stats?.yearly_deductions?.toFixed(2) || '0.00'}</Text>
               <Text style={styles.yearlyDeductionLabel}>Tax Deduction</Text>
             </View>
           </View>
@@ -1098,10 +1570,10 @@ export default function DashboardScreen() {
                 <View style={[styles.recentDot, { backgroundColor: ClassificationColor[trip.classification] || Colors.text.tertiary }]} />
                 <View style={styles.recentInfo}>
                   <Text style={styles.recentRoute} numberOfLines={1}>{trip.start_address || 'Start'} → {trip.end_address || 'End'}</Text>
-                  <Text style={styles.recentMeta}>{trip.distance?.toFixed(1)} mi · {formatDate(trip.start_time)}</Text>
+                  <Text style={styles.recentMeta}>{trip.distance?.toFixed(1)} {distanceUnit} · {formatDate(trip.start_time)}</Text>
                 </View>
                 <Text style={[styles.recentDeduction, { color: trip.deduction_value > 0 ? Colors.brand.primary : Colors.text.tertiary }]}>
-                  {trip.deduction_value > 0 ? `$${trip.deduction_value?.toFixed(2)}` : trip.classification}
+                  {trip.deduction_value > 0 ? `${currencySymbol}${trip.deduction_value?.toFixed(2)}` : trip.classification}
                 </Text>
               </TouchableOpacity>
             ))
@@ -1130,18 +1602,155 @@ export default function DashboardScreen() {
             <Text style={styles.quickActionText}>Upgrade</Text>
           </TouchableOpacity>
         </View>
+
+        {/* Offline Tracking Action */}
+        <TouchableOpacity
+          testID="offline-tracking-btn"
+          style={[
+            styles.offlineActionBtn,
+            (stats?.active_trip || isAutoTrip || !masterTrackingEnabled) ? { opacity: 0.5 } : null
+          ]}
+          disabled={!!(stats?.active_trip || isAutoTrip)}
+          onPress={async () => {
+            if (!masterTrackingEnabled) {
+              Alert.alert('Tracking Stopped', 'All tracking processes are currently stopped. Please press "Start tracking" below to enable tracking.');
+              return;
+            }
+            if (stats?.active_trip || isAutoTrip) {
+              Alert.alert('Trip in Progress', 'Please end the current active trip before starting offline tracking.');
+              return;
+            }
+            try {
+              // Enable forced offline tracking
+              await setForceOfflineTracking(true);
+              await AsyncStorage.setItem('is_offline_tracking_trip', 'true');
+              setIsOfflineTrackingTrip(true);
+              setLocalForceOfflineTracking(true);
+              
+              // Trigger starting drive
+              await handleStartTrip();
+            } catch (err: any) {
+              console.log('[Dashboard] Error starting offline tracking:', err);
+              Alert.alert('Error', err.message || 'Could not start offline tracking');
+            }
+          }}
+        >
+          <Feather name="wifi-off" size={20} color="#F59E0B" />
+          <View style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+            <Text style={styles.offlineActionText}>Offline tracking</Text>
+            <Text style={styles.offlineActionSub}>Bypass cellular data during drive (allows WiFi)</Text>
+          </View>
+          <Feather name="chevron-right" size={16} color="#F59E0B" />
+        </TouchableOpacity>
+
+        {/* Master Tracking Toggle */}
+        <TouchableOpacity
+          testID="master-tracking-toggle-btn"
+          style={[
+            styles.masterTrackingBtn,
+            { borderColor: masterTrackingEnabled ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)' }
+          ]}
+          onPress={() => {
+            if (masterTrackingEnabled) {
+              // Confirm stop all tracking
+              Alert.alert(
+                'Stop Tracking? 🛑',
+                'This will end any active drives and fully disable all background auto-tracking and manual tracking until you re-enable it.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Stop Tracking',
+                    style: 'destructive',
+                    onPress: async () => {
+                      try {
+                        // 1. If a manual or auto trip is active, end it
+                        if (stats?.active_trip || isAutoTrip) {
+                          console.log('[Dashboard] Master stop - terminating active drive before disabling tracking...');
+                          await handleEndTrip();
+                        }
+                        
+                        // 2. Disable tracking in AsyncStorage
+                        await AsyncStorage.setItem('master_tracking_enabled', 'false');
+                        
+                        // 3. Stop background tracking engine
+                        await stopBackgroundTracking();
+                        
+                        // 4. Update state
+                        setMasterTrackingEnabled(false);
+                        
+                        Alert.alert('Tracking Stopped ✅', 'All mileage tracking processes have been disabled.');
+                      } catch (err: any) {
+                        console.log('[Dashboard] Error stopping master tracking:', err);
+                      }
+                    }
+                  }
+                ]
+              );
+            } else {
+              // Confirm start tracking
+              Alert.alert(
+                'Start Tracking? 🟢',
+                'This will restore and activate all mileage tracking features (including background auto-tracking if it was enabled).',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Start Tracking',
+                    onPress: async () => {
+                      try {
+                        // 1. Enable tracking in AsyncStorage
+                        await AsyncStorage.setItem('master_tracking_enabled', 'true');
+                        
+                        // 2. Set state
+                        setMasterTrackingEnabled(true);
+                        
+                        // 3. Restart background tracking if auto-tracking was enabled
+                        const autoEnabled = await isAutoTrackingEnabled();
+                        if (autoEnabled) {
+                          console.log('[Dashboard] Master start - restoring background auto-tracking...');
+                          await startBackgroundTracking();
+                        }
+                        
+                        Alert.alert('Tracking Restored ✅', 'Mileage tracking processes are now active.');
+                      } catch (err: any) {
+                        console.log('[Dashboard] Error starting master tracking:', err);
+                      }
+                    }
+                  }
+                ]
+              );
+            }
+          }}
+        >
+          <Feather 
+            name={masterTrackingEnabled ? "pause-circle" : "play-circle"} 
+            size={20} 
+            color={masterTrackingEnabled ? "#EF4444" : "#10B981"} 
+          />
+          <View style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+            <Text style={[
+              styles.masterTrackingText,
+              { color: masterTrackingEnabled ? "#EF4444" : "#10B981" }
+            ]}>
+              {masterTrackingEnabled ? "Stop tracking" : "Start tracking"}
+            </Text>
+            <Text style={styles.masterTrackingSub}>
+              {masterTrackingEnabled 
+                ? "Turn off all auto & manual mileage tracking" 
+                : "Enable all auto & manual mileage tracking"}
+            </Text>
+          </View>
+          <Feather 
+            name="chevron-right" 
+            size={16} 
+            color={masterTrackingEnabled ? "#EF4444" : "#10B981"} 
+          />
+        </TouchableOpacity>
       </ScrollView>
     </View>
   );
 }
 
-function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 3959;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
+// haversineDistance defined at the top of the file
 
 function getGreeting(): string {
   const h = new Date().getHours();
@@ -1299,5 +1908,68 @@ const styles = StyleSheet.create({
     color: Colors.text.secondary,
     fontSize: FontSize.sm,
     fontStyle: 'italic',
+  },
+  // Offline-trip orange styles
+  offlineTrackingTripCard: {
+    borderColor: 'rgba(245, 158, 11, 0.4)',
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+  },
+  offlineTripLabel: {
+    color: '#F59E0B',
+  },
+  offlinePulseOuter: {
+    backgroundColor: 'rgba(245, 158, 11, 0.3)',
+  },
+  offlinePulseInner: {
+    backgroundColor: '#F59E0B',
+  },
+  offlineTripStatText: {
+    color: '#F59E0B',
+  },
+  offlineEndTripBtn: {
+    backgroundColor: '#F59E0B',
+  },
+  offlineActionBtn: {
+    marginHorizontal: Spacing.screen,
+    backgroundColor: Colors.bg.secondary,
+    borderRadius: Radius.lg,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 20,
+    ...Shadow.sm,
+  },
+  offlineActionText: {
+    color: '#F59E0B',
+    fontSize: FontSize.sm,
+    fontWeight: '700',
+  },
+  offlineActionSub: {
+    color: Colors.text.tertiary,
+    fontSize: 10,
+  },
+  // Master tracking toggle styles
+  masterTrackingBtn: {
+    marginHorizontal: Spacing.screen,
+    backgroundColor: Colors.bg.secondary,
+    borderRadius: Radius.lg,
+    padding: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 20,
+    ...Shadow.sm,
+  },
+  masterTrackingText: {
+    fontSize: FontSize.sm,
+    fontWeight: '700',
+  },
+  masterTrackingSub: {
+    color: Colors.text.tertiary,
+    fontSize: 10,
   },
 });

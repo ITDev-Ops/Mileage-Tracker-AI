@@ -29,6 +29,7 @@ export interface OfflineTrip {
   created_offline: boolean;
   sync_attempts: number;
   last_sync_attempt?: string;
+  deduction_value?: number;
 }
 
 export interface QueuedApiCall {
@@ -53,23 +54,46 @@ const log = (message: string, data?: any) => {
 
 // Network status tracking
 let isOnline = true;
+let forceOfflineTracking = false;
+let currentNetInfoState: NetInfoState | null = null;
 let networkListeners: Array<(online: boolean) => void> = [];
+
+// Helper to calculate network status factoring in forced cellular-offline tracking
+function calculateIsOnline(state: NetInfoState | null): boolean {
+  if (!state || state.isConnected === null || state.isConnected === false) return false;
+  if (forceOfflineTracking) {
+    const type = state.type;
+    return type === 'wifi' || type === 'ethernet';
+  }
+  return state.isConnected;
+}
 
 // Initialize network monitoring
 export async function initializeOfflineService(): Promise<void> {
   log('Initializing offline service...');
   
+  // Load forced offline tracking setting
+  try {
+    const storedForce = await AsyncStorage.getItem('force_offline_tracking');
+    forceOfflineTracking = storedForce === 'true';
+    log('Loaded force offline tracking status:', forceOfflineTracking);
+  } catch (err) {
+    log('Error reading force_offline_tracking from storage:', err);
+  }
+  
   // Get initial network state
   const state = await NetInfo.fetch();
-  isOnline = state.isConnected ?? true;
-  log('Initial network state:', isOnline ? 'online' : 'offline');
+  currentNetInfoState = state;
+  isOnline = calculateIsOnline(state);
+  log(`Initial network state (adjusted): ${isOnline ? 'online' : 'offline'}, Force Offline: ${forceOfflineTracking}`);
   
   // Subscribe to network changes
   NetInfo.addEventListener((state: NetInfoState) => {
+    currentNetInfoState = state;
     const wasOnline = isOnline;
-    isOnline = state.isConnected ?? true;
+    isOnline = calculateIsOnline(state);
     
-    log('Network state changed:', isOnline ? 'online' : 'offline');
+    log(`Network state changed (adjusted): ${isOnline ? 'online' : 'offline'}, Force Offline: ${forceOfflineTracking}`);
     
     // Notify listeners
     networkListeners.forEach(listener => listener(isOnline));
@@ -89,6 +113,29 @@ export function isNetworkOnline(): boolean {
   return isOnline;
 }
 
+// Set force offline tracking status
+export async function setForceOfflineTracking(value: boolean): Promise<void> {
+  forceOfflineTracking = value;
+  try {
+    await AsyncStorage.setItem('force_offline_tracking', value ? 'true' : 'false');
+  } catch (err) {
+    log('Error saving force_offline_tracking to storage:', err);
+  }
+  
+  // Recalculate isOnline
+  const wasOnline = isOnline;
+  isOnline = calculateIsOnline(currentNetInfoState);
+  log(`Force offline tracking toggled to: ${value}, New online status: ${isOnline}`);
+  
+  // Notify listeners of the change
+  networkListeners.forEach(listener => listener(isOnline));
+}
+
+// Get force offline tracking status
+export function getForceOfflineTracking(): boolean {
+  return forceOfflineTracking;
+}
+
 // Subscribe to network changes
 export function onNetworkChange(callback: (online: boolean) => void): () => void {
   networkListeners.push(callback);
@@ -99,21 +146,57 @@ export function onNetworkChange(callback: (online: boolean) => void): () => void
 
 // ==================== OFFLINE TRIPS ====================
 
+// Calculate mileage deduction value based on distance, classification, and tax country rates
+export function calculateDeduction(distance: number, classification: string, country: string = 'US'): number {
+  const c = (country || 'US').toUpperCase();
+  if (c === 'US') {
+    if (classification === 'business') {
+      return Math.round(distance * 0.70 * 100) / 100;
+    } else if (classification === 'medical') {
+      return Math.round(distance * 0.22 * 100) / 100;
+    } else if (classification === 'charity') {
+      return Math.round(distance * 0.14 * 100) / 100;
+    }
+  } else if (c === 'CAN') {
+    if (classification === 'business') {
+      return Math.round(distance * 0.73 * 100) / 100;
+    }
+  } else if (c === 'GB') {
+    if (classification === 'business') {
+      return Math.round(distance * 0.55 * 100) / 100;
+    }
+  } else if (c === 'AUS') {
+    if (classification === 'business') {
+      return Math.round(distance * 0.88 * 100) / 100;
+    }
+  }
+  return 0.0;
+}
+
 // Save a trip offline
-export async function saveOfflineTrip(trip: Omit<OfflineTrip, 'id' | 'synced' | 'created_offline' | 'sync_attempts'>): Promise<OfflineTrip> {
+export async function saveOfflineTrip(trip: Omit<OfflineTrip, 'id' | 'synced' | 'created_offline' | 'sync_attempts' | 'deduction_value'>): Promise<OfflineTrip> {
+  let country = 'US';
+  try {
+    const storedCountry = await AsyncStorage.getItem('tax_country');
+    if (storedCountry) country = storedCountry;
+  } catch (err) {
+    log('Error reading tax_country from storage:', err);
+  }
+
   const offlineTrip: OfflineTrip = {
     ...trip,
     id: `offline_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     synced: false,
     created_offline: true,
     sync_attempts: 0,
+    deduction_value: calculateDeduction(trip.distance, trip.classification, country),
   };
   
   const trips = await getOfflineTrips();
   trips.push(offlineTrip);
   await AsyncStorage.setItem(STORAGE_KEYS.OFFLINE_TRIPS, JSON.stringify(trips));
   
-  log('Saved offline trip:', { id: offlineTrip.id, distance: offlineTrip.distance });
+  log('Saved offline trip:', { id: offlineTrip.id, distance: offlineTrip.distance, deduction: offlineTrip.deduction_value });
   return offlineTrip;
 }
 
@@ -398,15 +481,25 @@ export async function updateTripLocation(lat: number, lng: number, speed?: numbe
     const trip: ActiveTrip = JSON.parse(tripData);
     if (!trip.is_active) return null;
     
+    let country = 'US';
+    try {
+      const storedCountry = await AsyncStorage.getItem('tax_country');
+      if (storedCountry) country = storedCountry;
+    } catch {}
+    const isKm = country === 'CAN' || country === 'AUS';
+    const R = isKm ? 6371.0 : 3958.8;
+    const threshold = isKm ? 0.02 : 0.012; // ~20 meters in km vs miles
+
     // Calculate distance from last point
     const lastPoint = trip.route[trip.route.length - 1];
     const segmentDistance = haversineDistance(
       lastPoint.latitude, lastPoint.longitude,
-      lat, lng
+      lat, lng,
+      R
     );
     
-    // Only add point if moved meaningfully (> 20 meters)
-    if (segmentDistance > 0.012) { // ~20 meters in miles
+    // Only add point if moved meaningfully
+    if (segmentDistance > threshold) {
       trip.route.push({ latitude: lat, longitude: lng, timestamp: Date.now(), speed });
       trip.distance += segmentDistance;
       trip.current_lat = lat;
@@ -475,9 +568,8 @@ export async function getCurrentTrip(): Promise<ActiveTrip | null> {
   }
 }
 
-// Haversine distance calculation (in miles)
-function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 3958.8; // Earth's radius in miles
+// Haversine distance calculation (with dynamic Earth radius)
+function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number, R: number = 3958.8): number {
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
   const a = Math.sin(dLat / 2) ** 2 +

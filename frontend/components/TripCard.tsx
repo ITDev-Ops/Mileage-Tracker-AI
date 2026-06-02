@@ -2,6 +2,8 @@ import React, { memo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Colors, FontSize, Radius, Spacing, ClassificationColor } from '../constants/theme';
+import { useAuth } from '../context/AuthContext';
+import { getCurrencySymbol, getDistanceUnitAbbr } from '../services/countryService';
 
 interface Trip {
   trip_id: string;
@@ -38,6 +40,11 @@ function formatTime(dateStr: string): string {
 }
 
 const TripCard = memo(({ trip, onPress, onClassify }: Props) => {
+  const { user } = useAuth();
+  const country = user?.tax_country || 'US';
+  const currencySymbol = getCurrencySymbol(country);
+  const distanceUnit = getDistanceUnitAbbr(country);
+
   const clsColor = ClassificationColor[trip.classification] || Colors.text.tertiary;
   const isUnclassified = trip.classification === 'unclassified';
 
@@ -62,9 +69,9 @@ const TripCard = memo(({ trip, onPress, onClassify }: Props) => {
           <Text style={styles.addressSub} numberOfLines={1}>{trip.end_address || 'End'}</Text>
         </View>
         <View style={styles.stats}>
-          <Text style={styles.distance}>{trip.distance.toFixed(1)} mi</Text>
+          <Text style={styles.distance}>{trip.distance.toFixed(1)} {distanceUnit}</Text>
           {trip.deduction_value > 0 && (
-            <Text style={styles.deduction}>${trip.deduction_value.toFixed(2)}</Text>
+            <Text style={styles.deduction}>{currencySymbol}{trip.deduction_value.toFixed(2)}</Text>
           )}
         </View>
       </View>
