@@ -124,6 +124,9 @@ class APIService {
   async getExpenses(token: string) {
     return this.request('/expenses', {}, token);
   }
+  async getExpense(token: string, expenseId: string) {
+    return this.request(`/expenses/${expenseId}`, {}, token);
+  }
   async createExpense(token: string, data: Record<string, unknown>) {
     return this.request('/expenses', { method: 'POST', body: JSON.stringify(data) }, token);
   }

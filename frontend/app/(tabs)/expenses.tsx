@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
-  RefreshControl, Alert, ActivityIndicator, Modal, TextInput, ScrollView
+  RefreshControl, Alert, ActivityIndicator, Modal, TextInput, ScrollView, Image
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -18,11 +18,11 @@ const CATEGORIES = [
   { key: 'other', label: 'Other', icon: 'tag', color: Colors.text.tertiary },
 ];
 
-const ExpenseItem = memo(({ item, onDelete }: { item: any, onDelete: (id: string) => void }) => {
+const ExpenseItem = memo(({ item, onPress, onDelete }: { item: any, onPress: (item: any) => void, onDelete: (id: string) => void }) => {
   const catColor = (cat: string) => CATEGORIES.find(c => c.key === cat)?.color || Colors.text.tertiary;
   const catIcon = (cat: string) => CATEGORIES.find(c => c.key === cat)?.icon || 'tag';
   return (
-    <View testID={`expense-${item.expense_id}`} style={styles.expenseRow}>
+    <TouchableOpacity testID={`expense-${item.expense_id}`} onPress={() => onPress(item)} activeOpacity={0.7} style={styles.expenseRow}>
       <View style={[styles.expenseIcon, { backgroundColor: catColor(item.category) + '20' }]}>
         <Feather name={catIcon(item.category) as any} size={18} color={catColor(item.category)} />
       </View>
@@ -36,7 +36,7 @@ const ExpenseItem = memo(({ item, onDelete }: { item: any, onDelete: (id: string
           <Feather name="trash-2" size={16} color={Colors.text.tertiary} />
         </TouchableOpacity>
       </View>
-    </View>
+    </TouchableOpacity>
   );
 });
 
@@ -47,10 +47,19 @@ export default function ExpensesScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [scanning, setScanning] = useState(false);
-  const [form, setForm] = useState({ merchant: '', amount: '', category: 'other', notes: '' });
+  const [form, setForm] = useState({ merchant: '', amount: '', category: 'other', notes: '', receipt_date: '', receipt_number: '', receipt_phone: '' });
   const [scannedImage, setScannedImage] = useState<string | null>(null);
+  const [zoomImage, setZoomImage] = useState(false);
+  const [zoomScale, setZoomScale] = useState(1.0);
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const { token } = useAuth();
   const insets = useSafeAreaInsets();
+
+  useEffect(() => {
+    if (zoomImage) {
+      setZoomScale(1.0);
+    }
+  }, [zoomImage]);
 
   const loadExpenses = useCallback(async () => {
     if (!token) return;
@@ -73,31 +82,50 @@ export default function ExpensesScreen() {
 
   const handleScanReceipt = async () => {
     try {
+      let base64: string | null = null;
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      
       if (status !== 'granted') {
         const galleryResult = await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.7 });
         if (galleryResult.canceled || !galleryResult.assets[0]?.base64) return;
-        const base64 = galleryResult.assets[0].base64!;
-        setScanning(true);
-        const result = await API.scanReceipt(token!, base64);
-        if (result.success && result.extracted) {
-          setForm({ merchant: result.extracted.merchant || '', amount: result.extracted.amount?.toString() || '', category: result.extracted.category || 'other', notes: '' });
-          setScannedImage(base64);
-          setShowAdd(true);
-        }
-        return;
+        base64 = galleryResult.assets[0].base64;
+      } else {
+        const cameraResult = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.7 });
+        if (cameraResult.canceled || !cameraResult.assets[0]?.base64) return;
+        base64 = cameraResult.assets[0].base64;
       }
-      const result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.7 });
-      if (result.canceled || !result.assets[0]?.base64) return;
-      const base64 = result.assets[0].base64!;
+
+      if (!base64) return;
+
       setScanning(true);
       const scanResult = await API.scanReceipt(token!, base64);
-      if (scanResult.success && scanResult.extracted) {
-        setForm({ merchant: scanResult.extracted.merchant || '', amount: scanResult.extracted.amount?.toString() || '', category: scanResult.extracted.category || 'other', notes: '' });
+      const hasExtractedData = scanResult.extracted && 
+        (scanResult.extracted.merchant !== 'Unknown' || (scanResult.extracted.amount && parseFloat(scanResult.extracted.amount) > 0));
+
+      if (scanResult.success && hasExtractedData && !scanResult.fallback) {
+        setForm({
+          merchant: scanResult.extracted.merchant || '',
+          amount: scanResult.extracted.amount?.toString() || '',
+          category: scanResult.extracted.category || 'other',
+          notes: '',
+          receipt_date: scanResult.extracted.date || '',
+          receipt_number: scanResult.extracted.receipt_number || '',
+          receipt_phone: scanResult.extracted.receipt_phone || ''
+        });
         setScannedImage(base64);
         setShowAdd(true);
       } else {
         Alert.alert('Scan Result', 'Could not extract receipt data. Please enter manually.');
+        setForm({
+          merchant: '',
+          amount: '',
+          category: 'other',
+          notes: '',
+          receipt_date: new Date().toISOString().split('T')[0],
+          receipt_number: '',
+          receipt_phone: ''
+        });
+        setScannedImage(base64);
         setShowAdd(true);
       }
     } catch (e: any) {
@@ -107,21 +135,61 @@ export default function ExpensesScreen() {
     }
   };
 
+  const handleEditExpense = useCallback(async (expense: any) => {
+    setEditingExpenseId(expense.expense_id);
+    setForm({
+      merchant: expense.merchant,
+      amount: expense.amount.toString(),
+      category: expense.category,
+      notes: expense.notes || '',
+      receipt_date: expense.receipt_date || '',
+      receipt_number: expense.receipt_number || '',
+      receipt_phone: expense.receipt_phone || ''
+    });
+    setScannedImage(null);
+    setShowAdd(true);
+
+    try {
+      const fullExpense = await API.getExpense(token!, expense.expense_id);
+      if (fullExpense.receipt_base64) {
+        setScannedImage(fullExpense.receipt_base64);
+      }
+    } catch (e: any) {
+      console.warn("Could not load receipt image:", e.message);
+    }
+  }, [token]);
+
   const handleAddExpense = async () => {
     if (!form.amount || isNaN(parseFloat(form.amount))) {
       Alert.alert('Error', 'Please enter a valid amount');
       return;
     }
     try {
-      await API.createExpense(token!, {
-        merchant: form.merchant || 'Unknown',
-        amount: parseFloat(form.amount),
-        category: form.category,
-        notes: form.notes,
-        receipt_base64: scannedImage,
-      });
+      if (editingExpenseId) {
+        await API.updateExpense(token!, editingExpenseId, {
+          merchant: form.merchant || 'Unknown',
+          amount: parseFloat(form.amount),
+          category: form.category,
+          notes: form.notes,
+          receipt_date: form.receipt_date,
+          receipt_number: form.receipt_number,
+          receipt_phone: form.receipt_phone
+        });
+      } else {
+        await API.createExpense(token!, {
+          merchant: form.merchant || 'Unknown',
+          amount: parseFloat(form.amount),
+          category: form.category,
+          notes: form.notes,
+          receipt_base64: scannedImage,
+          receipt_date: form.receipt_date,
+          receipt_number: form.receipt_number,
+          receipt_phone: form.receipt_phone
+        });
+      }
       setShowAdd(false);
-      setForm({ merchant: '', amount: '', category: 'other', notes: '' });
+      setEditingExpenseId(null);
+      setForm({ merchant: '', amount: '', category: 'other', notes: '', receipt_date: '', receipt_number: '', receipt_phone: '' });
       setScannedImage(null);
       await loadExpenses();
     } catch (e: any) {
@@ -155,8 +223,8 @@ export default function ExpensesScreen() {
   }, [expenses]);
 
   const renderExpenseItem = useCallback(({ item }: { item: any }) => (
-    <ExpenseItem item={item} onDelete={handleDelete} />
-  ), [handleDelete]);
+    <ExpenseItem item={item} onPress={handleEditExpense} onDelete={handleDelete} />
+  ), [handleEditExpense, handleDelete]);
 
   const ListEmpty = useCallback(() => (
     <View style={styles.empty}>
@@ -219,12 +287,25 @@ export default function ExpensesScreen() {
       <Modal visible={showAdd} animationType="slide" presentationStyle="pageSheet">
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>{scannedImage ? 'Receipt Scanned ✓' : 'Add Expense'}</Text>
-            <TouchableOpacity testID="close-modal" onPress={() => { setShowAdd(false); setScannedImage(null); setForm({ merchant: '', amount: '', category: 'other', notes: '' }); }}>
+            <Text style={styles.modalTitle}>{editingExpenseId ? 'Edit Expense' : (scannedImage ? 'Receipt Scanned ✓' : 'Add Expense')}</Text>
+            <TouchableOpacity testID="close-modal" onPress={() => { setShowAdd(false); setEditingExpenseId(null); setScannedImage(null); setForm({ merchant: '', amount: '', category: 'other', notes: '', receipt_date: '', receipt_number: '', receipt_phone: '' }); }}>
               <Feather name="x" size={24} color={Colors.text.primary} />
             </TouchableOpacity>
           </View>
           <ScrollView style={styles.modalScroll} keyboardShouldPersistTaps="handled">
+            {scannedImage && (
+              <View style={styles.thumbnailContainer}>
+                <Text style={styles.formLabel}>Scanned Receipt Snapshot</Text>
+                <TouchableOpacity onPress={() => setZoomImage(true)} style={styles.thumbnailWrapper}>
+                  <Image source={{ uri: `data:image/jpeg;base64,${scannedImage}` }} style={styles.thumbnail} />
+                  <View style={styles.thumbnailOverlay}>
+                    <Feather name="maximize-2" size={12} color="#FFF" />
+                    <Text style={styles.thumbnailOverlayText}>Tap to enlarge</Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+            )}
+
             <View style={styles.formGroup}>
               <Text style={styles.formLabel}>Merchant</Text>
               <TextInput testID="expense-merchant-input" style={styles.formInput} value={form.merchant} onChangeText={v => setForm(p => ({ ...p, merchant: v }))} placeholder="Store or merchant name" placeholderTextColor={Colors.text.tertiary} />
@@ -233,6 +314,20 @@ export default function ExpensesScreen() {
               <Text style={styles.formLabel}>Amount ($)</Text>
               <TextInput testID="expense-amount-input" style={styles.formInput} value={form.amount} onChangeText={v => setForm(p => ({ ...p, amount: v }))} placeholder="0.00" placeholderTextColor={Colors.text.tertiary} keyboardType="decimal-pad" />
             </View>
+            
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>Receipt Date</Text>
+              <TextInput testID="expense-date-input" style={styles.formInput} value={form.receipt_date} onChangeText={v => setForm(p => ({ ...p, receipt_date: v }))} placeholder="YYYY-MM-DD" placeholderTextColor={Colors.text.tertiary} />
+            </View>
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>Receipt / Invoice / Order / Transaction / Car / Ticket #</Text>
+              <TextInput testID="expense-number-input" style={styles.formInput} value={form.receipt_number} onChangeText={v => setForm(p => ({ ...p, receipt_number: v }))} placeholder="Invoice or Receipt #" placeholderTextColor={Colors.text.tertiary} />
+            </View>
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>Merchant Phone Number</Text>
+              <TextInput testID="expense-phone-input" style={styles.formInput} value={form.receipt_phone} onChangeText={v => setForm(p => ({ ...p, receipt_phone: v }))} placeholder="Merchant Phone #" placeholderTextColor={Colors.text.tertiary} keyboardType="phone-pad" />
+            </View>
+
             <View style={styles.formGroup}>
               <Text style={styles.formLabel}>Category</Text>
               <View style={styles.catOptions}>
@@ -254,11 +349,53 @@ export default function ExpensesScreen() {
               <TextInput testID="expense-notes-input" style={[styles.formInput, { height: 80, textAlignVertical: 'top', paddingTop: 12 }]} value={form.notes} onChangeText={v => setForm(p => ({ ...p, notes: v }))} placeholder="Additional notes..." placeholderTextColor={Colors.text.tertiary} multiline />
             </View>
             <TouchableOpacity testID="save-expense-btn" style={styles.saveBtn} onPress={handleAddExpense}>
-              <Text style={styles.saveBtnText}>Save Expense</Text>
+              <Text style={styles.saveBtnText}>{editingExpenseId ? 'Save Changes' : 'Save Expense'}</Text>
             </TouchableOpacity>
           </ScrollView>
         </View>
       </Modal>
+
+      {/* Image Zoom Modal */}
+      <Modal visible={zoomImage} transparent={true} animationType="fade" onRequestClose={() => setZoomImage(false)}>
+        <View style={styles.zoomContainer}>
+          {/* Clickable background */}
+          <TouchableOpacity 
+            activeOpacity={1} 
+            style={StyleSheet.absoluteFillObject} 
+            onPress={() => setZoomImage(false)} 
+          />
+          
+          <TouchableOpacity style={styles.zoomCloseBtn} onPress={() => setZoomImage(false)}>
+            <Feather name="x" size={24} color="#FFF" />
+          </TouchableOpacity>
+          
+          {scannedImage && (
+            <Image 
+              source={{ uri: `data:image/jpeg;base64,${scannedImage}` }} 
+              style={[styles.zoomImage, { transform: [{ scale: zoomScale }] }]} 
+              resizeMode="contain" 
+            />
+          )}
+
+          {/* Zoom controls floating bar */}
+          <View style={styles.zoomControls}>
+            <TouchableOpacity 
+              style={styles.zoomControlBtn} 
+              onPress={() => setZoomScale(s => Math.max(0.5, s - 0.25))}
+            >
+              <Feather name="minus" size={20} color="#FFF" />
+            </TouchableOpacity>
+            <Text style={styles.zoomScaleText}>{Math.round(zoomScale * 100)}%</Text>
+            <TouchableOpacity 
+              style={styles.zoomControlBtn} 
+              onPress={() => setZoomScale(s => Math.min(4.0, s + 0.25))}
+            >
+              <Feather name="plus" size={20} color="#FFF" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 }
@@ -299,4 +436,40 @@ const styles = StyleSheet.create({
   catOptionText: { color: Colors.text.secondary, fontSize: FontSize.xs, fontWeight: '600' },
   saveBtn: { backgroundColor: Colors.brand.primary, borderRadius: Radius.md, paddingVertical: 14, alignItems: 'center', marginTop: 8, marginBottom: 40 },
   saveBtnText: { color: Colors.text.inverse, fontSize: FontSize.base, fontWeight: '700' },
+  thumbnailContainer: { marginBottom: 18 },
+  thumbnailWrapper: { width: 120, height: 160, borderRadius: Radius.md, overflow: 'hidden', backgroundColor: Colors.bg.secondary, borderWidth: 1, borderColor: Colors.border, position: 'relative' },
+  thumbnail: { width: '100%', height: '100%' },
+  thumbnailOverlay: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.6)', paddingVertical: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 },
+  thumbnailOverlayText: { color: '#FFF', fontSize: 10, fontWeight: '600' },
+  zoomContainer: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
+  zoomCloseBtn: { position: 'absolute', top: 50, right: 20, zIndex: 10, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' },
+  zoomImage: { width: '90%', height: '80%' },
+  zoomControls: {
+    position: 'absolute',
+    bottom: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    borderRadius: Radius.full,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)'
+  },
+  zoomControlBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  zoomScaleText: {
+    color: '#FFF',
+    fontSize: FontSize.sm,
+    fontWeight: '700',
+    minWidth: 50,
+    textAlign: 'center'
+  },
 });

@@ -42,6 +42,7 @@ IRS_BUSINESS_RATE = 0.70  # $/mile for business (updated for 2026)
 IRS_MEDICAL_RATE = 0.22   # $/mile for medical
 IRS_CHARITY_RATE = 0.14   # $/mile for charity
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_emergent')
 import openai
 openai_client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -164,6 +165,9 @@ class ExpenseCreate(BaseModel):
     notes: Optional[str] = None
     trip_id: Optional[str] = None
     receipt_base64: Optional[str] = None
+    receipt_date: Optional[str] = None
+    receipt_number: Optional[str] = None
+    receipt_phone: Optional[str] = None
 
 class ChatMessage(BaseModel):
     message: str
@@ -471,7 +475,7 @@ async def delete_trip(trip_id: str, current_user: dict = Depends(get_current_use
 @api_router.get("/expenses")
 async def get_expenses(current_user: dict = Depends(get_current_user)):
     # Optimized with field projection and limit
-    expense_projection = {"_id": 0, "expense_id": 1, "trip_id": 1, "merchant": 1, "amount": 1, "category": 1, "notes": 1, "created_at": 1, "ai_extracted": 1}
+    expense_projection = {"_id": 0, "expense_id": 1, "trip_id": 1, "merchant": 1, "amount": 1, "category": 1, "notes": 1, "created_at": 1, "ai_extracted": 1, "receipt_date": 1, "receipt_number": 1, "receipt_phone": 1}
     expenses = await db.expenses.find({"user_id": current_user["user_id"]}, expense_projection).sort("created_at", -1).limit(200).to_list(200)
     return expenses
 
@@ -487,18 +491,28 @@ async def create_expense(data: ExpenseCreate, current_user: dict = Depends(get_c
         "category": data.category,
         "notes": data.notes or "",
         "receipt_base64": data.receipt_base64,
+        "receipt_date": data.receipt_date,
+        "receipt_number": data.receipt_number,
+        "receipt_phone": data.receipt_phone,
         "ai_extracted": False,
         "created_at": datetime.now(timezone.utc)
     }
     await db.expenses.insert_one(expense_doc)
     return {k: v for k, v in expense_doc.items() if k not in ["_id", "receipt_base64"]}
 
+@api_router.get("/expenses/{expense_id}")
+async def get_expense(expense_id: str, current_user: dict = Depends(get_current_user)):
+    expense = await db.expenses.find_one({"expense_id": expense_id, "user_id": current_user["user_id"]}, {"_id": 0})
+    if not expense:
+        raise HTTPException(404, "Expense not found")
+    return expense
+
 @api_router.put("/expenses/{expense_id}")
 async def update_expense(expense_id: str, data: dict = Body(...), current_user: dict = Depends(get_current_user)):
     expense = await db.expenses.find_one({"expense_id": expense_id, "user_id": current_user["user_id"]})
     if not expense:
         raise HTTPException(404, "Expense not found")
-    allowed = ["merchant", "amount", "category", "notes"]
+    allowed = ["merchant", "amount", "category", "notes", "receipt_date", "receipt_number", "receipt_phone"]
     update_data = {k: v for k, v in data.items() if k in allowed}
     await db.expenses.update_one({"expense_id": expense_id}, {"$set": update_data})
     return await db.expenses.find_one({"expense_id": expense_id}, {"_id": 0, "receipt_base64": 0})
@@ -555,6 +569,29 @@ def preprocess_receipt_image(receipt_base64: str) -> str:
         logger.error(f"Image preprocessing failed, falling back to original: {e}")
         return receipt_base64
 
+def resize_and_compress(receipt_base64: str, max_size=(1024, 1024)) -> str:
+    try:
+        # Strip metadata header if present
+        if "," in receipt_base64:
+            receipt_base64 = receipt_base64.split(",", 1)[1]
+            
+        img_bytes = base64.b64decode(receipt_base64)
+        img = Image.open(io.BytesIO(img_bytes))
+        
+        # Keep aspect ratio and resize if needed
+        img.thumbnail(max_size, Image.Resampling.LANCZOS)
+        
+        # Convert to RGB if needed (JPEG doesn't support RGBA)
+        if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+            img = img.convert('RGB')
+            
+        output = io.BytesIO()
+        img.save(output, format="JPEG", quality=80)
+        return base64.b64encode(output.getvalue()).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Resize and compress failed, falling back to original: {e}")
+        return receipt_base64
+
 def clean_json_content(content: str) -> str:
     content = content.strip()
     # Remove markdown code blocks if present
@@ -563,72 +600,292 @@ def clean_json_content(content: str) -> str:
         content = re.sub(r'\n```$', '', content)
     return content.strip()
 
+def parse_receipt_text(text: str) -> dict:
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    if not lines:
+        return {"merchant": "Unknown", "amount": 0.0, "category": "other", "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "receipt_number": "", "receipt_phone": ""}
+    
+    # 1. Extract Merchant
+    merchant = "Unknown"
+    for line in lines[:4]:
+        # Skip if line looks like date, phone number, address, or totals
+        if re.search(r'\d{3}-\d{3}-\d{4}', line):
+            continue
+        if re.search(r'\b(total|subtotal|tax|cash|visa|mastercard|debit|change|items|date|time|invoice|receipt|statement|bill|ticket|welcome|copy|duplicate)\b', line, re.IGNORECASE):
+            continue
+        if re.match(r'^[\d\s\W]+$', line):
+            continue
+        cleaned = re.sub(r'[^a-zA-Z0-9\s\.\&\-]', '', line).strip()
+        if len(cleaned) > 2:
+            merchant = cleaned
+            break
+            
+    # Secondary check up to 10 lines using keyword matching if merchant is still Unknown
+    if merchant == "Unknown":
+        business_keywords = ["tires", "lube", "oil", "gas", "store", "cafe", "coffee", "restaurant", "eats", "diner", "mart", "market", "shop", "auto", "repair", "service", "parts", "garage", "parking", "station", "cleaners", "pizza", "burger", "subway", "walmart", "costco", "target", "starbucks", "mcdonald"]
+        for line in lines[:10]:
+            line_lower = line.lower()
+            if any(bk in line_lower for bk in business_keywords):
+                # Ensure it doesn't look like an address (e.g. contains zip code or street numbers)
+                if re.search(r'\d{5}', line) or re.search(r'\b(ave|st|rd|blvd|lane|way|highway|drive)\b', line_lower):
+                    continue
+                if re.search(r'\b(total|subtotal|tax|cash|visa|mastercard|debit|change|items|date|time)\b', line, re.IGNORECASE):
+                    continue
+                cleaned = re.sub(r'[^a-zA-Z0-9\s\.\&\-]', '', line).strip()
+                if len(cleaned) > 2:
+                    merchant = cleaned
+                    break
+
+    # 2. Extract Amount (Robust parsing)
+    potential_totals = []
+    
+    # Look line by line
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        # Check if line has total-like keyword
+        if any(kw in line_lower for kw in ["total", "due", "amount", "charge", "paid", "sum"]):
+            # Exclude lines that are clearly tax, subtotal, change, or quantity
+            if not any(ex in line_lower for ex in ["tax", "vat", "subtotal", "sub-total", "change", "items", "discount", "savings", "qty", "quantity"]):
+                # Find all decimal numbers on this line
+                decimals = re.findall(r'\b\d+\.\d{2}\b', line)
+                if decimals:
+                    for d in decimals:
+                        potential_totals.append(float(d))
+                else:
+                    # Check the next line (in case value is on the next line)
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1]
+                        next_decimals = re.findall(r'\b\d+\.\d{2}\b', next_line)
+                        if next_decimals:
+                            for d in next_decimals:
+                                potential_totals.append(float(d))
+                                
+    # If we found any candidates, use the largest one
+    amount = 0.0
+    if potential_totals:
+        amount = max(potential_totals)
+    else:
+        # Fallback: check any line with total-like keyword, even if it has "tax" or "subtotal"
+        for line in lines:
+            line_lower = line.lower()
+            if any(kw in line_lower for kw in ["total", "due", "amount", "charge", "paid", "sum"]):
+                decimals = re.findall(r'\b\d+\.\d{2}\b', line)
+                for d in decimals:
+                    potential_totals.append(float(d))
+        if potential_totals:
+            amount = max(potential_totals)
+        else:
+            # Ultimate fallback: find all decimal numbers in the entire text and take the max (capped at 1000.0)
+            all_decimals = re.findall(r'\b\d+\.\d{2}\b', text)
+            valid_amounts = []
+            for m in all_decimals:
+                try:
+                    val = float(m)
+                    if val < 1000.0:
+                        valid_amounts.append(val)
+                except ValueError:
+                    pass
+            if valid_amounts:
+                amount = max(valid_amounts)
+            
+    # 3. Categorize
+    category = "other"
+    merchant_lower = merchant.lower()
+    text_lower = text.lower()
+    
+    if any(k in merchant_lower or k in text_lower for k in ["gas", "fuel", "chevron", "shell", "exxon", "mobil", "bp", "speedway", "sunoco", "costco gasoline"]):
+        category = "fuel"
+    elif any(k in merchant_lower or k in text_lower for k in ["park", "parking", "garage", "meter", "valet"]):
+        category = "parking"
+    elif any(k in merchant_lower or k in text_lower for k in ["auto", "repair", "lube", "tire", "jiffy", "service", "mechanic", "parts"]):
+        category = "maintenance"
+    elif any(k in merchant_lower or k in text_lower for k in ["coffee", "cafe", "starbucks", "mcdonald", "subway", "burger", "food", "restaurant", "eats", "diner", "taco", "pizza"]):
+        category = "meals"
+        
+    # 4. Extract Date
+    date_str = ""
+    date_match = re.search(r'\b(\d{4})[-/](\d{2})[-/](\d{2})\b', text)
+    if date_match:
+        date_str = f"{date_match.group(1)}-{date_match.group(2)}-{date_match.group(3)}"
+    else:
+        date_match = re.search(r'\b(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})\b', text)
+        if date_match:
+            m, d, y = date_match.group(1), date_match.group(2), date_match.group(3)
+            if len(y) == 2:
+                y = "20" + y
+            try:
+                date_str = f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
+            except ValueError:
+                pass
+
+    # 5. Extract Receipt Number
+    receipt_number = ""
+    num_match = re.search(r'\b(?:inv(?:oice)?|rec(?:eipt)?|ticket|trx|trans(?:action)?|bill|chk|check)(?:\s*(?:no\.?|num\.?|number))?\s*#?[:\-\s]+([a-zA-Z0-9\-]+)', text, re.IGNORECASE)
+    if num_match:
+        receipt_value = num_match.group(1).strip()
+        # Avoid capturing "NO" or "NUM" alone if it matched incorrectly
+        if receipt_value.upper() not in ["NO", "NUM", "NUMBER"]:
+            receipt_number = receipt_value
+
+
+    # 6. Extract Phone Number
+    receipt_phone = ""
+    phone_match = re.search(r'\b(?:\+?1[-.\s]?)?\(?([2-9]\d{2})\)?[-.\s]?([2-9]\d{2})[-.\s]?(\d{4})\b', text)
+    if phone_match:
+        receipt_phone = f"{phone_match.group(1)}-{phone_match.group(2)}-{phone_match.group(3)}"
+                
+    return {
+        "merchant": merchant,
+        "amount": amount,
+        "category": category,
+        "date": date_str,
+        "receipt_number": receipt_number,
+        "receipt_phone": receipt_phone
+    }
+
+
+async def scan_receipt_gemini(processed_base64: str) -> dict:
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY is not set")
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    prompt = (
+        "Extract information from this receipt image. "
+        "Examine characters extremely carefully, especially in bad lighting, shadows, low contrast, or blur. "
+        "Ensure you extract the correct amount and merchant name. "
+        "Return ONLY a valid JSON object matching the following structure:\n"
+        '{"merchant": "Merchant Name", "amount": 0.00, "category": "fuel|parking|maintenance|meals|other", "date": "YYYY-MM-DD", "receipt_number": "Invoice/Receipt Number if available else null", "receipt_phone": "Merchant Phone Number if available else null"}'
+    )
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inlineData": {
+                            "mimeType": "image/jpeg",
+                            "data": processed_base64
+                        }
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json"
+        }
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(url, json=payload)
+        if response.status_code == 200:
+            res_data = response.json()
+            try:
+                content = res_data['candidates'][0]['content']['parts'][0]['text']
+                cleaned = clean_json_content(content)
+                return json.loads(cleaned)
+            except Exception as e:
+                logger.error(f"Failed to parse Gemini response: {e}. Raw: {res_data}")
+                raise e
+        else:
+            raise Exception(f"Gemini API returned status code {response.status_code}: {response.text}")
+
+async def scan_receipt_ocr_space(receipt_base64: str) -> dict:
+    url = "https://api.ocr.space/parse/image"
+    if "," in receipt_base64:
+        receipt_base64 = receipt_base64.split(",", 1)[1]
+    payload = {
+        "apikey": "helloworld",
+        "base64Image": f"data:image/jpeg;base64,{receipt_base64}",
+        "language": "eng"
+    }
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        response = await client.post(url, data=payload)
+        if response.status_code == 200:
+            res_json = response.json()
+            if not res_json.get("IsErroredOnProcessing"):
+                parsed_results = res_json.get("ParsedResults", [])
+                parsed_text = ""
+                if parsed_results:
+                    parsed_text = parsed_results[0].get("ParsedText", "")
+                return parse_receipt_text(parsed_text)
+            error_message = res_json.get("ErrorMessage", "Unknown OCR.space error")
+            raise Exception(f"OCR.space error: {error_message}")
+        else:
+            raise Exception(f"OCR.space returned status code {response.status_code}")
+
 @api_router.post("/expenses/scan")
 async def scan_receipt(data: dict = Body(...), current_user: dict = Depends(get_current_user)):
     receipt_base64 = data.get("receipt_base64", "")
     if not receipt_base64:
         raise HTTPException(400, "No receipt image provided")
+    
     try:
         # Preprocess the base64 receipt image to handle poor/different lighting conditions
         processed_base64 = preprocess_receipt_image(receipt_base64)
         
-        prompt = (
-            "Extract information from this receipt image. "
-            "Examine characters extremely carefully, especially in bad lighting, shadows, low contrast, or blur. "
-            "Ensure you extract the correct amount and merchant name. "
-            "Return ONLY a valid JSON object matching the following structure:\n"
-            '{"merchant": "Merchant Name", "amount": 0.00, "category": "fuel|parking|maintenance|meals|other", "date": "YYYY-MM-DD"}'
-        )
-        
-        messages = [
-            {"role": "system", "content": "You are a receipt OCR assistant. Extract info and return ONLY valid JSON."},
-            {"role": "user", "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{processed_base64}"}}
-            ]}
-        ]
-        
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            response_format={"type": "json_object"}
-        )
-        
-        content = response.choices[0].message.content
-        extracted = {"merchant": "Unknown", "amount": 0.0, "category": "other"}
-        
-        if content:
-            cleaned_content = clean_json_content(content)
+        # 1. Try OpenAI if key is present
+        if OPENAI_API_KEY:
             try:
-                extracted = json.loads(cleaned_content)
-            except Exception as parse_err:
-                logger.error(f"Failed to parse cleaned JSON content: {parse_err}. Raw content: {content}")
+                logger.info("Attempting receipt scan with OpenAI...")
+                prompt = (
+                    "Extract information from this receipt image. "
+                    "Examine characters extremely carefully, especially in bad lighting, shadows, low contrast, or blur. "
+                    "Ensure you extract the correct amount and merchant name. "
+                    "Return ONLY a valid JSON object matching the following structure:\n"
+                    '{"merchant": "Merchant Name", "amount": 0.00, "category": "fuel|parking|maintenance|meals|other", "date": "YYYY-MM-DD", "receipt_number": "Invoice/Receipt Number if available else null", "receipt_phone": "Merchant Phone Number if available else null"}'
+                )
+                messages = [
+                    {"role": "system", "content": "You are a receipt OCR assistant. Extract info and return ONLY valid JSON."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{processed_base64}"}}
+                    ]}
+                ]
+                response = await openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=messages,
+                    response_format={"type": "json_object"}
+                )
+                content = response.choices[0].message.content
+                if content:
+                    cleaned_content = clean_json_content(content)
+                    extracted = json.loads(cleaned_content)
+                    logger.info("Successfully scanned receipt with OpenAI")
+                    return {"success": True, "extracted": extracted}
+            except Exception as e:
+                logger.warning(f"OpenAI receipt scan failed: {e}")
                 
-                # Fallback to regex extraction if JSON parsing failed
-                merchant = "Unknown"
-                amount = 0.0
-                category = "other"
+        # 2. Try Gemini if key is present
+        if GEMINI_API_KEY:
+            try:
+                logger.info("Attempting receipt scan with Gemini...")
+                extracted = await scan_receipt_gemini(processed_base64)
+                logger.info("Successfully scanned receipt with Gemini")
+                return {"success": True, "extracted": extracted}
+            except Exception as e:
+                logger.warning(f"Gemini receipt scan failed: {e}")
                 
-                merchant_match = re.search(r'"merchant"\s*:\s*"([^"]+)"', cleaned_content)
-                if merchant_match:
-                    merchant = merchant_match.group(1)
-                
-                amount_match = re.search(r'"amount"\s*:\s*([0-9.]+)', cleaned_content)
-                if amount_match:
-                    try: amount = float(amount_match.group(1))
-                    except: pass
-                
-                cat_match = re.search(r'"category"\s*:\s*"([^"]+)"', cleaned_content)
-                if cat_match:
-                    category = cat_match.group(1)
-                    
-                extracted = {"merchant": merchant, "amount": amount, "category": category}
-                
-        return {"success": True, "extracted": extracted}
+        # 3. Try OCR.space fallback
+        try:
+            logger.info("Attempting receipt scan with OCR.space fallback...")
+            extracted = await scan_receipt_ocr_space(processed_base64)
+            # If OCR failed to extract meaningful merchant or amount, retry with color-resized original
+            if extracted.get("merchant") == "Unknown" and extracted.get("amount") == 0.0:
+                logger.info("OCR.space preprocessed image returned no text. Retrying with color resized original...")
+                resized_base64 = resize_and_compress(receipt_base64)
+                extracted_retry = await scan_receipt_ocr_space(resized_base64)
+                if extracted_retry.get("merchant") != "Unknown" or extracted_retry.get("amount") > 0.0 or extracted_retry.get("date") != "":
+                    extracted = extracted_retry
+                    logger.info("Successfully scanned receipt on color resize retry")
+            logger.info("Successfully scanned receipt with OCR.space and parsed text")
+            return {"success": True, "extracted": extracted}
+        except Exception as e:
+            logger.error(f"OCR.space receipt scan failed: {e}")
+            raise e  # Propagate to outer try block for final mock fallback
+            
     except Exception as e:
-        logger.error(f"Receipt scan error: {e}")
+        logger.error(f"All scanning methods failed: {e}")
         # Return a realistic, trip-related fallback expense to ensure the user is not blocked
-        # by OpenAI quota limits or server issues. The form will pre-populate so they can edit manually.
+        # by OpenAI/Gemini quota limits or server issues. The form will pre-populate so they can edit manually.
         import random
         fallback_merchants = [
             {"merchant": "Chevron Gas Station", "amount": 42.50, "category": "fuel"},
@@ -652,6 +909,7 @@ async def scan_receipt(data: dict = Body(...), current_user: dict = Depends(get_
             "error": str(e),
             "fallback": True
         }
+
 
 # ============================================================
 # AI ROUTES
