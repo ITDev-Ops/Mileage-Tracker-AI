@@ -5,6 +5,8 @@ import {
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
 import { Colors, FontSize, Spacing, Radius } from '../../constants/theme';
@@ -24,6 +26,7 @@ export default function ReportsScreen() {
   const [exportLoading, setExportLoading] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(false);
   const { user, token } = useAuth();
+  const router = useRouter();
   const country = user?.tax_country || 'US';
   const currencySymbol = getCurrencySymbol(country);
   const distanceUnit = getDistanceUnitAbbr(country);
@@ -132,6 +135,33 @@ export default function ReportsScreen() {
     if (!token) {
       Alert.alert('Error', 'Please log in to download reports');
       return;
+    }
+
+    if (user?.subscription_tier === 'free') {
+      let currentMiles = 0;
+      try {
+        const stats = await API.getDashboardStats(token);
+        currentMiles = stats.monthly_miles || 0;
+      } catch {
+        try {
+          const cached = await AsyncStorage.getItem('cached_dashboard_stats');
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            currentMiles = parsed.monthly_miles || 0;
+          }
+        } catch {}
+      }
+      if (currentMiles >= 40.0) {
+        Alert.alert(
+          'Upgrade Required',
+          'PDF report export is a premium feature. Please upgrade your plan to Pro or Business to export PDF reports.',
+          [
+            { text: 'Upgrade Now', onPress: () => router.push('/subscription') },
+            { text: 'Cancel', style: 'cancel' }
+          ]
+        );
+        return;
+      }
     }
     
     setPdfLoading(true);

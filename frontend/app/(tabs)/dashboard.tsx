@@ -801,6 +801,49 @@ export default function DashboardScreen() {
     init();
   }, [loadData]);
 
+  // Mileage limits check on app open / stats load
+  const hasPromptedRef = useRef(false);
+
+  useEffect(() => {
+    if (!stats || user?.subscription_tier !== 'free') return;
+    
+    const checkLimits = async () => {
+      const miles = stats.monthly_miles;
+      if (miles >= 40.0) {
+        // Stop background tracking if running
+        const status = await getTrackingStatus();
+        if (status.isRunning) {
+          await stopBackgroundTracking();
+        }
+        
+        if (!hasPromptedRef.current) {
+          hasPromptedRef.current = true;
+          Alert.alert(
+            'Mileage Limit Reached',
+            'Please upgrade your plan to Pro or Business or wait for a new month to continue tracking miles.',
+            [
+              { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
+              { text: 'Cancel', style: 'cancel' }
+            ]
+          );
+        }
+      } else if (miles >= 35.0) {
+        if (!hasPromptedRef.current) {
+          hasPromptedRef.current = true;
+          Alert.alert(
+            'Limit Warning',
+            ' Please you are nearing your 40 free miles limit, please upgrade to continue tracking your miles. Thanks',
+            [
+              { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
+              { text: 'OK', style: 'default' }
+            ]
+          );
+        }
+      }
+    };
+    checkLimits();
+  }, [stats?.monthly_miles, user?.subscription_tier]);
+
   // Live trip tracking - updates distance and duration in real-time
   useEffect(() => {
     const hasActiveManualTrip = stats?.active_trip && !isAutoTrip;
@@ -929,6 +972,44 @@ export default function DashboardScreen() {
   };
 
   const handleStartTrip = async () => {
+    if (user?.subscription_tier === 'free') {
+      let currentMiles = stats?.monthly_miles || 0;
+      if (!stats) {
+        try {
+          const cached = await AsyncStorage.getItem('cached_dashboard_stats');
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            currentMiles = parsed.monthly_miles || 0;
+          }
+        } catch {}
+      }
+
+      if (currentMiles >= 40.0) {
+        Alert.alert(
+          'Mileage Limit Reached',
+          'Please upgrade your plan to Pro or Business or wait for a new month to continue tracking miles.',
+          [
+            { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
+            { text: 'Cancel', style: 'cancel' }
+          ]
+        );
+        return;
+      } else if (currentMiles >= 35.0) {
+        Alert.alert(
+          'Limit Warning',
+          ' Please you are nearing your 40 free miles limit, please upgrade to continue tracking your miles. Thanks',
+          [
+            { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
+            { text: 'OK', onPress: () => runStartTripFlow() }
+          ]
+        );
+        return;
+      }
+    }
+    await runStartTripFlow();
+  };
+
+  const runStartTripFlow = async () => {
     setStartingTrip(true);
     try {
       // Reset auto-tracking state so it doesn't interfere with manual trip

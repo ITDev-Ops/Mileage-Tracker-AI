@@ -231,6 +231,22 @@ async def get_current_user(request: Request) -> dict:
         logger.error(f"JWT Verification error: {e}")
         raise HTTPException(status_code=401, detail="Could not validate credentials")
 
+async def check_mileage_limit(current_user: dict):
+    if current_user.get("subscription_tier", "free") == "free":
+        now = datetime.now(timezone.utc)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        completed_trips = await db.trips.find({
+            "user_id": current_user["user_id"],
+            "start_time": {"$gte": month_start},
+            "is_active": False
+        }, {"distance": 1}).to_list(None)
+        
+        monthly_miles = sum(t.get("distance", 0.0) for t in completed_trips)
+        if monthly_miles >= 40.0:
+            return True, monthly_miles
+        return False, monthly_miles
+    return False, 0.0
+
 def calculate_deduction(distance: float, classification: str, country: str = "US") -> float:
     country = (country or "US").upper()
     if country == "US":
@@ -339,6 +355,10 @@ async def get_trips(
 
 @api_router.post("/trips")
 async def create_trip(data: TripCreate, current_user: dict = Depends(get_current_user)):
+    limit_reached, _ = await check_mileage_limit(current_user)
+    if limit_reached:
+        raise HTTPException(status_code=403, detail="Mileage limit reached. Please upgrade your plan.")
+        
     trip_id = f"trip_{uuid.uuid4().hex[:12]}"
     trip_doc = {
         "trip_id": trip_id,
@@ -368,6 +388,10 @@ async def create_trip(data: TripCreate, current_user: dict = Depends(get_current
 @api_router.post("/trips/direct")
 async def create_trip_direct(data: TripDirectCreate, current_user: dict = Depends(get_current_user)):
     """Create a complete trip directly (used for syncing auto-tracked trips)"""
+    limit_reached, _ = await check_mileage_limit(current_user)
+    if limit_reached:
+        raise HTTPException(status_code=403, detail="Mileage limit reached. Please upgrade your plan.")
+        
     trip_id = f"trip_{uuid.uuid4().hex[:12]}"
     
     # Parse start time
@@ -814,6 +838,10 @@ async def scan_receipt_ocr_space(receipt_base64: str) -> dict:
 
 @api_router.post("/expenses/scan")
 async def scan_receipt(data: dict = Body(...), current_user: dict = Depends(get_current_user)):
+    limit_reached, _ = await check_mileage_limit(current_user)
+    if limit_reached:
+        raise HTTPException(status_code=403, detail="Receipt scanning requires a Pro or Business plan after reaching 40 miles.")
+        
     receipt_base64 = data.get("receipt_base64", "")
     if not receipt_base64:
         raise HTTPException(400, "No receipt image provided")
@@ -1424,6 +1452,10 @@ async def export_csv(year: int = None, current_user: dict = Depends(get_current_
 @api_router.get("/reports/export/pdf")
 async def export_pdf(year: int = None, current_user: dict = Depends(get_current_user)):
     """Generate professional IRS/CRA/HMRC/ATO-compliant PDF mileage report"""
+    limit_reached, _ = await check_mileage_limit(current_user)
+    if limit_reached:
+        raise HTTPException(status_code=403, detail="PDF report exports require a Pro or Business plan after reaching 40 miles.")
+        
     from reportlab.lib.pagesizes import letter
     from reportlab.lib import colors
     from reportlab.lib.units import inch

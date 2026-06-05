@@ -252,6 +252,24 @@ export async function processLocationUpdate(locations: Location.LocationObject[]
   const manualTripJson = await AsyncStorage.getItem('current_active_trip');
   let currentManualTrip = manualTripJson ? JSON.parse(manualTripJson) : null;
   
+  const subscriptionTier = await AsyncStorage.getItem('subscription_tier');
+  if (subscriptionTier === 'free') {
+    const cachedStatsStr = await AsyncStorage.getItem('cached_dashboard_stats');
+    if (cachedStatsStr) {
+      try {
+        const cachedStats = JSON.parse(cachedStatsStr);
+        if (cachedStats && cachedStats.monthly_miles >= 40.0) {
+          if (!currentAutoTrip && !currentManualTrip) {
+            log('processLocationUpdate blocked: free user reached 40 miles limit');
+            return;
+          }
+        }
+      } catch (e) {
+        log('Error parsing cached stats', e);
+      }
+    }
+  }
+  
   let drivingDetectedTime: number | null = null;
   try {
     const drivingTimeStr = await AsyncStorage.getItem('auto_driving_detected_time');

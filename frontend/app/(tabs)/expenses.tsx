@@ -6,6 +6,8 @@ import {
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
 import { Colors, FontSize, Spacing, Radius } from '../../constants/theme';
@@ -52,7 +54,8 @@ export default function ExpensesScreen() {
   const [zoomImage, setZoomImage] = useState(false);
   const [zoomScale, setZoomScale] = useState(1.0);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
-  const { token } = useAuth();
+  const { user, token } = useAuth();
+  const router = useRouter();
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
@@ -81,6 +84,35 @@ export default function ExpensesScreen() {
   };
 
   const handleScanReceipt = async () => {
+    if (user?.subscription_tier === 'free') {
+      let currentMiles = 0;
+      try {
+        if (token) {
+          const stats = await API.getDashboardStats(token);
+          currentMiles = stats.monthly_miles || 0;
+        }
+      } catch {
+        try {
+          const cached = await AsyncStorage.getItem('cached_dashboard_stats');
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            currentMiles = parsed.monthly_miles || 0;
+          }
+        } catch {}
+      }
+      if (currentMiles >= 40.0) {
+        Alert.alert(
+          'Upgrade Required',
+          'Receipt scanning is a premium feature. Please upgrade your plan to Pro or Business to scan receipts.',
+          [
+            { text: 'Upgrade Now', onPress: () => router.push('/subscription') },
+            { text: 'Cancel', style: 'cancel' }
+          ]
+        );
+        return;
+      }
+    }
+
     try {
       let base64: string | null = null;
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
