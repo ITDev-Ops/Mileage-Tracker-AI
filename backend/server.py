@@ -1771,9 +1771,10 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
             }
             
         session = stripe.checkout.Session.retrieve(session_id)
-        metadata = dict(session.get("metadata", {})) if session.get("metadata") else {}
+        metadata = getattr(session, "metadata", None)
+        metadata_dict = dict(metadata) if metadata else {}
         if session.payment_status == "paid":
-            plan = metadata.get("plan", "pro")
+            plan = metadata_dict.get("plan", "pro")
             await db.users.update_one(
                 {"user_id": current_user["user_id"]}, 
                 {"$set": {"subscription_tier": plan}}
@@ -1785,7 +1786,7 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
         return {
             "status": session.status, 
             "payment_status": session.payment_status, 
-            "plan": metadata.get("plan", "pro")
+            "plan": metadata_dict.get("plan", "pro")
         }
     except stripe.error.StripeError as e:
         logger.error(f"Stripe status check error: {e}")
@@ -1803,10 +1804,11 @@ async def stripe_webhook(request: Request):
         event = stripe.Webhook.construct_event(body, sig_header, WEBHOOK_SECRET)
         if event.type == "checkout.session.completed":
             session = event.data.object
-            metadata = dict(session.get("metadata", {})) if session.get("metadata") else {}
+            metadata = getattr(session, "metadata", None)
+            metadata_dict = dict(metadata) if metadata else {}
             if session.payment_status == "paid":
-                user_id = metadata.get("user_id")
-                plan = metadata.get("plan", "pro")
+                user_id = metadata_dict.get("user_id")
+                plan = metadata_dict.get("plan", "pro")
                 if user_id:
                     await db.users.update_one({"user_id": user_id}, {"$set": {"subscription_tier": plan}})
                     await db.payment_transactions.update_one({"session_id": session.id}, {"$set": {"payment_status": "paid"}})
