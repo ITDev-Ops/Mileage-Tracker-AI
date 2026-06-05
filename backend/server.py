@@ -1356,6 +1356,30 @@ async def export_csv(year: int = None, current_user: dict = Depends(get_current_
         {"user_id": current_user["user_id"], "start_time": {"$gte": datetime(year, 1, 1, tzinfo=timezone.utc), "$lt": datetime(year + 1, 1, 1, tzinfo=timezone.utc)}, "is_active": False},
         {"_id": 0}
     ).sort("start_time", 1).to_list(2000)
+    
+    # Calculate totals
+    total_miles = sum(t.get("distance", 0) for t in trips)
+    total_deductions = sum(t.get("deduction_value", 0) for t in trips)
+    
+    # Query expenses for the same year
+    expense_query = {
+        "user_id": current_user["user_id"],
+        "$or": [
+            {"receipt_date": {"$regex": f"^{year}"}},
+            {
+                "$and": [
+                    {"$or": [{"receipt_date": None}, {"receipt_date": ""}]},
+                    {"created_at": {
+                        "$gte": datetime(year, 1, 1, tzinfo=timezone.utc),
+                        "$lt": datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+                    }}
+                ]
+            }
+        ]
+    }
+    expenses = await db.expenses.find(expense_query).to_list(1000)
+    total_expenses = sum(e.get("amount", 0) for e in expenses)
+
     output = io.StringIO()
     writer = csv.writer(output)
     
@@ -1384,6 +1408,9 @@ async def export_csv(year: int = None, current_user: dict = Depends(get_current_
     writer.writerow([])
     writer.writerow([f"{label} Mileage Report - {year}"])
     writer.writerow([f"Generated: {now.strftime('%B %d, %Y')} | User: {current_user.get('name', current_user.get('email', 'User'))}"])
+    writer.writerow([f"Total Distance: {total_miles:.2f} {unit}"])
+    writer.writerow([f"Total Deductions: {currency}{total_deductions:.2f}"])
+    writer.writerow([f"Total Expenses: {currency}{total_expenses:.2f}"])
     writer.writerow([])
     
     # Data header and rows
@@ -1434,6 +1461,25 @@ async def export_pdf(year: int = None, current_user: dict = Depends(get_current_
         {"user_id": current_user["user_id"], "start_time": {"$gte": datetime(year, 1, 1, tzinfo=timezone.utc), "$lt": datetime(year + 1, 1, 1, tzinfo=timezone.utc)}, "is_active": False},
         {"_id": 0}
     ).sort("start_time", 1).to_list(2000)
+    
+    # Fetch expenses
+    expense_query = {
+        "user_id": current_user["user_id"],
+        "$or": [
+            {"receipt_date": {"$regex": f"^{year}"}},
+            {
+                "$and": [
+                    {"$or": [{"receipt_date": None}, {"receipt_date": ""}]},
+                    {"created_at": {
+                        "$gte": datetime(year, 1, 1, tzinfo=timezone.utc),
+                        "$lt": datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+                    }}
+                ]
+            }
+        ]
+    }
+    expenses = await db.expenses.find(expense_query).to_list(1000)
+    total_expenses = sum(e.get("amount", 0) for e in expenses)
     
     # Calculate summary
     total_miles = sum(t.get("distance", 0) for t in trips)
@@ -1497,6 +1543,43 @@ async def export_pdf(year: int = None, current_user: dict = Depends(get_current_
         ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#F9FAFB')]),
     ]))
     elements.append(summary_table)
+    elements.append(Spacer(1, 20))
+    
+    # Expense Summary Table
+    elements.append(Paragraph("Business Expense Summary", header_style))
+    categories = ["fuel", "parking", "maintenance", "meals", "other"]
+    expense_by_category = {cat: 0.0 for cat in categories}
+    for e in expenses:
+        cat = e.get("category", "other")
+        if cat not in expense_by_category:
+            cat = "other"
+        expense_by_category[cat] += e.get("amount", 0)
+        
+    expense_summary_data = [
+        ["Category", "Total Amount"],
+        ["Fuel", f"{currency}{expense_by_category['fuel']:.2f}"],
+        ["Parking", f"{currency}{expense_by_category['parking']:.2f}"],
+        ["Maintenance", f"{currency}{expense_by_category['maintenance']:.2f}"],
+        ["Meals", f"{currency}{expense_by_category['meals']:.2f}"],
+        ["Other", f"{currency}{expense_by_category['other']:.2f}"],
+        ["TOTAL EXPENSES", f"{currency}{total_expenses:.2f}"],
+    ]
+    
+    expense_table = Table(expense_summary_data, colWidths=[3*inch, 3.5*inch])
+    expense_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10B981')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('TOPPADDING', (0, 0), (-1, 0), 10),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#D1FAE5')),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E5E7EB')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#F9FAFB')]),
+    ]))
+    elements.append(expense_table)
     elements.append(Spacer(1, 20))
     
     # Trip Log Table
