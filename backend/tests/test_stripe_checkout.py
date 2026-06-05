@@ -41,18 +41,21 @@ def test_stripe_checkout_and_status(user_session):
     # 2. Check that the status endpoint handles the session gracefully
     # If using live Stripe, status will be "open" or "expired" or "complete" depending on whether paid.
     # If mock key was used in local preview, it auto-fulfills and returns "paid".
-    status_resp = requests.get(f"{BASE_URL}/api/payments/status/{session_id}", headers=headers)
-    assert status_resp.status_code == 200
-    status_data = status_resp.json()
-    
-    assert "payment_status" in status_data
-    
-    # 3. If mock session_id was returned, it must auto-fulfill and become paid
     if session_id.startswith("cs_test_mock_"):
-        assert status_data["payment_status"] == "paid"
-        assert status_data["plan"] == "pro"
+        # Make a request to the redirect URL (simulating the browser redirect from Stripe)
+        # Note: no authorization header is sent because it's a public redirect
+        redirect_resp = requests.get(checkout_url)
+        assert redirect_resp.status_code == 200
+        assert "html" in redirect_resp.headers.get("Content-Type", "").lower()
+        assert "Payment Successful" in redirect_resp.text
+        assert "Return to Application" in redirect_resp.text
         
-        # Verify user is upgraded
+        # Verify user is upgraded immediately upon redirect completion
         me_resp = requests.get(f"{BASE_URL}/api/auth/me", headers=headers)
         assert me_resp.status_code == 200
         assert me_resp.json()["subscription_tier"] == "pro"
+    else:
+        status_resp = requests.get(f"{BASE_URL}/api/payments/status/{session_id}", headers=headers)
+        assert status_resp.status_code == 200
+        status_data = status_resp.json()
+        assert "payment_status" in status_data

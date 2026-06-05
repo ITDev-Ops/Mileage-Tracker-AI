@@ -1672,6 +1672,7 @@ async def export_pdf(year: int = None, current_user: dict = Depends(get_current_
 @api_router.post("/payments/create-checkout")
 async def create_checkout(data: PaymentCheckout, request: Request, current_user: dict = Depends(get_current_user)):
     import stripe
+    import urllib.parse
     stripe.api_key = STRIPE_API_KEY
     
     plan = data.plan.lower()
@@ -1679,8 +1680,12 @@ async def create_checkout(data: PaymentCheckout, request: Request, current_user:
         raise HTTPException(400, "Invalid plan")
     plan_info = SUBSCRIPTION_PLANS[plan]
     
-    success_url = f"{data.origin_url}/subscription?session_id={{CHECKOUT_SESSION_ID}}&plan={plan}"
-    cancel_url = f"{data.origin_url}/subscription"
+    # Construct urls pointing to the backend's redirect proxy to support custom schemes (like exp://) on mobile safely
+    base_backend_url = str(request.base_url).rstrip('/')
+    encoded_origin = urllib.parse.quote(data.origin_url)
+    
+    success_url = f"{base_backend_url}/api/payments/redirect?session_id={{CHECKOUT_SESSION_ID}}&redirect_url={encoded_origin}&status=success&plan={plan}"
+    cancel_url = f"{base_backend_url}/api/payments/redirect?redirect_url={encoded_origin}&status=cancel"
     
     # Intercept for local mock testing
     is_mock = STRIPE_API_KEY == 'sk_test_emergent' or not STRIPE_API_KEY
@@ -1712,20 +1717,20 @@ async def create_checkout(data: PaymentCheckout, request: Request, current_user:
                     'unit_amount': int(float(plan_info["amount"]) * 100),  # Stripe uses cents
                     'product_data': {
                         'name': f'Mileage Tracker AI - {plan.capitalize()} Plan',
-                            'description': f'Monthly subscription to {plan.capitalize()} features',
-                        },
+                        'description': f'Monthly subscription to {plan.capitalize()} features',
                     },
-                    'quantity': 1,
-                }],
-                customer_email=current_user.get("email"),
-                success_url=success_url,
-                cancel_url=cancel_url,
-                metadata={
-                    "user_id": current_user["user_id"],
-                    "plan": plan,
-                    "email": current_user["email"]
-                }
-            )
+                },
+                'quantity': 1,
+            }],
+            customer_email=current_user.get("email"),
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={
+                "user_id": current_user["user_id"],
+                "plan": plan,
+                "email": current_user["email"]
+            }
+        )
         
         await db.payment_transactions.insert_one({
             "transaction_id": f"txn_{uuid.uuid4().hex[:12]}",
@@ -1742,6 +1747,279 @@ async def create_checkout(data: PaymentCheckout, request: Request, current_user:
     except stripe.error.StripeError as e:
         logger.error(f"Stripe error: {e}")
         raise HTTPException(400, f"Payment error: {str(e)}")
+
+@api_router.get("/payments/redirect")
+async def payments_redirect(
+    redirect_url: str,
+    status: str,
+    session_id: Optional[str] = None,
+    plan: Optional[str] = "pro"
+):
+    from fastapi.responses import HTMLResponse
+    import stripe
+    stripe.api_key = STRIPE_API_KEY
+    
+    base_redirect = redirect_url.rstrip('/')
+    message = "Processing your payment..."
+    subtitle = "Please wait while we activate your subscription."
+    is_success = False
+    
+    if status == "success" and session_id:
+        try:
+            if session_id.startswith("cs_test_mock_"):
+                txn = await db.payment_transactions.find_one({"session_id": session_id})
+                if txn:
+                    user_id = txn["user_id"]
+                    plan = txn.get("plan", "pro")
+                    await db.users.update_one(
+                        {"user_id": user_id}, 
+                        {"$set": {"subscription_tier": plan}}
+                    )
+                    await db.payment_transactions.update_one(
+                        {"session_id": session_id}, 
+                        {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc)}}
+                    )
+                    is_success = True
+                    message = "Payment Successful!"
+                    subtitle = f"Your {plan.capitalize()} Plan is now active. Returning you to the app..."
+            else:
+                session = stripe.checkout.Session.retrieve(session_id)
+                metadata = getattr(session, "metadata", None)
+                metadata_dict = {}
+                if metadata:
+                    if hasattr(metadata, "_data"):
+                        metadata_dict = metadata._data
+                    elif isinstance(metadata, dict):
+                        metadata_dict = metadata
+                
+                if session.payment_status == "paid":
+                    plan = metadata_dict.get("plan", "pro")
+                    user_id = metadata_dict.get("user_id")
+                    if user_id:
+                        await db.users.update_one(
+                            {"user_id": user_id}, 
+                            {"$set": {"subscription_tier": plan}}
+                        )
+                        await db.payment_transactions.update_one(
+                            {"session_id": session_id}, 
+                            {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc)}}
+                        )
+                        is_success = True
+                        message = "Payment Successful!"
+                        subtitle = f"Your {plan.capitalize()} Plan is now active. Returning you to the app..."
+                    else:
+                        txn = await db.payment_transactions.find_one({"session_id": session_id})
+                        if txn:
+                            user_id = txn["user_id"]
+                            plan = txn.get("plan", "pro")
+                            await db.users.update_one(
+                                {"user_id": user_id}, 
+                                {"$set": {"subscription_tier": plan}}
+                            )
+                            await db.payment_transactions.update_one(
+                                {"session_id": session_id}, 
+                                {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc)}}
+                            )
+                            is_success = True
+                            message = "Payment Successful!"
+                            subtitle = f"Your {plan.capitalize()} Plan is now active. Returning you to the app..."
+                else:
+                    message = "Payment Pending"
+                    subtitle = "Your payment is currently being processed by Stripe."
+        except Exception as e:
+            logger.error(f"Error processing redirect payment status: {e}")
+            message = "Payment Status Verification Error"
+            subtitle = "We had an issue verifying your payment, but our webhook will process it shortly."
+            
+        target_url = f"{base_redirect}/subscription?session_id={session_id}&plan={plan}"
+    else:
+        message = "Subscription Cancelled"
+        subtitle = "You cancelled the payment process. Returning you to subscription plans..."
+        target_url = f"{base_redirect}/subscription"
+        is_success = False
+
+    status_icon_color = "#00E676" if is_success or status == "success" else "#FF3D00"
+    status_icon_char = "✓" if is_success or status == "success" else "✕"
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Redirecting to Mileage Tracker AI...</title>
+        <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" rel="stylesheet">
+        <style>
+            :root {{
+                --bg-primary: #121214;
+                --bg-card: #1C1C1E;
+                --text-primary: #FFFFFF;
+                --text-secondary: #8E8E93;
+                --brand-primary: #00E676;
+                --brand-danger: #FF3D00;
+                --accent-color: {status_icon_color};
+            }}
+            * {{
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }}
+            body {{
+                font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                background-color: var(--bg-primary);
+                color: var(--text-primary);
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                padding: 24px;
+            }}
+            .card {{
+                background-color: var(--bg-card);
+                border-radius: 24px;
+                padding: 40px 32px;
+                width: 100%;
+                max-width: 440px;
+                text-align: center;
+                box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                animation: scaleUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            }}
+            @keyframes scaleUp {{
+                from {{
+                    transform: scale(0.95);
+                    opacity: 0;
+                }}
+                to {{
+                    transform: scale(1);
+                    opacity: 1;
+                }}
+            }}
+            .icon-wrapper {{
+                margin-bottom: 24px;
+                position: relative;
+                display: inline-block;
+            }}
+            .icon-pulse {{
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                width: 80px;
+                height: 80px;
+                background-color: var(--accent-color);
+                border-radius: 50%;
+                opacity: 0.15;
+                animation: pulse 2s infinite ease-in-out;
+                z-index: 0;
+            }}
+            @keyframes pulse {{
+                0% {{
+                    transform: translate(-50%, -50%) scale(0.8);
+                    opacity: 0.25;
+                }}
+                50% {{
+                    transform: translate(-50%, -50%) scale(1.3);
+                    opacity: 0;
+                }}
+                100% {{
+                    transform: translate(-50%, -50%) scale(0.8);
+                    opacity: 0.25;
+                }}
+            }}
+            .icon {{
+                position: relative;
+                z-index: 1;
+                width: 72px;
+                height: 72px;
+                border-radius: 50%;
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 2px solid var(--accent-color);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                color: var(--accent-color);
+                font-size: 36px;
+                margin: 0 auto;
+            }}
+            h1 {{
+                font-size: 24px;
+                font-weight: 800;
+                letter-spacing: -0.5px;
+                margin-bottom: 12px;
+            }}
+            p {{
+                font-size: 15px;
+                color: var(--text-secondary);
+                line-height: 1.6;
+                margin-bottom: 32px;
+            }}
+            .btn {{
+                background-color: var(--accent-color);
+                color: #000000;
+                font-weight: 700;
+                text-decoration: none;
+                padding: 14px 28px;
+                border-radius: 12px;
+                display: inline-block;
+                transition: transform 0.2s ease, filter 0.2s ease;
+                box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+            }}
+            .btn:active {{
+                transform: scale(0.98);
+            }}
+            .btn:hover {{
+                filter: brightness(1.1);
+            }}
+            .loader-spinner {{
+                width: 20px;
+                height: 20px;
+                border: 2px solid rgba(255, 255, 255, 0.1);
+                border-top: 2px solid var(--text-primary);
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+                margin: 20px auto 0;
+            }}
+            @keyframes spin {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
+            .footer {{
+                margin-top: 32px;
+                font-size: 12px;
+                color: var(--text-secondary);
+                opacity: 0.6;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <div class="icon-wrapper">
+                <div class="icon-pulse"></div>
+                <div class="icon">
+                    {status_icon_char}
+                </div>
+            </div>
+            <h1>{message}</h1>
+            <p>{subtitle}</p>
+            <a href="{target_url}" class="btn" id="redirect-btn">Return to Application</a>
+            <div class="loader-spinner"></div>
+            <div class="footer">
+                If you are not redirected automatically, click the button above.
+            </div>
+        </div>
+
+        <script>
+            const targetUrl = "{target_url}";
+            setTimeout(function() {{
+                window.location.href = targetUrl;
+            }}, 1500);
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content, status_code=200)
 
 @api_router.get("/payments/status/{session_id}")
 async def get_payment_status(session_id: str, request: Request, current_user: dict = Depends(get_current_user)):
