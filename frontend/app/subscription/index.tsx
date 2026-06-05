@@ -29,8 +29,8 @@ const PLANS = [
     price: '$9.99',
     period: '/month',
     color: Colors.brand.primary,
-    features: ['Unlimited trips', 'AI auto-classification', 'Receipt OCR scanning', 'PDF + CSV tax reports', 'AI Tax Optimizer', 'Priority support'],
-    notIncluded: ['Team management', 'Admin dashboard', 'API access'],
+    features: ['Unlimited trips', 'AI auto-classification', 'Receipt OCR scanning', 'PDF + CSV tax reports', 'AI Tax Optimizer', 'Priority support', 'Team management', 'Admin dashboard', 'API access'],
+    notIncluded: [],
     cta: 'Upgrade to Pro',
     popular: true,
   },
@@ -85,7 +85,7 @@ export default function SubscriptionScreen() {
             const planName = status.plan ? (status.plan.charAt(0).toUpperCase() + status.plan.slice(1)) : 'Pro';
             if (Platform.OS === 'web') {
               alert(`🎉 Subscription Activated! Welcome to the ${planName} Plan!`);
-              router.replace('/(tabs)/dashboard');
+              router.push('/(tabs)/dashboard');
             } else {
               Alert.alert(
                 '🎉 Subscription Activated!',
@@ -93,7 +93,11 @@ export default function SubscriptionScreen() {
                 [
                   {
                     text: 'OK',
-                    onPress: () => router.replace('/(tabs)/dashboard')
+                    onPress: () => {
+                      setTimeout(() => {
+                        router.push('/(tabs)/dashboard');
+                      }, 100);
+                    }
                   }
                 ]
               );

@@ -298,6 +298,32 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Premium Features */}
+        {tier !== 'free' && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Premium Features</Text>
+            <View style={styles.card}>
+              <TouchableOpacity testID="team-management-settings" style={styles.listRow} onPress={() => router.push('/settings/team')}>
+                <Feather name="users" size={18} color={Colors.brand.primary} />
+                <Text style={styles.listRowText}>Team Management</Text>
+                <Feather name="chevron-right" size={16} color={Colors.text.tertiary} />
+              </TouchableOpacity>
+              <View style={styles.divider} />
+              <TouchableOpacity testID="admin-dashboard-settings" style={styles.listRow} onPress={() => router.push('/settings/admin')}>
+                <Feather name="cpu" size={18} color={Colors.brand.warning} />
+                <Text style={styles.listRowText}>Admin Dashboard</Text>
+                <Feather name="chevron-right" size={16} color={Colors.text.tertiary} />
+              </TouchableOpacity>
+              <View style={styles.divider} />
+              <TouchableOpacity testID="api-access-settings" style={styles.listRow} onPress={() => router.push('/settings/api')}>
+                <Feather name="key" size={18} color={Colors.brand.secondary} />
+                <Text style={styles.listRowText}>Developer API Access</Text>
+                <Feather name="chevron-right" size={16} color={Colors.text.tertiary} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
         {/* Auto-Tracking Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Auto-Tracking</Text>
