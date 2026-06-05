@@ -1772,7 +1772,13 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
             
         session = stripe.checkout.Session.retrieve(session_id)
         metadata = getattr(session, "metadata", None)
-        metadata_dict = dict(metadata.items()) if metadata else {}
+        metadata_dict = {}
+        if metadata:
+            if hasattr(metadata, "_data"):
+                metadata_dict = metadata._data
+            elif isinstance(metadata, dict):
+                metadata_dict = metadata
+                
         if session.payment_status == "paid":
             plan = metadata_dict.get("plan", "pro")
             await db.users.update_one(
@@ -1805,7 +1811,13 @@ async def stripe_webhook(request: Request):
         if event.type == "checkout.session.completed":
             session = event.data.object
             metadata = getattr(session, "metadata", None)
-            metadata_dict = dict(metadata.items()) if metadata else {}
+            metadata_dict = {}
+            if metadata:
+                if hasattr(metadata, "_data"):
+                    metadata_dict = metadata._data
+                elif isinstance(metadata, dict):
+                    metadata_dict = metadata
+                    
             if session.payment_status == "paid":
                 user_id = metadata_dict.get("user_id")
                 plan = metadata_dict.get("plan", "pro")
