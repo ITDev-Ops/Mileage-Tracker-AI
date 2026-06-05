@@ -1682,6 +1682,25 @@ async def create_checkout(data: PaymentCheckout, request: Request, current_user:
     success_url = f"{data.origin_url}/subscription?session_id={{CHECKOUT_SESSION_ID}}&plan={plan}"
     cancel_url = f"{data.origin_url}/subscription"
     
+    # Intercept for local mock testing
+    is_mock = STRIPE_API_KEY == 'sk_test_emergent' or not STRIPE_API_KEY
+    if is_mock:
+        mock_session_id = f"cs_test_mock_{uuid.uuid4().hex[:16]}"
+        # For mock, replace the {CHECKOUT_SESSION_ID} placeholder manually
+        mock_success_url = success_url.replace("{CHECKOUT_SESSION_ID}", mock_session_id)
+        
+        await db.payment_transactions.insert_one({
+            "transaction_id": f"txn_{uuid.uuid4().hex[:12]}",
+            "user_id": current_user["user_id"],
+            "session_id": mock_session_id,
+            "plan": plan, 
+            "amount": float(plan_info["amount"]), 
+            "currency": plan_info["currency"],
+            "payment_status": "pending", 
+            "created_at": datetime.now(timezone.utc)
+        })
+        return {"url": mock_success_url, "session_id": mock_session_id}
+        
     try:
         # Create Stripe Checkout Session with proper configuration
         session = stripe.checkout.Session.create(
@@ -1753,7 +1772,7 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
             
         session = stripe.checkout.Session.retrieve(session_id)
         if session.payment_status == "paid":
-            plan = session.metadata.get("plan", "pro")
+            plan = session.metadata.get("plan", "pro") if session.metadata else "pro"
             await db.users.update_one(
                 {"user_id": current_user["user_id"]}, 
                 {"$set": {"subscription_tier": plan}}
@@ -1765,7 +1784,7 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
         return {
             "status": session.status, 
             "payment_status": session.payment_status, 
-            "plan": session.metadata.get("plan")
+            "plan": session.metadata.get("plan") if session.metadata else "pro"
         }
     except stripe.error.StripeError as e:
         logger.error(f"Stripe status check error: {e}")
@@ -1784,8 +1803,8 @@ async def stripe_webhook(request: Request):
         if event.type == "checkout.session.completed":
             session = event.data.object
             if session.payment_status == "paid":
-                user_id = session.metadata.get("user_id")
-                plan = session.metadata.get("plan", "pro")
+                user_id = session.metadata.get("user_id") if session.metadata else None
+                plan = session.metadata.get("plan", "pro") if session.metadata else "pro"
                 if user_id:
                     await db.users.update_one({"user_id": user_id}, {"$set": {"subscription_tier": plan}})
                     await db.payment_transactions.update_one({"session_id": session.id}, {"$set": {"payment_status": "paid"}})

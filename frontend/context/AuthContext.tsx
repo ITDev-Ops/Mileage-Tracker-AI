@@ -41,8 +41,8 @@ const TOKEN_KEY = '@multimile_jwt_token';
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
-  // We should set loading to false for web, but for mobile, wait until AsyncStorage checks out
-  const [loading, setLoading] = useState(Platform.OS !== 'web');
+  // We should set loading to true initially for all platforms to await stored session checks
+  const [loading, setLoading] = useState(true);
 
   // Load token on startup
   useEffect(() => {
@@ -71,25 +71,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loadStoredSession = async () => {
     try {
-      if (Platform.OS !== 'web') {
-        const storedToken = await AsyncStorage.getItem(TOKEN_KEY);
-        if (storedToken) {
-          authLog('loadStoredSession: Found token, verifying...');
-          setToken(storedToken);
-          // Try validating with the backend
-          const userData = await API.getMe(storedToken);
-          setUser(userData);
-          authLog('loadStoredSession: User verified successfully.');
-        } else {
-          authLog('loadStoredSession: No token found.');
-        }
+      const storedToken = await AsyncStorage.getItem(TOKEN_KEY);
+      if (storedToken) {
+        authLog('loadStoredSession: Found token, verifying...');
+        setToken(storedToken);
+        // Try validating with the backend
+        const userData = await API.getMe(storedToken);
+        setUser(userData);
+        authLog('loadStoredSession: User verified successfully.');
+      } else {
+        authLog('loadStoredSession: No token found.');
       }
     } catch (error: any) {
       authLog('loadStoredSession: ERROR restoring session', error.message);
       // Clean up invalid session
-      if (Platform.OS !== 'web') {
-         await AsyncStorage.removeItem(TOKEN_KEY);
-      }
+      await AsyncStorage.removeItem(TOKEN_KEY);
       setToken(null);
       setUser(null);
     } finally {
@@ -100,12 +96,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const persistSession = async (jwtToken: string, userData: User) => {
     setToken(jwtToken);
     setUser(userData);
-    if (Platform.OS !== 'web') {
-      try {
-        await AsyncStorage.setItem(TOKEN_KEY, jwtToken);
-      } catch (e) {
-        authLog('persistSession: failed to save token', e);
-      }
+    try {
+      await AsyncStorage.setItem(TOKEN_KEY, jwtToken);
+    } catch (e) {
+      authLog('persistSession: failed to save token', e);
     }
   };
 
@@ -153,9 +147,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authLog('logout: clearing session...');
     setUser(null);
     setToken(null);
-    if (Platform.OS !== 'web') {
-      await AsyncStorage.removeItem(TOKEN_KEY);
-    }
+    await AsyncStorage.removeItem(TOKEN_KEY);
     authLog('logout: complete');
   };
 
