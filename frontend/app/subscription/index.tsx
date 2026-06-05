@@ -82,10 +82,21 @@ export default function SubscriptionScreen() {
           if (status.payment_status === 'paid') {
             await refreshUser();
             setCheckingPayment(false);
+            const planName = status.plan ? (status.plan.charAt(0).toUpperCase() + status.plan.slice(1)) : 'Pro';
             if (Platform.OS === 'web') {
-              alert(`🎉 Subscription Activated! Welcome to ${status.plan?.charAt(0).toUpperCase()}${status.plan?.slice(1)} Plan!`);
+              alert(`🎉 Subscription Activated! Welcome to the ${planName} Plan!`);
+              router.replace('/(tabs)/dashboard');
             } else {
-              Alert.alert('🎉 Subscription Activated!', `Welcome to ${status.plan?.charAt(0).toUpperCase()}${status.plan?.slice(1)} Plan! You now have access to all premium features.`);
+              Alert.alert(
+                '🎉 Subscription Activated!',
+                `Welcome to the ${planName} Plan! You now have access to all premium features.`,
+                [
+                  {
+                    text: 'OK',
+                    onPress: () => router.replace('/(tabs)/dashboard')
+                  }
+                ]
+              );
             }
           } else if (status.status === 'expired') {
             setCheckingPayment(false);
