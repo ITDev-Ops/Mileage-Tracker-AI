@@ -85,32 +85,15 @@ export default function ExpensesScreen() {
 
   const handleScanReceipt = async () => {
     if (user?.subscription_tier === 'free') {
-      let currentMiles = 0;
-      try {
-        if (token) {
-          const stats = await API.getDashboardStats(token);
-          currentMiles = stats.monthly_miles || 0;
-        }
-      } catch {
-        try {
-          const cached = await AsyncStorage.getItem('cached_dashboard_stats');
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            currentMiles = parsed.monthly_miles || 0;
-          }
-        } catch {}
-      }
-      if (currentMiles >= 40.0) {
-        Alert.alert(
-          'Upgrade Required',
-          'Receipt scanning is a premium feature. Please upgrade your plan to Pro or Business to scan receipts.',
-          [
-            { text: 'Upgrade Now', onPress: () => router.push('/subscription') },
-            { text: 'Cancel', style: 'cancel' }
-          ]
-        );
-        return;
-      }
+      Alert.alert(
+        'Upgrade Required',
+        'Receipt scanning is a premium feature. Please upgrade your plan to Pro or Business to scan receipts.',
+        [
+          { text: 'Upgrade Now', onPress: () => router.push('/subscription') },
+          { text: 'Cancel', style: 'cancel' }
+        ]
+      );
+      return;
     }
 
     try {

@@ -138,30 +138,15 @@ export default function ReportsScreen() {
     }
 
     if (user?.subscription_tier === 'free') {
-      let currentMiles = 0;
-      try {
-        const stats = await API.getDashboardStats(token);
-        currentMiles = stats.monthly_miles || 0;
-      } catch {
-        try {
-          const cached = await AsyncStorage.getItem('cached_dashboard_stats');
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            currentMiles = parsed.monthly_miles || 0;
-          }
-        } catch {}
-      }
-      if (currentMiles >= 40.0) {
-        Alert.alert(
-          'Upgrade Required',
-          'PDF report export is a premium feature. Please upgrade your plan to Pro or Business to export PDF reports.',
-          [
-            { text: 'Upgrade Now', onPress: () => router.push('/subscription') },
-            { text: 'Cancel', style: 'cancel' }
-          ]
-        );
-        return;
-      }
+      Alert.alert(
+        'Upgrade Required',
+        'PDF report export is a premium feature. Please upgrade your plan to Pro or Business to export PDF reports.',
+        [
+          { text: 'Upgrade Now', onPress: () => router.push('/subscription') },
+          { text: 'Cancel', style: 'cancel' }
+        ]
+      );
+      return;
     }
     
     setPdfLoading(true);

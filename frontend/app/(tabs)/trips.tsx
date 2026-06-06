@@ -114,6 +114,17 @@ export default function TripsScreen() {
   }, [token, loadTrips]);
 
   const handleAIClassify = useCallback(async (tripId: string) => {
+    if (user?.subscription_tier === 'free') {
+      Alert.alert(
+        'Upgrade Required',
+        'AI trip classification is a premium feature. Please upgrade your plan to Pro or Business to use AI classification.',
+        [
+          { text: 'Upgrade Now', onPress: () => router.push('/subscription') },
+          { text: 'Cancel', style: 'cancel' }
+        ]
+      );
+      return;
+    }
     if (!token) return;
     setClassifying(tripId);
     try {
@@ -125,9 +136,20 @@ export default function TripsScreen() {
     } finally {
       setClassifying(null);
     }
-  }, [token, loadTrips]);
+  }, [token, loadTrips, user?.subscription_tier, router]);
 
   const handleBulkClassify = async () => {
+    if (user?.subscription_tier === 'free') {
+      Alert.alert(
+        'Upgrade Required',
+        'AI bulk trip classification is a premium feature. Please upgrade your plan to Pro or Business to use AI classification.',
+        [
+          { text: 'Upgrade Now', onPress: () => router.push('/subscription') },
+          { text: 'Cancel', style: 'cancel' }
+        ]
+      );
+      return;
+    }
     if (!token) return;
     const unclassifiedCount = trips.filter(t => t.classification === 'unclassified' && !t.is_active).length;
     if (unclassifiedCount === 0) {

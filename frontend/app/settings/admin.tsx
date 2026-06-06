@@ -49,9 +49,9 @@ export default function AdminDashboardScreen() {
             <Text style={styles.statValue}>{stats.monthlyTotalMiles.toLocaleString()} mi</Text>
           </View>
           <View style={styles.statCard}>
-            <Feather name="dollar-sign" size={18} color={Colors.brand.success} style={{ marginBottom: 8 }} />
+            <Feather name="dollar-sign" size={18} color={Colors.status.success} style={{ marginBottom: 8 }} />
             <Text style={styles.statLabel}>Accrued Deductions</Text>
-            <Text style={[styles.statValue, { color: Colors.brand.success }]}>${stats.monthlyTotalDeductions.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+            <Text style={[styles.statValue, { color: Colors.status.success }]}>${stats.monthlyTotalDeductions.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
           </View>
         </View>
 
@@ -73,7 +73,7 @@ export default function AdminDashboardScreen() {
         <View style={styles.card}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
             <View style={styles.checkCircle}>
-              <Feather name="check" size={16} color={Colors.brand.success} />
+              <Feather name="check" size={16} color={Colors.status.success} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle}>IRS Form 2106 Compliant</Text>
@@ -99,7 +99,7 @@ export default function AdminDashboardScreen() {
                 <Feather
                   name={alert.type === 'warning' ? 'alert-triangle' : alert.type === 'success' ? 'check-circle' : 'info'}
                   size={16}
-                  color={alert.type === 'warning' ? Colors.brand.warning : alert.type === 'success' ? Colors.brand.success : Colors.brand.secondary}
+                  color={alert.type === 'warning' ? Colors.brand.warning : alert.type === 'success' ? Colors.status.success : Colors.brand.secondary}
                 />
                 <Text style={styles.alertMsg}>{alert.msg}</Text>
                 <Text style={styles.alertDate}>{alert.date}</Text>
@@ -145,7 +145,7 @@ const styles = StyleSheet.create({
   card: { backgroundColor: Colors.bg.secondary, borderRadius: Radius.xl, padding: 16, borderWidth: 1, borderColor: Colors.border },
   cardTitle: { color: Colors.text.primary, fontSize: FontSize.sm, fontWeight: '700', marginBottom: 2 },
   cardDesc: { color: Colors.text.secondary, fontSize: FontSize.xs, lineHeight: 16 },
-  checkCircle: { width: 28, height: 28, borderRadius: 14, backgroundColor: Colors.brand.successDim, alignItems: 'center', justifyContent: 'center' },
+  checkCircle: { width: 28, height: 28, borderRadius: 14, backgroundColor: Colors.brand.primaryDim, alignItems: 'center', justifyContent: 'center' },
   divider: { height: 1, backgroundColor: Colors.border, marginVertical: 12 },
   listLabel: { color: Colors.text.primary, fontSize: FontSize.sm, fontWeight: '600' },
   listValue: { color: Colors.text.secondary, fontSize: FontSize.sm },

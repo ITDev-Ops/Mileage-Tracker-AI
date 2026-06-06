@@ -149,7 +149,7 @@ const styles = StyleSheet.create({
   keyContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.bg.tertiary, borderRadius: Radius.md, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: Colors.border, gap: 10 },
   keyValue: { flex: 1, color: Colors.text.primary, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: FontSize.xs },
   iconBtn: { padding: 4 },
-  generateBtn: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 12, paddingVertical: 6, paddingHorizontal: 12, borderRadius: Radius.md, borderHeight: 1, borderWidth: 1, borderColor: Colors.brand.primary + '40', backgroundColor: Colors.brand.primary + '10' },
+  generateBtn: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 12, paddingVertical: 6, paddingHorizontal: 12, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.brand.primary + '40', backgroundColor: Colors.brand.primary + '10' },
   generateBtnText: { color: Colors.brand.primary, fontSize: FontSize.xs, fontWeight: '700' },
   endpointTitle: { color: Colors.brand.primary, fontSize: FontSize.sm, fontWeight: '700', fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
   endpointDesc: { color: Colors.text.secondary, fontSize: FontSize.xs, lineHeight: 16, marginTop: 4 },
@@ -159,6 +159,6 @@ const styles = StyleSheet.create({
   listLabel: { color: Colors.text.primary, fontSize: FontSize.sm, fontWeight: '600' },
   listValue: { color: Colors.text.secondary, fontSize: FontSize.sm },
   divider: { height: 1, backgroundColor: Colors.border, marginVertical: 12 },
-  badgeText: { fontSize: 10, fontWeight: '800', color: Colors.brand.success, backgroundColor: Colors.brand.successDim, borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 2 },
+  badgeText: { fontSize: 10, fontWeight: '800', color: Colors.status.success, backgroundColor: Colors.brand.primaryDim, borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 2 },
   webhookUrl: { color: Colors.text.tertiary, fontSize: 11 },
 });

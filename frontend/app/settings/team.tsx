@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TextInput,
   TouchableOpacity, Alert, ActivityIndicator, Platform
@@ -7,6 +7,8 @@ import { useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, FontSize, Spacing, Radius } from '../../constants/theme';
+import { useAuth } from '../../context/AuthContext';
+import { API } from '../../services/api';
 
 interface TeamMember {
   id: string;
@@ -26,38 +28,123 @@ const INITIAL_MEMBERS: TeamMember[] = [
 ];
 
 export default function TeamManagementScreen() {
-  const [members, setMembers] = useState<TeamMember[]>(INITIAL_MEMBERS);
+  const [members, setMembers] = useState<any[]>([]);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteName, setInviteName] = useState('');
   const [inviteRole, setInviteRole] = useState<'Driver' | 'Admin'>('Driver');
   const [inviting, setInviting] = useState(false);
+  const [loading, setLoading] = useState(true);
   
+  const { user, token, refreshUser } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  const handleSendInvite = () => {
+  useEffect(() => {
+    let active = true;
+    const loadMembers = async () => {
+      if (!token) return;
+      try {
+        setLoading(true);
+        const data = await API.getTeamMembers(token);
+        if (active) {
+          setMembers(data);
+        }
+      } catch (e: any) {
+        console.log('[Team] Fetch error:', e.message);
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+    loadMembers();
+    return () => {
+      active = false;
+    };
+  }, [token]);
+
+  const handleSendInvite = async () => {
     if (!inviteEmail.trim() || !inviteName.trim()) {
       Alert.alert('Validation Error', 'Please enter both a name and a valid email.');
       return;
     }
-    setInviting(true);
-    setTimeout(() => {
-      const newMember: TeamMember = {
-        id: (members.length + 1).toString(),
-        name: inviteName.trim(),
-        email: inviteEmail.trim(),
-        role: inviteRole,
-        status: 'Pending',
-        joinedDate: new Date().toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }),
-        monthlyMiles: 0
+
+    const tier = user?.subscription_tier || 'free';
+    if (tier === 'pro' || tier === 'business') {
+      const price = tier === 'pro' ? '$9.99' : '$19.99';
+      const planName = tier === 'pro' ? 'Pro' : 'Business';
+
+      const proceedWithPayment = () => {
+        router.push('/subscription');
       };
-      setMembers([...members, newMember]);
-      setInviteEmail('');
-      setInviteName('');
-      setInviteRole('Driver');
+
+      const handleCancelDowngrade = async () => {
+        setInviting(true);
+        try {
+          if (token) {
+            await API.downgradeSubscription(token);
+            await refreshUser();
+            Alert.alert(
+              'Subscription Cancelled',
+              'You cancelled the payment. Your subscription has been defaulted to the Free plan.'
+            );
+          }
+        } catch (err: any) {
+          Alert.alert('Error', err.message || 'Failed to downgrade subscription.');
+        } finally {
+          setInviting(false);
+        }
+      };
+
+      if (Platform.OS === 'web') {
+        const ok = window.confirm(
+          `Adding an additional user to your ${planName} plan will charge ${price}/user/month. Press OK to proceed to payment page, or Cancel to downgrade to the Free plan.`
+        );
+        if (ok) {
+          proceedWithPayment();
+        } else {
+          await handleCancelDowngrade();
+        }
+      } else {
+        Alert.alert(
+          'Additional User Payment Required',
+          `Adding an additional user to your ${planName} plan requires a payment of ${price}/user/month.`,
+          [
+            {
+              text: 'Cancel (Downgrade to Free)',
+              onPress: handleCancelDowngrade,
+              style: 'destructive'
+            },
+            {
+              text: 'OK (Pay Now)',
+              onPress: proceedWithPayment,
+              style: 'default'
+            }
+          ]
+        );
+      }
+      return;
+    }
+
+    setInviting(true);
+    try {
+      if (token) {
+        const newMember = await API.inviteTeamMember(token, {
+          name: inviteName.trim(),
+          email: inviteEmail.trim(),
+          role: inviteRole
+        });
+        setMembers(prev => [...prev, newMember]);
+        setInviteEmail('');
+        setInviteName('');
+        setInviteRole('Driver');
+        Alert.alert('Invitation Sent! ✉️', `An invitation has been successfully sent to ${newMember.email}.`);
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to send invitation.');
+    } finally {
       setInviting(false);
-      Alert.alert('Invitation Sent! ✉️', `An invitation has been successfully sent to ${newMember.email}.`);
-    }, 800);
+    }
   };
 
   const handleRemoveMember = (id: string, name: string) => {
@@ -69,15 +156,22 @@ export default function TeamManagementScreen() {
         {
           text: 'Remove',
           style: 'destructive',
-          onPress: () => {
-            setMembers(members.filter(m => m.id !== id));
+          onPress: async () => {
+            try {
+              if (token) {
+                await API.removeTeamMember(token, id);
+                setMembers(prev => prev.filter(m => (m.member_id || m.id) !== id));
+              }
+            } catch (err: any) {
+              Alert.alert('Error', err.message || 'Failed to remove member.');
+            }
           }
         }
       ]
     );
   };
 
-  const totalTeamMiles = members.reduce((acc, m) => acc + m.monthlyMiles, 0);
+  const totalTeamMiles = members.reduce((acc, m) => acc + (m.monthly_miles || m.monthlyMiles || 0), 0);
   const activeCount = members.filter(m => m.status === 'Active').length;
 
   return (
@@ -165,49 +259,60 @@ export default function TeamManagementScreen() {
         {/* Member Roster */}
         <Text style={styles.sectionTitle}>Team Members</Text>
         <View style={styles.card}>
-          {members.map((member, index) => (
-            <View key={member.id}>
-              {index > 0 && <View style={styles.divider} />}
-              <View style={styles.memberRow}>
-                <View style={styles.memberAvatar}>
-                  <Text style={styles.avatarText}>{member.name.charAt(0).toUpperCase()}</Text>
-                </View>
-                <View style={styles.memberInfo}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={styles.memberName}>{member.name}</Text>
-                    <View style={[styles.roleBadge, member.role === 'Admin' ? styles.adminBadge : styles.driverBadge]}>
-                      <Text style={styles.roleBadgeText}>{member.role}</Text>
+          {loading ? (
+            <ActivityIndicator size="small" color={Colors.brand.primary} style={{ padding: 20 }} />
+          ) : members.length === 0 ? (
+            <Text style={{ color: Colors.text.tertiary, fontSize: FontSize.sm, textAlign: 'center', padding: 20 }}>No team members invited yet.</Text>
+          ) : (
+            members.map((member, index) => {
+              const memberId = member.member_id || member.id;
+              const joinedDate = member.joined_date || member.joinedDate || 'N/A';
+              const monthlyMiles = member.monthly_miles || member.monthlyMiles || 0;
+              return (
+                <View key={memberId}>
+                  {index > 0 && <View style={styles.divider} />}
+                  <View style={styles.memberRow}>
+                    <View style={styles.memberAvatar}>
+                      <Text style={styles.avatarText}>{member.name.charAt(0).toUpperCase()}</Text>
                     </View>
-                    {member.status === 'Pending' && (
-                      <View style={styles.pendingBadge}>
-                        <Text style={styles.pendingBadgeText}>Pending</Text>
+                    <View style={styles.memberInfo}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={styles.memberName}>{member.name}</Text>
+                        <View style={[styles.roleBadge, member.role === 'Admin' ? styles.adminBadge : styles.driverBadge]}>
+                          <Text style={styles.roleBadgeText}>{member.role}</Text>
+                        </View>
+                        {member.status === 'Pending' && (
+                          <View style={styles.pendingBadge}>
+                            <Text style={styles.pendingBadgeText}>Pending</Text>
+                          </View>
+                        )}
                       </View>
-                    )}
+                      <Text style={styles.memberEmail}>{member.email}</Text>
+                      <Text style={styles.memberJoined}>Joined {joinedDate}</Text>
+                    </View>
+                    <View style={styles.memberMetrics}>
+                      {member.status === 'Active' ? (
+                        <>
+                          <Text style={styles.memberMiles}>{monthlyMiles.toFixed(0)} mi</Text>
+                          <Text style={styles.memberMilesLabel}>this month</Text>
+                        </>
+                      ) : (
+                        <Text style={styles.invitedText}>Invited</Text>
+                      )}
+                      {member.role !== 'Admin' && (
+                        <TouchableOpacity
+                          onPress={() => handleRemoveMember(memberId, member.name)}
+                          style={styles.removeBtn}
+                        >
+                          <Feather name="trash-2" size={14} color={Colors.brand.accent} />
+                        </TouchableOpacity>
+                      )}
+                    </View>
                   </View>
-                  <Text style={styles.memberEmail}>{member.email}</Text>
-                  <Text style={styles.memberJoined}>Joined {member.joinedDate}</Text>
                 </View>
-                <View style={styles.memberMetrics}>
-                  {member.status === 'Active' ? (
-                    <>
-                      <Text style={styles.memberMiles}>{member.monthlyMiles.toFixed(0)} mi</Text>
-                      <Text style={styles.memberMilesLabel}>this month</Text>
-                    </>
-                  ) : (
-                    <Text style={styles.invitedText}>Invited</Text>
-                  )}
-                  {member.role !== 'Admin' && (
-                    <TouchableOpacity
-                      onPress={() => handleRemoveMember(member.id, member.name)}
-                      style={styles.removeBtn}
-                    >
-                      <Feather name="trash-2" size={14} color={Colors.brand.accent} />
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </View>
-            </View>
-          ))}
+              );
+            })
+          )}
         </View>
       </ScrollView>
     </View>
@@ -221,7 +326,7 @@ const styles = StyleSheet.create({
   title: { flex: 1, color: Colors.text.primary, fontSize: FontSize.lg, fontWeight: '800', textAlign: 'center' },
   scrollContent: { paddingHorizontal: Spacing.screen, paddingBottom: 60 },
   statsRow: { flexDirection: 'row', gap: 12, marginVertical: 16 },
-  statCard: { flex: 1, backgroundColor: Colors.bg.secondary, borderRadius: Radius.xl, padding: 16, borderHeight: 1, borderWidth: 1, borderColor: Colors.border },
+  statCard: { flex: 1, backgroundColor: Colors.bg.secondary, borderRadius: Radius.xl, padding: 16, borderWidth: 1, borderColor: Colors.border },
   statLabel: { color: Colors.text.secondary, fontSize: FontSize.xs, fontWeight: '600', marginBottom: 6 },
   statValue: { color: Colors.text.primary, fontSize: FontSize.xl, fontWeight: '800' },
   sectionTitle: { color: Colors.text.secondary, fontSize: FontSize.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginTop: 16, marginBottom: 10 },

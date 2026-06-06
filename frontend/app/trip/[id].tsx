@@ -97,6 +97,17 @@ export default function TripDetailScreen() {
   };
 
   const handleAIClassify = async () => {
+    if (user?.subscription_tier === 'free') {
+      Alert.alert(
+        'Upgrade Required',
+        'AI trip classification is a premium feature. Please upgrade your plan to Pro or Business to use AI classification.',
+        [
+          { text: 'Upgrade Now', onPress: () => router.push('/subscription') },
+          { text: 'Cancel', style: 'cancel' }
+        ]
+      );
+      return;
+    }
     setClassifying(true);
     try {
       const result = await API.classifyTrip(token!, id!);

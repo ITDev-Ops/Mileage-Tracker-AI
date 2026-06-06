@@ -177,6 +177,12 @@ class PaymentCheckout(BaseModel):
     plan: str
     origin_url: str
 
+class TeamMemberCreate(BaseModel):
+    name: str
+    email: str
+    role: str
+
+
 SUBSCRIPTION_PLANS = {
     "pro": {"amount": 9.99, "name": "Pro Plan", "currency": "usd", "features": ["Unlimited trips", "AI auto-tagging", "PDF reports", "Receipt scanning"]},
     "business": {"amount": 19.99, "name": "Business Plan", "currency": "usd", "features": ["Everything in Pro", "Team management", "Admin dashboard", "API access"]},
@@ -838,9 +844,8 @@ async def scan_receipt_ocr_space(receipt_base64: str) -> dict:
 
 @api_router.post("/expenses/scan")
 async def scan_receipt(data: dict = Body(...), current_user: dict = Depends(get_current_user)):
-    limit_reached, _ = await check_mileage_limit(current_user)
-    if limit_reached:
-        raise HTTPException(status_code=403, detail="Receipt scanning requires a Pro or Business plan after reaching 40 miles.")
+    if current_user.get("subscription_tier", "free") == "free":
+        raise HTTPException(status_code=403, detail="Receipt scanning requires a Pro or Business plan.")
         
     receipt_base64 = data.get("receipt_base64", "")
     if not receipt_base64:
@@ -972,6 +977,8 @@ Help with: trip classification, tax deductions, mileage reports, expense advice.
 
 @api_router.post("/ai/classify-trip")
 async def classify_trip(data: dict = Body(...), current_user: dict = Depends(get_current_user)):
+    if current_user.get("subscription_tier", "free") == "free":
+        raise HTTPException(status_code=403, detail="AI trip classification requires a Pro or Business plan.")
     trip_id = data.get("trip_id")
     trip = await db.trips.find_one({"trip_id": trip_id, "user_id": current_user["user_id"]})
     if not trip:
@@ -1011,6 +1018,8 @@ Return ONLY JSON: {{"classification": "business|personal|medical|charity", "conf
 @api_router.post("/ai/classify-all")
 async def classify_all_trips(current_user: dict = Depends(get_current_user)):
     """Bulk classify all unclassified trips using AI"""
+    if current_user.get("subscription_tier", "free") == "free":
+        raise HTTPException(status_code=403, detail="AI bulk trip classification requires a Pro or Business plan.")
     unclassified = await db.trips.find(
         {"user_id": current_user["user_id"], "classification": "unclassified", "is_active": False},
         {"_id": 0}
@@ -1452,9 +1461,8 @@ async def export_csv(year: int = None, current_user: dict = Depends(get_current_
 @api_router.get("/reports/export/pdf")
 async def export_pdf(year: int = None, current_user: dict = Depends(get_current_user)):
     """Generate professional IRS/CRA/HMRC/ATO-compliant PDF mileage report"""
-    limit_reached, _ = await check_mileage_limit(current_user)
-    if limit_reached:
-        raise HTTPException(status_code=403, detail="PDF report exports require a Pro or Business plan after reaching 40 miles.")
+    if current_user.get("subscription_tier", "free") == "free":
+        raise HTTPException(status_code=403, detail="PDF report exports require a Pro or Business plan.")
         
     from reportlab.lib.pagesizes import letter
     from reportlab.lib import colors
@@ -2113,6 +2121,140 @@ async def stripe_webhook(request: Request):
 @api_router.get("/payments/subscription")
 async def get_subscription(current_user: dict = Depends(get_current_user)):
     return {"tier": current_user.get("subscription_tier", "free"), "plans": SUBSCRIPTION_PLANS}
+
+@api_router.post("/payments/downgrade")
+async def downgrade_subscription(current_user: dict = Depends(get_current_user)):
+    await db.users.update_one(
+        {"user_id": current_user["user_id"]},
+        {"$set": {"subscription_tier": "free"}}
+    )
+    return {"status": "success", "tier": "free"}
+
+# ============================================================
+# TEAM MANAGEMENT & INVITATIONS
+# ============================================================
+
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+try:
+    SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+except ValueError:
+    SMTP_PORT = 587
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
+
+def send_invitation_email(recipient_email: str, recipient_name: str, sender_name: str, role: str):
+    # Check if SMTP is using default values or unconfigured
+    is_unconfigured = (
+        not SMTP_USER or 
+        SMTP_USER == "your_email@gmail.com" or 
+        not SMTP_PASSWORD or 
+        SMTP_PASSWORD == "your_app_password"
+    )
+    
+    subject = f"Join {sender_name}'s Team on Mileage Tracker AI"
+    body = f"""Hi {recipient_name},
+
+{sender_name} has invited you to join their team as a {role} on Mileage Tracker AI.
+
+To accept this invitation and set up your account, please visit the app.
+
+Best regards,
+Mileage Tracker AI Team"""
+
+    if is_unconfigured:
+        logger.warning(f"SMTP not configured or placeholder detected. Printing invitation email to console.")
+        print("==================================================")
+        print("SMTP NOT CONFIG; LOGGING EMAIL")
+        print(f"TO: {recipient_email}")
+        print(f"SUBJECT: {subject}")
+        print(f"BODY:\n{body}")
+        print("==================================================")
+        return True
+
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_FROM
+        msg['To'] = recipient_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+        
+        # Connect using STARTTLS
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        logger.info(f"Invitation email sent successfully to {recipient_email}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email to {recipient_email}: {e}")
+        # Return false so the API call can report if it failed
+        return False
+
+@api_router.get("/team/members")
+async def get_team_members(current_user: dict = Depends(get_current_user)):
+    members = await db.team_members.find(
+        {"owner_id": current_user["user_id"]},
+        {"_id": 0}
+    ).to_list(None)
+    return members
+
+@api_router.post("/team/invite")
+async def invite_team_member(data: TeamMemberCreate, current_user: dict = Depends(get_current_user)):
+    member_email = data.email.strip().lower()
+    member_name = data.name.strip()
+    
+    # Check if already invited by this owner
+    existing = await db.team_members.find_one({
+        "owner_id": current_user["user_id"],
+        "email": member_email
+    })
+    if existing:
+        raise HTTPException(400, "User is already a team member or has a pending invitation.")
+        
+    member_id = f"mem_{uuid.uuid4().hex[:12]}"
+    
+    # Send email invitation
+    email_sent = send_invitation_email(
+        recipient_email=member_email,
+        recipient_name=member_name,
+        sender_name=current_user.get("name", current_user.get("email")),
+        role=data.role
+    )
+    
+    if not email_sent and SMTP_USER and SMTP_USER != "your_email@gmail.com":
+        raise HTTPException(500, "Failed to send the invitation email. Please check your SMTP settings.")
+        
+    member_doc = {
+        "member_id": member_id,
+        "owner_id": current_user["user_id"],
+        "name": member_name,
+        "email": member_email,
+        "role": data.role,
+        "status": "Pending",
+        "joined_date": datetime.now(timezone.utc).strftime("%b %d, %Y"),
+        "monthly_miles": 0.0,
+        "created_at": datetime.now(timezone.utc)
+    }
+    await db.team_members.insert_one(member_doc)
+    return {k: v for k, v in member_doc.items() if k != "_id"}
+
+@api_router.delete("/team/members/{member_id}")
+async def remove_team_member(member_id: str, current_user: dict = Depends(get_current_user)):
+    result = await db.team_members.delete_one({
+        "member_id": member_id,
+        "owner_id": current_user["user_id"]
+    })
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Team member not found.")
+    return {"message": "Team member removed successfully."}
+
+
 
 # ============================================================
 # SEED DATA
