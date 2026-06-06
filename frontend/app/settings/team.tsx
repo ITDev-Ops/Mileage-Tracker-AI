@@ -74,23 +74,50 @@ export default function TeamManagementScreen() {
       const price = tier === 'pro' ? '$9.99' : '$19.99';
       const planName = tier === 'pro' ? 'Pro' : 'Business';
 
-      const proceedWithPayment = () => {
-        router.push('/subscription');
+      const proceedWithPayment = async () => {
+        setInviting(true);
+        try {
+          if (token) {
+            const newMember = await API.inviteTeamMember(token, {
+              name: inviteName.trim(),
+              email: inviteEmail.trim(),
+              role: inviteRole,
+              subscription_tier: tier
+            });
+            setMembers(prev => [...prev, newMember]);
+            setInviteEmail('');
+            setInviteName('');
+            setInviteRole('Driver');
+            router.push('/subscription');
+          }
+        } catch (err: any) {
+          Alert.alert('Error', err.message || 'Failed to send invitation.');
+        } finally {
+          setInviting(false);
+        }
       };
 
       const handleCancelDowngrade = async () => {
         setInviting(true);
         try {
           if (token) {
-            await API.downgradeSubscription(token);
-            await refreshUser();
+            const newMember = await API.inviteTeamMember(token, {
+              name: inviteName.trim(),
+              email: inviteEmail.trim(),
+              role: inviteRole,
+              subscription_tier: 'free'
+            });
+            setMembers(prev => [...prev, newMember]);
+            setInviteEmail('');
+            setInviteName('');
+            setInviteRole('Driver');
             Alert.alert(
-              'Subscription Cancelled',
-              'You cancelled the payment. Your subscription has been defaulted to the Free plan.'
+              'Invitation Sent',
+              `Invitation sent. Since you opted out of paying, the additional user is defaulted to the Free plan.`
             );
           }
         } catch (err: any) {
-          Alert.alert('Error', err.message || 'Failed to downgrade subscription.');
+          Alert.alert('Error', err.message || 'Failed to send invitation.');
         } finally {
           setInviting(false);
         }
@@ -98,10 +125,10 @@ export default function TeamManagementScreen() {
 
       if (Platform.OS === 'web') {
         const ok = window.confirm(
-          `Adding an additional user to your ${planName} plan will charge ${price}/user/month. Press OK to proceed to payment page, or Cancel to downgrade to the Free plan.`
+          `Adding an additional user to your ${planName} plan will charge ${price}/user/month. Press OK to proceed to payment page, or Cancel to downgrade the additional user to the Free plan.`
         );
         if (ok) {
-          proceedWithPayment();
+          await proceedWithPayment();
         } else {
           await handleCancelDowngrade();
         }

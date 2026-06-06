@@ -185,7 +185,7 @@ class APIService {
   async getTeamMembers(token: string) {
     return this.request('/team/members', {}, token);
   }
-  async inviteTeamMember(token: string, data: { name: string, email: string, role: string }) {
+  async inviteTeamMember(token: string, data: { name: string, email: string, role: string, subscription_tier?: string }) {
     return this.request('/team/invite', { method: 'POST', body: JSON.stringify(data) }, token);
   }
   async removeTeamMember(token: string, memberId: string) {

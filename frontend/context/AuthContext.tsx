@@ -12,6 +12,7 @@ export interface User {
   occupation_type: string;
   tax_country: string;
   vehicle_type?: string;
+  invited_team_plan?: string;
 }
 
 interface AuthContextType {

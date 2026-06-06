@@ -117,6 +117,19 @@ export default function SubscriptionScreen() {
 
   const handleSubscribe = async (planKey: string) => {
     if (planKey === 'free') return;
+    if (user?.invited_team_plan) {
+      const plansOrder = ['free', 'pro', 'business'];
+      const planIndex = plansOrder.indexOf(planKey);
+      const reqIndex = plansOrder.indexOf(user.invited_team_plan);
+      if (planIndex < reqIndex) {
+        Alert.alert(
+          'Higher Plan Required',
+          `Your team is on the ${user.invited_team_plan.toUpperCase()} plan. You must upgrade to the ${user.invited_team_plan.toUpperCase()} plan or higher to gain access.`,
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+    }
     if (planKey === currentTier) {
       if (Platform.OS === 'web') {
         alert(`You are already on the ${planKey} plan!`);
@@ -192,6 +205,14 @@ export default function SubscriptionScreen() {
       )}
 
       <ScrollView contentContainerStyle={{ paddingBottom: 100, paddingHorizontal: Spacing.screen }}>
+        {user?.invited_team_plan && (
+          <View style={styles.teamNotice} testID="team-notice-banner">
+            <Feather name="info" size={14} color={Colors.brand.warning} />
+            <Text style={styles.teamNoticeText}>
+              You have been invited to a team on the {user.invited_team_plan.toUpperCase()} plan. To join this team, please subscribe to the {user.invited_team_plan.toUpperCase()} plan below.
+            </Text>
+          </View>
+        )}
         <Text style={styles.subtitle}>Unlock AI-powered mileage tracking & maximize your tax deductions</Text>
 
         {PLANS.map(plan => {
@@ -282,6 +303,8 @@ export default function SubscriptionScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.bg.primary },
+  teamNotice: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: Colors.brand.warningDim, borderRadius: Radius.md, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: Colors.brand.warning + '40' },
+  teamNoticeText: { flex: 1, color: Colors.brand.warning, fontSize: FontSize.xs, lineHeight: 16 },
   loadingContainer: { alignItems: 'center', justifyContent: 'center' },
   loadingText: { color: Colors.text.secondary, fontSize: FontSize.sm, marginTop: 12 },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.screen, paddingVertical: 12 },

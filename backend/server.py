@@ -181,6 +181,7 @@ class TeamMemberCreate(BaseModel):
     name: str
     email: str
     role: str
+    subscription_tier: Optional[str] = None
 
 
 SUBSCRIPTION_PLANS = {
@@ -329,7 +330,28 @@ async def login_user(user_data: UserLogin):
 
 @api_router.get("/auth/me")
 async def get_me(current_user: dict = Depends(get_current_user)):
-    return {k: v for k, v in current_user.items() if k != "password_hash"}
+    email = current_user.get("email", "").strip().lower()
+    invited_team_plan = None
+    if email:
+        team_member = await db.team_members.find_one({"email": email})
+        if team_member:
+            invitation_tier = team_member.get("subscription_tier", "free")
+            if invitation_tier in ["pro", "business"]:
+                if current_user.get("subscription_tier") != invitation_tier:
+                    await db.users.update_one(
+                        {"user_id": current_user["user_id"]},
+                        {"$set": {"subscription_tier": invitation_tier}}
+                    )
+                    current_user["subscription_tier"] = invitation_tier
+            else:
+                owner = await db.users.find_one({"user_id": team_member["owner_id"]})
+                if owner:
+                    invited_team_plan = owner.get("subscription_tier", "free")
+                    
+    user_data = {k: v for k, v in current_user.items() if k != "password_hash"}
+    if invited_team_plan:
+        user_data["invited_team_plan"] = invited_team_plan
+    return user_data
 
 @api_router.put("/auth/profile")
 async def update_profile(data: dict = Body(...), current_user: dict = Depends(get_current_user)):
@@ -2237,6 +2259,7 @@ async def invite_team_member(data: TeamMemberCreate, current_user: dict = Depend
         "email": member_email,
         "role": data.role,
         "status": "Pending",
+        "subscription_tier": data.subscription_tier or "free",
         "joined_date": datetime.now(timezone.utc).strftime("%b %d, %Y"),
         "monthly_miles": 0.0,
         "created_at": datetime.now(timezone.utc)
