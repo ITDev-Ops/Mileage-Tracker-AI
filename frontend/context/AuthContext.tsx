@@ -20,7 +20,7 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   login: (email?: string, password?: string) => Promise<void>;
-  register: (name?: string, email?: string, password?: string) => Promise<void>;
+  register: (name?: string, email?: string, password?: string, token?: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -122,14 +122,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const register = async (name?: string, email?: string, password?: string) => {
+  const register = async (name?: string, email?: string, password?: string, token?: string) => {
     setLoading(true);
     authLog('register: Calling custom backend register API...');
     try {
       if (!email || !password || !name) {
         throw new Error('Name, email, and password required');
       }
-      const response = await API.authRegister({ name, email, password });
+      const response = await API.authRegister({ name, email, password, token });
       await persistSession(response.access_token, response.user);
       authLog('register: Custom register complete');
     } catch (error: any) {

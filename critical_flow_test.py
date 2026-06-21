@@ -11,9 +11,20 @@ import requests
 import json
 import time
 from datetime import datetime, timezone, timedelta
+import sys
 
-# Base URL from review request
-BASE_URL = "https://gps-mileage-mvp.preview.emergentagent.com/api"
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
+import os
+
+# Base URL from review request or local fallback
+backend_url = os.environ.get('EXPO_PUBLIC_BACKEND_URL', 'http://localhost:8000').rstrip('/')
+if not backend_url.endswith('/api'):
+    backend_url = f"{backend_url}/api"
+BASE_URL = backend_url
 
 def test_critical_flows():
     """Test all critical flows in sequence"""
@@ -76,7 +87,7 @@ def test_critical_flows():
         
         if login_resp.status_code == 200:
             login_result = login_resp.json()
-            token = login_result.get("token")
+            token = login_result.get("access_token")
             headers = {"Authorization": f"Bearer {token}"}
             print(f"   ✅ Login successful - Token obtained (length: {len(token) if token else 0})")
             results["user_login"] = True

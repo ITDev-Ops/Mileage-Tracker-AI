@@ -10,4 +10,6 @@ async def main():
     for t in trips:
         print(f"Trip: {t.get('trip_id')}, dist: {t.get('distance')}, active: {t.get('is_active')}, class: {t.get('classification')}")
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
+

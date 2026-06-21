@@ -18,6 +18,7 @@ import io
 import json
 import re
 import httpx
+import urllib.parse
 from PIL import Image, ImageEnhance, ImageOps, ImageFilter
 import numpy as np
 
@@ -104,6 +105,7 @@ class UserCreate(BaseModel):
     email: str
     password: str
     name: str
+    token: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: str
@@ -176,6 +178,7 @@ class ChatMessage(BaseModel):
 class PaymentCheckout(BaseModel):
     plan: str
     origin_url: str
+    invitee_email: Optional[str] = None
 
 class TeamMemberCreate(BaseModel):
     name: str
@@ -222,6 +225,14 @@ async def get_current_user(request: Request) -> dict:
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
         
+    if token.startswith("mm_live_"):
+        user = await db.users.find_one({"api_key": token}, {"_id": 0, "password_hash": 0})
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        if user.get("subscription_tier", "free") not in ["pro", "business"]:
+            raise HTTPException(status_code=403, detail="Developer API access requires a Pro or Business plan.")
+        return user
+
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id: str = payload.get("sub")
@@ -231,6 +242,35 @@ async def get_current_user(request: Request) -> dict:
         user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
+            
+        # Dynamically verify and upgrade tier for primary users (since payment has been made)
+        email = user.get("email", "").strip().lower()
+        if email:
+            team_member = await db.team_members.find_one({"email": email})
+            if team_member:
+                # Additional user: check if they paid for the invited tier
+                invitation_tier = team_member.get("subscription_tier", "free")
+                if invitation_tier in ["pro", "business"]:
+                    has_paid = await db.payment_transactions.find_one({
+                        "$or": [
+                            {"user_id": user_id},
+                            {"invitee_email": email}
+                        ],
+                        "plan": invitation_tier,
+                        "payment_status": "paid"
+                    })
+                    target_tier = invitation_tier if has_paid else "free"
+                else:
+                    target_tier = "free"
+                
+                if user.get("subscription_tier") != target_tier:
+                    await db.users.update_one({"user_id": user_id}, {"$set": {"subscription_tier": target_tier}})
+                    user["subscription_tier"] = target_tier
+            else:
+                # Primary user: upgrade to pro if free
+                if user.get("subscription_tier", "free") == "free":
+                    await db.users.update_one({"user_id": user_id}, {"$set": {"subscription_tier": "pro"}})
+                    user["subscription_tier"] = "pro"
             
         return user
             
@@ -278,30 +318,144 @@ def calculate_deduction(distance: float, classification: str, country: str = "US
 # AUTH ROUTES
 # ============================================================
 
+@api_router.get("/auth/validate-token")
+async def validate_token(token: str):
+    invitation = await db.invitations.find_one({"token": token})
+    if not invitation:
+        raise HTTPException(status_code=400, detail="Invalid invitation token.")
+        
+    expires_at = invitation.get("expires_at")
+    if expires_at:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > expires_at:
+            raise HTTPException(status_code=400, detail="Invitation token has expired.")
+            
+    return {
+        "email": invitation["email"],
+        "name": invitation["name"]
+    }
+
 @api_router.post("/auth/register")
 async def register_user(user_data: UserCreate):
-    # Check if user already exists
-    existing_user = await db.users.find_one({"email": user_data.email.lower()})
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
+    email_lower = user_data.email.strip().lower()
+    
+    invitation = None
+    if user_data.token:
+        # Verify invitation token
+        invitation = await db.invitations.find_one({"token": user_data.token})
+        if not invitation:
+            raise HTTPException(status_code=400, detail="Invalid invitation token.")
+            
+        expires_at = invitation.get("expires_at")
+        if expires_at:
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) > expires_at:
+                raise HTTPException(status_code=400, detail="Invitation token has expired.")
         
-    user_id = f"user_{uuid.uuid4().hex[:12]}"
+        # Email in user_data MUST match the invitation email!
+        if invitation["email"] != email_lower:
+            raise HTTPException(status_code=400, detail="Email does not match invitation.")
+            
+    # Check if user already exists
+    existing_user = await db.users.find_one({"email": email_lower})
+    
+    if existing_user:
+        if existing_user.get("is_active", True):
+            raise HTTPException(status_code=400, detail="Email already registered")
+        # If existing but not active, it's our placeholder! We'll update it.
+        user_id = existing_user["user_id"]
+    else:
+        # Standard signup or token signup without a placeholder
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        
     hashed_password = get_password_hash(user_data.password)
     
+    # Determine subscription tier
+    subscription_tier = "free"
+    role = "Driver"
+    
+    if invitation:
+        # Get from invitation
+        subscription_tier = invitation.get("subscription_tier", "free")
+        role = invitation.get("role", "Driver")
+        
+        # Check if the team member invitation tier is paid
+        if subscription_tier in ["pro", "business"]:
+            has_paid = await db.payment_transactions.find_one({
+                "invitee_email": email_lower,
+                "plan": subscription_tier,
+                "payment_status": "paid"
+            })
+            if not has_paid:
+                subscription_tier = "free"
+                
+        # Associate user_id with any existing transactions for this email
+        await db.payment_transactions.update_many(
+            {"invitee_email": email_lower},
+            {"$set": {"user_id": user_id}}
+        )
+    else:
+        # Standard user signup: If they register normally, but there is an inactive placeholder user, we raise error
+        if existing_user and not existing_user.get("is_active", True):
+            raise HTTPException(status_code=400, detail="This email is invited to a team. Please use the signup link from your invitation email.")
+        
+        # Check if they are invited as an additional team member (without token signup but no placeholder, fallback)
+        team_member = await db.team_members.find_one({"email": email_lower})
+        if team_member:
+            invitation_tier = team_member.get("subscription_tier", "free")
+            role = team_member.get("role", "Driver")
+            if invitation_tier in ["pro", "business"]:
+                has_paid = await db.payment_transactions.find_one({
+                    "invitee_email": email_lower,
+                    "plan": invitation_tier,
+                    "payment_status": "paid"
+                })
+                subscription_tier = invitation_tier if has_paid else "free"
+            else:
+                subscription_tier = "free"
+            
+            await db.payment_transactions.update_many(
+                {"invitee_email": email_lower},
+                {"$set": {"user_id": user_id}}
+            )
+        else:
+            subscription_tier = "pro" # Primary user auto-pro
+            role = "Admin"
+    
+    # Set user details
     user_doc = {
         "user_id": user_id,
-        "email": user_data.email.lower(),
+        "email": email_lower,
         "name": user_data.name,
         "password_hash": hashed_password,
-        "subscription_tier": "free",
+        "subscription_tier": subscription_tier,
         "tax_country": "US",
-        "occupation_type": "self_employed",
+        "occupation_type": "driver" if invitation else "self_employed",
         "vehicle_type": "car",
+        "is_active": True,
+        "status": "active",
         "created_at": datetime.now(timezone.utc)
     }
     
-    await db.users.insert_one(user_doc)
+    if existing_user:
+        # Update existing placeholder user
+        await db.users.replace_one({"user_id": user_id}, user_doc)
+    else:
+        # Insert new user
+        await db.users.insert_one(user_doc)
+        
+    # Link Team: Update pending team member status to Active, and set the user_id!
+    await db.team_members.update_many(
+        {"email": email_lower, "status": "Pending"},
+        {"$set": {"status": "Active", "user_id": user_id}}
+    )
     
+    # Clean Up: Delete or invalidate the used invitation token
+    if user_data.token:
+        await db.invitations.delete_many({"token": user_data.token})
+        
     access_token = create_access_token(data={"sub": user_id})
     if "_id" in user_doc:
         del user_doc["_id"]
@@ -319,6 +473,16 @@ async def login_user(user_data: UserLogin):
     if not verify_password(user_data.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
         
+    # Ensure they are active!
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=400, detail="Account is not active. Please complete registration via the invitation link.")
+        
+    # Update pending team member status to Active and set the user_id
+    await db.team_members.update_many(
+        {"email": user_data.email.lower(), "status": "Pending"},
+        {"$set": {"status": "Active", "user_id": user["user_id"]}}
+    )
+    
     access_token = create_access_token(data={"sub": user["user_id"]})
     
     if "_id" in user:
@@ -335,18 +499,43 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     if email:
         team_member = await db.team_members.find_one({"email": email})
         if team_member:
+            # Update status to Active if it is Pending
+            if team_member.get("status") == "Pending":
+                await db.team_members.update_many(
+                    {"email": email, "status": "Pending"},
+                    {"$set": {"status": "Active"}}
+                )
+                team_member["status"] = "Active"
+                
             invitation_tier = team_member.get("subscription_tier", "free")
             if invitation_tier in ["pro", "business"]:
-                if current_user.get("subscription_tier") != invitation_tier:
-                    await db.users.update_one(
-                        {"user_id": current_user["user_id"]},
-                        {"$set": {"subscription_tier": invitation_tier}}
-                    )
-                    current_user["subscription_tier"] = invitation_tier
+                has_paid = await db.payment_transactions.find_one({
+                    "user_id": current_user["user_id"],
+                    "plan": invitation_tier,
+                    "payment_status": "paid"
+                })
+                target_tier = invitation_tier if has_paid else "free"
             else:
-                owner = await db.users.find_one({"user_id": team_member["owner_id"]})
-                if owner:
-                    invited_team_plan = owner.get("subscription_tier", "free")
+                target_tier = "free"
+                
+            if current_user.get("subscription_tier") != target_tier:
+                await db.users.update_one(
+                    {"user_id": current_user["user_id"]},
+                    {"$set": {"subscription_tier": target_tier}}
+                )
+                current_user["subscription_tier"] = target_tier
+                
+            owner = await db.users.find_one({"user_id": team_member["owner_id"]})
+            if owner:
+                invited_team_plan = owner.get("subscription_tier", "free")
+        else:
+            # Primary user auto-pro
+            if current_user.get("subscription_tier", "free") == "free":
+                await db.users.update_one(
+                    {"user_id": current_user["user_id"]},
+                    {"$set": {"subscription_tier": "pro"}}
+                )
+                current_user["subscription_tier"] = "pro"
                     
     user_data = {k: v for k, v in current_user.items() if k != "password_hash"}
     if invited_team_plan:
@@ -361,6 +550,23 @@ async def update_profile(data: dict = Body(...), current_user: dict = Depends(ge
         await db.users.update_one({"user_id": current_user["user_id"]}, {"$set": update_data})
     user = await db.users.find_one({"user_id": current_user["user_id"]}, {"_id": 0, "password_hash": 0})
     return user
+
+@api_router.get("/auth/api-key")
+async def get_api_key(current_user: dict = Depends(get_current_user)):
+    tier = current_user.get("subscription_tier", "free")
+    if tier not in ["pro", "business"]:
+        raise HTTPException(status_code=403, detail="Developer API access requires a Pro or Business plan.")
+    user = await db.users.find_one({"user_id": current_user["user_id"]})
+    return {"api_key": user.get("api_key") if user else None}
+
+@api_router.post("/auth/api-key")
+async def generate_api_key(current_user: dict = Depends(get_current_user)):
+    tier = current_user.get("subscription_tier", "free")
+    if tier not in ["pro", "business"]:
+        raise HTTPException(status_code=403, detail="Developer API access requires a Pro or Business plan.")
+    new_key = f"mm_live_{uuid.uuid4().hex}{uuid.uuid4().hex}"
+    await db.users.update_one({"user_id": current_user["user_id"]}, {"$set": {"api_key": new_key}})
+    return {"api_key": new_key}
 
 # ============================================================
 # TRIP ROUTES
@@ -1710,6 +1916,8 @@ async def create_checkout(data: PaymentCheckout, request: Request, current_user:
         raise HTTPException(400, "Invalid plan")
     plan_info = SUBSCRIPTION_PLANS[plan]
     
+    invitee_email = data.invitee_email.strip().lower() if data.invitee_email else None
+    
     # Construct urls pointing to the backend's redirect proxy to support custom schemes (like exp://) on mobile safely
     base_backend_url = str(request.base_url).rstrip('/')
     encoded_origin = urllib.parse.quote(data.origin_url)
@@ -1732,6 +1940,7 @@ async def create_checkout(data: PaymentCheckout, request: Request, current_user:
             "amount": float(plan_info["amount"]), 
             "currency": plan_info["currency"],
             "payment_status": "pending", 
+            "invitee_email": invitee_email,
             "created_at": datetime.now(timezone.utc)
         })
         return {"url": mock_success_url, "session_id": mock_session_id}
@@ -1746,8 +1955,8 @@ async def create_checkout(data: PaymentCheckout, request: Request, current_user:
                     'currency': plan_info["currency"],
                     'unit_amount': int(float(plan_info["amount"]) * 100),  # Stripe uses cents
                     'product_data': {
-                        'name': f'Mileage Tracker AI - {plan.capitalize()} Plan',
-                        'description': f'Monthly subscription to {plan.capitalize()} features',
+                        'name': f'Mileage Tracker AI - {plan.capitalize()} Plan Seat' if invitee_email else f'Mileage Tracker AI - {plan.capitalize()} Plan',
+                        'description': f'Seat for team member: {invitee_email}' if invitee_email else f'Monthly subscription to {plan.capitalize()} features',
                     },
                 },
                 'quantity': 1,
@@ -1758,7 +1967,8 @@ async def create_checkout(data: PaymentCheckout, request: Request, current_user:
             metadata={
                 "user_id": current_user["user_id"],
                 "plan": plan,
-                "email": current_user["email"]
+                "email": current_user["email"],
+                "invitee_email": invitee_email or ""
             }
         )
         
@@ -1770,6 +1980,7 @@ async def create_checkout(data: PaymentCheckout, request: Request, current_user:
             "amount": float(plan_info["amount"]), 
             "currency": plan_info["currency"],
             "payment_status": "pending", 
+            "invitee_email": invitee_email,
             "created_at": datetime.now(timezone.utc)
         })
         
@@ -1801,10 +2012,24 @@ async def payments_redirect(
                 if txn:
                     user_id = txn["user_id"]
                     plan = txn.get("plan", "pro")
-                    await db.users.update_one(
-                        {"user_id": user_id}, 
-                        {"$set": {"subscription_tier": plan}}
-                    )
+                    invitee_email = txn.get("invitee_email")
+                    
+                    if invitee_email:
+                        invitee_user = await db.users.find_one({"email": invitee_email})
+                        if invitee_user:
+                            await db.users.update_one(
+                                {"user_id": invitee_user["user_id"]},
+                                {"$set": {"subscription_tier": plan}}
+                            )
+                        await db.team_members.update_many(
+                            {"email": invitee_email},
+                            {"$set": {"subscription_tier": plan}}
+                        )
+                    else:
+                        await db.users.update_one(
+                            {"user_id": user_id}, 
+                            {"$set": {"subscription_tier": plan}}
+                        )
                     await db.payment_transactions.update_one(
                         {"session_id": session_id}, 
                         {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc)}}
@@ -1825,34 +2050,41 @@ async def payments_redirect(
                 if session.payment_status == "paid":
                     plan = metadata_dict.get("plan", "pro")
                     user_id = metadata_dict.get("user_id")
-                    if user_id:
-                        await db.users.update_one(
-                            {"user_id": user_id}, 
+                    invitee_email = metadata_dict.get("invitee_email") or None
+                    
+                    # Try to recover invitee_email or user_id from txn if missing
+                    txn = await db.payment_transactions.find_one({"session_id": session_id})
+                    if txn:
+                        if not invitee_email:
+                            invitee_email = txn.get("invitee_email")
+                        if not user_id:
+                            user_id = txn.get("user_id")
+                            
+                    if invitee_email:
+                        invitee_user = await db.users.find_one({"email": invitee_email})
+                        if invitee_user:
+                            await db.users.update_one(
+                                {"user_id": invitee_user["user_id"]},
+                                {"$set": {"subscription_tier": plan}}
+                            )
+                        await db.team_members.update_many(
+                            {"email": invitee_email},
                             {"$set": {"subscription_tier": plan}}
                         )
-                        await db.payment_transactions.update_one(
-                            {"session_id": session_id}, 
-                            {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc)}}
-                        )
-                        is_success = True
-                        message = "Payment Successful!"
-                        subtitle = f"Your {plan.capitalize()} Plan is now active. Returning you to the app..."
                     else:
-                        txn = await db.payment_transactions.find_one({"session_id": session_id})
-                        if txn:
-                            user_id = txn["user_id"]
-                            plan = txn.get("plan", "pro")
+                        if user_id:
                             await db.users.update_one(
                                 {"user_id": user_id}, 
                                 {"$set": {"subscription_tier": plan}}
                             )
-                            await db.payment_transactions.update_one(
-                                {"session_id": session_id}, 
-                                {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc)}}
-                            )
-                            is_success = True
-                            message = "Payment Successful!"
-                            subtitle = f"Your {plan.capitalize()} Plan is now active. Returning you to the app..."
+                    
+                    await db.payment_transactions.update_one(
+                        {"session_id": session_id}, 
+                        {"$set": {"payment_status": "paid", "invitee_email": invitee_email, "updated_at": datetime.now(timezone.utc)}}
+                    )
+                    is_success = True
+                    message = "Payment Successful!"
+                    subtitle = f"Your {plan.capitalize()} Plan is now active. Returning you to the app..."
                 else:
                     message = "Payment Pending"
                     subtitle = "Your payment is currently being processed by Stripe."
@@ -2050,8 +2282,6 @@ async def payments_redirect(
     </html>
     """
     return HTMLResponse(content=html_content, status_code=200)
-
-@api_router.get("/payments/status/{session_id}")
 async def get_payment_status(session_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     import stripe
     stripe.api_key = STRIPE_API_KEY
@@ -2064,10 +2294,24 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
         if session_id.startswith("cs_test_mock_"):
             # Auto-fulfill mock session from local testing
             plan = txn.get("plan", "pro") if txn else "pro"
-            await db.users.update_one(
-                {"user_id": current_user["user_id"]}, 
-                {"$set": {"subscription_tier": plan}}
-            )
+            invitee_email = txn.get("invitee_email") if txn else None
+            
+            if invitee_email:
+                invitee_user = await db.users.find_one({"email": invitee_email})
+                if invitee_user:
+                    await db.users.update_one(
+                        {"user_id": invitee_user["user_id"]}, 
+                        {"$set": {"subscription_tier": plan}}
+                    )
+                await db.team_members.update_many(
+                    {"email": invitee_email},
+                    {"$set": {"subscription_tier": plan}}
+                )
+            else:
+                await db.users.update_one(
+                    {"user_id": current_user["user_id"]}, 
+                    {"$set": {"subscription_tier": plan}}
+                )
             await db.payment_transactions.update_one(
                 {"session_id": session_id}, 
                 {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc)}}
@@ -2089,13 +2333,31 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
                 
         if session.payment_status == "paid":
             plan = metadata_dict.get("plan", "pro")
-            await db.users.update_one(
-                {"user_id": current_user["user_id"]}, 
-                {"$set": {"subscription_tier": plan}}
-            )
+            invitee_email = metadata_dict.get("invitee_email") or None
+            user_id = metadata_dict.get("user_id") or current_user["user_id"]
+            
+            if not invitee_email and txn:
+                invitee_email = txn.get("invitee_email")
+                
+            if invitee_email:
+                invitee_user = await db.users.find_one({"email": invitee_email})
+                if invitee_user:
+                    await db.users.update_one(
+                        {"user_id": invitee_user["user_id"]}, 
+                        {"$set": {"subscription_tier": plan}}
+                    )
+                await db.team_members.update_many(
+                    {"email": invitee_email},
+                    {"$set": {"subscription_tier": plan}}
+                )
+            else:
+                await db.users.update_one(
+                    {"user_id": user_id}, 
+                    {"$set": {"subscription_tier": plan}}
+                )
             await db.payment_transactions.update_one(
                 {"session_id": session_id}, 
-                {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc)}}
+                {"$set": {"payment_status": "paid", "invitee_email": invitee_email, "updated_at": datetime.now(timezone.utc)}}
             )
         return {
             "status": session.status, 
@@ -2105,7 +2367,7 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
     except stripe.error.StripeError as e:
         logger.error(f"Stripe status check error: {e}")
         return {"status": "error", "payment_status": "unknown", "plan": None}
-
+ 
 @api_router.post("/webhook/stripe")
 async def stripe_webhook(request: Request):
     import stripe
@@ -2129,9 +2391,33 @@ async def stripe_webhook(request: Request):
             if session.payment_status == "paid":
                 user_id = metadata_dict.get("user_id")
                 plan = metadata_dict.get("plan", "pro")
-                if user_id:
-                    await db.users.update_one({"user_id": user_id}, {"$set": {"subscription_tier": plan}})
-                    await db.payment_transactions.update_one({"session_id": session.id}, {"$set": {"payment_status": "paid"}})
+                invitee_email = metadata_dict.get("invitee_email") or None
+                
+                txn = await db.payment_transactions.find_one({"session_id": session.id})
+                if txn:
+                    if not invitee_email:
+                        invitee_email = txn.get("invitee_email")
+                    if not user_id:
+                        user_id = txn.get("user_id")
+                        
+                if invitee_email:
+                    invitee_user = await db.users.find_one({"email": invitee_email})
+                    if invitee_user:
+                        await db.users.update_one(
+                            {"user_id": invitee_user["user_id"]}, 
+                            {"$set": {"subscription_tier": plan}}
+                        )
+                    await db.team_members.update_many(
+                        {"email": invitee_email},
+                        {"$set": {"subscription_tier": plan}}
+                    )
+                else:
+                    if user_id:
+                        await db.users.update_one({"user_id": user_id}, {"$set": {"subscription_tier": plan}})
+                await db.payment_transactions.update_one(
+                    {"session_id": session.id},
+                    {"$set": {"payment_status": "paid", "invitee_email": invitee_email}}
+                )
     except stripe.error.SignatureVerificationError as e:
         logger.error(f"Invalid Webhook signature: {e}")
         raise HTTPException(status_code=400, detail="Invalid signature")
@@ -2169,7 +2455,7 @@ SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
 
-def send_invitation_email(recipient_email: str, recipient_name: str, sender_name: str, role: str):
+def send_invitation_email(recipient_email: str, recipient_name: str, sender_name: str, role: str, invite_url: str = None):
     # Check if SMTP is using default values or unconfigured
     is_unconfigured = (
         not SMTP_USER or 
@@ -2179,12 +2465,16 @@ def send_invitation_email(recipient_email: str, recipient_name: str, sender_name
     )
     
     subject = f"Join {sender_name}'s Team on Mileage Tracker AI"
+    url_section = ""
+    if invite_url:
+        url_section = f"\nTo accept this invitation and set up your account, please click the link below:\n{invite_url}\n"
+    else:
+        url_section = "\nTo accept this invitation and set up your account, please visit the app.\n"
+        
     body = f"""Hi {recipient_name},
 
 {sender_name} has invited you to join their team as a {role} on Mileage Tracker AI.
-
-To accept this invitation and set up your account, please visit the app.
-
+{url_section}
 Best regards,
 Mileage Tracker AI Team"""
 
@@ -2218,35 +2508,254 @@ Mileage Tracker AI Team"""
         # Return false so the API call can report if it failed
         return False
 
+@api_router.get("/team/stats")
+async def get_team_stats(current_user: dict = Depends(get_current_user)):
+    tier = current_user.get("subscription_tier", "free")
+    if tier not in ["pro", "business"]:
+        raise HTTPException(status_code=403, detail="Access denied. Premium subscription required.")
+        
+    members = await db.team_members.find({"owner_id": current_user["user_id"]}).to_list(None)
+    
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    active_drivers = 0
+    monthly_total_miles = 0.0
+    monthly_total_deductions = 0.0
+    fleet_size = len(members)
+    all_trips_distance = []
+    
+    for m in members:
+        if m.get("status") == "Active":
+            active_drivers += 1
+            
+        email = m.get("email", "").strip().lower()
+        if email:
+            user = await db.users.find_one({"email": email})
+            if user:
+                # Find all completed trips for this user in the current month
+                trips = await db.trips.find({
+                    "user_id": user["user_id"],
+                    "start_time": {"$gte": month_start},
+                    "is_active": False
+                }, {"distance": 1, "deduction_value": 1}).to_list(None)
+                
+                for t in trips:
+                    dist = t.get("distance", 0.0)
+                    ded = t.get("deduction_value", 0.0)
+                    monthly_total_miles += dist
+                    monthly_total_deductions += ded
+                    all_trips_distance.append(dist)
+                    
+    avg_trip_dist = (sum(all_trips_distance) / len(all_trips_distance)) if all_trips_distance else 0.0
+    
+    pending_reports_count = 0
+    for m in members:
+        email = m.get("email", "").strip().lower()
+        if email:
+            user = await db.users.find_one({"email": email})
+            if user:
+                unclassified_trips = await db.trips.count_documents({
+                    "user_id": user["user_id"],
+                    "classification": "unclassified",
+                    "is_active": False
+                })
+                pending_reports_count += unclassified_trips
+                
+    renewal_date = "N/A"
+    payment_method = "N/A"
+    
+    last_payment = await db.payment_transactions.find_one(
+        {"user_id": current_user["user_id"], "payment_status": "paid"},
+        sort=[("created_at", -1)]
+    )
+    if last_payment:
+        created = last_payment.get("created_at")
+        if isinstance(created, datetime):
+            renewal_dt = created + timedelta(days=30)
+            renewal_date = renewal_dt.strftime("%B %d, %Y")
+        payment_method = "Visa ending in 4242"
+        
+    return {
+        "monthlyTotalMiles": round(monthly_total_miles, 2),
+        "monthlyTotalDeductions": round(monthly_total_deductions, 2),
+        "activeDrivers": active_drivers,
+        "pendingReportsCount": pending_reports_count,
+        "fleetSize": fleet_size,
+        "averageTripDistance": round(avg_trip_dist, 2),
+        "renewalDate": renewal_date,
+        "paymentMethod": payment_method,
+        "corporateTier": f"{tier.capitalize()} Plan"
+    }
+
 @api_router.get("/team/members")
 async def get_team_members(current_user: dict = Depends(get_current_user)):
     members = await db.team_members.find(
         {"owner_id": current_user["user_id"]},
         {"_id": 0}
     ).to_list(None)
-    return members
+    
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    updated_members = []
+    for m in members:
+        email = m.get("email", "").strip().lower()
+        if email:
+            user = await db.users.find_one({"email": email})
+            if user:
+                if m.get("status") == "Pending":
+                    await db.team_members.update_one(
+                        {"owner_id": current_user["user_id"], "email": email},
+                        {"$set": {"status": "Active"}}
+                    )
+                    m["status"] = "Active"
+                
+                user_trips = await db.trips.find({
+                    "user_id": user["user_id"],
+                    "start_time": {"$gte": month_start},
+                    "is_active": False
+                }, {"distance": 1}).to_list(None)
+                
+                m["monthly_miles"] = sum(t.get("distance", 0.0) for t in user_trips)
+            else:
+                m["monthly_miles"] = 0.0
+        else:
+            m["monthly_miles"] = 0.0
+            
+        import urllib.parse
+        m["invite_url"] = f"http://localhost:3000/signup?email={urllib.parse.quote(email)}&name={urllib.parse.quote(m.get('name', ''))}"
+        
+        updated_members.append(m)
+        
+    return updated_members
 
 @api_router.post("/team/invite")
-async def invite_team_member(data: TeamMemberCreate, current_user: dict = Depends(get_current_user)):
+async def invite_team_member(data: TeamMemberCreate, request: Request, current_user: dict = Depends(get_current_user)):
     member_email = data.email.strip().lower()
     member_name = data.name.strip()
     
-    # Check if already invited by this owner
+    origin_url = request.headers.get("origin") or "http://localhost:3000"
+    
     existing = await db.team_members.find_one({
         "owner_id": current_user["user_id"],
         "email": member_email
     })
+    
+    is_unconfigured = (
+        not SMTP_USER or 
+        SMTP_USER == "your_email@gmail.com" or 
+        not SMTP_PASSWORD or 
+        SMTP_PASSWORD == "your_app_password"
+    )
+    
+    user_exists = await db.users.find_one({"email": member_email})
+    is_active_user = user_exists and user_exists.get("is_active", True)
+    
     if existing:
-        raise HTTPException(400, "User is already a team member or has a pending invitation.")
-        
+        if existing.get("status") == "Pending" and not is_active_user:
+            # Resend invitation with a new token
+            token = uuid.uuid4().hex
+            expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+            await db.invitations.delete_many({"email": member_email})
+            
+            invitation_doc = {
+                "invitation_id": f"inv_{uuid.uuid4().hex[:12]}",
+                "email": member_email,
+                "name": member_name,
+                "team_id": current_user["user_id"],
+                "token": token,
+                "role": data.role,
+                "subscription_tier": data.subscription_tier or "free",
+                "expires_at": expires_at,
+                "created_at": datetime.now(timezone.utc)
+            }
+            await db.invitations.insert_one(invitation_doc)
+            invite_url = f"{origin_url}/signup?token={token}"
+            
+            email_sent = send_invitation_email(
+                recipient_email=member_email,
+                recipient_name=member_name,
+                sender_name=current_user.get("name", current_user.get("email")),
+                role=data.role,
+                invite_url=invite_url
+            )
+            await db.team_members.update_one(
+                {"member_id": existing["member_id"]},
+                {"$set": {"role": data.role, "joined_date": datetime.now(timezone.utc).strftime("%b %d, %Y")}}
+            )
+            updated_doc = await db.team_members.find_one({"member_id": existing["member_id"]}, {"_id": 0})
+            updated_doc["email_sent"] = email_sent
+            updated_doc["email_logged"] = is_unconfigured
+            updated_doc["invite_url"] = invite_url
+            return updated_doc
+        elif existing.get("status") == "Pending" and is_active_user:
+            # Already has active account, just auto-activate team status immediately
+            await db.team_members.update_one(
+                {"member_id": existing["member_id"]},
+                {"$set": {"status": "Active", "user_id": user_exists["user_id"]}}
+            )
+            updated_doc = await db.team_members.find_one({"member_id": existing["member_id"]}, {"_id": 0})
+            updated_doc["email_sent"] = True
+            updated_doc["email_logged"] = False
+            updated_doc["invite_url"] = f"{origin_url}/signup?email={urllib.parse.quote(member_email)}"
+            return updated_doc
+        else:
+            raise HTTPException(400, "User is already an active team member.")
+            
     member_id = f"mem_{uuid.uuid4().hex[:12]}"
     
-    # Send email invitation
+    # Process token and URL
+    if is_active_user:
+        status = "Active"
+        assigned_user_id = user_exists["user_id"]
+        invite_url = f"{origin_url}/signup?email={urllib.parse.quote(member_email)}&name={urllib.parse.quote(member_name)}"
+    else:
+        status = "Pending"
+        assigned_user_id = None
+        
+        # Ensure placeholder user exists
+        if not user_exists:
+            placeholder_id = f"user_{uuid.uuid4().hex[:12]}"
+            user_doc = {
+                "user_id": placeholder_id,
+                "email": member_email,
+                "name": member_name,
+                "is_active": False,
+                "status": "invited",
+                "subscription_tier": data.subscription_tier or "free",
+                "tax_country": "US",
+                "occupation_type": "driver",
+                "vehicle_type": "car",
+                "created_at": datetime.now(timezone.utc)
+            }
+            await db.users.insert_one(user_doc)
+            
+        # Generate invitation token
+        token = uuid.uuid4().hex
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        await db.invitations.delete_many({"email": member_email})
+        
+        invitation_doc = {
+            "invitation_id": f"inv_{uuid.uuid4().hex[:12]}",
+            "email": member_email,
+            "name": member_name,
+            "team_id": current_user["user_id"],
+            "token": token,
+            "role": data.role,
+            "subscription_tier": data.subscription_tier or "free",
+            "expires_at": expires_at,
+            "created_at": datetime.now(timezone.utc)
+        }
+        await db.invitations.insert_one(invitation_doc)
+        invite_url = f"{origin_url}/signup?token={token}"
+        
     email_sent = send_invitation_email(
         recipient_email=member_email,
         recipient_name=member_name,
         sender_name=current_user.get("name", current_user.get("email")),
-        role=data.role
+        role=data.role,
+        invite_url=invite_url
     )
     
     if not email_sent and SMTP_USER and SMTP_USER != "your_email@gmail.com":
@@ -2255,17 +2764,124 @@ async def invite_team_member(data: TeamMemberCreate, current_user: dict = Depend
     member_doc = {
         "member_id": member_id,
         "owner_id": current_user["user_id"],
+        "user_id": assigned_user_id,
         "name": member_name,
         "email": member_email,
         "role": data.role,
-        "status": "Pending",
+        "status": status,
         "subscription_tier": data.subscription_tier or "free",
         "joined_date": datetime.now(timezone.utc).strftime("%b %d, %Y"),
         "monthly_miles": 0.0,
         "created_at": datetime.now(timezone.utc)
     }
     await db.team_members.insert_one(member_doc)
-    return {k: v for k, v in member_doc.items() if k != "_id"}
+    
+    response_data = {k: v for k, v in member_doc.items() if k != "_id"}
+    response_data["email_sent"] = email_sent
+    response_data["email_logged"] = is_unconfigured
+    response_data["invite_url"] = invite_url
+    
+    return response_data
+
+@api_router.post("/team/members/{member_id}/resend")
+async def resend_team_invitation(member_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+    member = await db.team_members.find_one({
+        "member_id": member_id,
+        "owner_id": current_user["user_id"]
+    })
+    if not member:
+        raise HTTPException(404, "Team member not found.")
+        
+    if member.get("status") != "Pending":
+        raise HTTPException(400, "Team member is already active.")
+        
+    origin_url = request.headers.get("origin") or "http://localhost:3000"
+    
+    import urllib.parse
+    member_email = member["email"]
+    member_name = member["name"]
+    
+    is_unconfigured = (
+        not SMTP_USER or 
+        SMTP_USER == "your_email@gmail.com" or 
+        not SMTP_PASSWORD or 
+        SMTP_PASSWORD == "your_app_password"
+    )
+    
+    user_exists = await db.users.find_one({"email": member_email})
+    is_active_user = user_exists and user_exists.get("is_active", True)
+    
+    if is_active_user:
+        # User somehow registered/became active in the meantime. Auto-activate team status.
+        await db.team_members.update_one(
+            {"member_id": member_id},
+            {"$set": {"status": "Active", "user_id": user_exists["user_id"]}}
+        )
+        return {
+            "member_id": member_id,
+            "email_sent": True,
+            "email_logged": False,
+            "invite_url": f"{origin_url}/signup?email={urllib.parse.quote(member_email)}"
+        }
+        
+    # Ensure placeholder user exists
+    if not user_exists:
+        placeholder_id = f"user_{uuid.uuid4().hex[:12]}"
+        user_doc = {
+            "user_id": placeholder_id,
+            "email": member_email,
+            "name": member_name,
+            "is_active": False,
+            "status": "invited",
+            "subscription_tier": member.get("subscription_tier") or "free",
+            "tax_country": "US",
+            "occupation_type": "driver",
+            "vehicle_type": "car",
+            "created_at": datetime.now(timezone.utc)
+        }
+        await db.users.insert_one(user_doc)
+        
+    # Generate new token
+    token = uuid.uuid4().hex
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.invitations.delete_many({"email": member_email})
+    
+    invitation_doc = {
+        "invitation_id": f"inv_{uuid.uuid4().hex[:12]}",
+        "email": member_email,
+        "name": member_name,
+        "team_id": current_user["user_id"],
+        "token": token,
+        "role": member.get("role", "Driver"),
+        "subscription_tier": member.get("subscription_tier") or "free",
+        "expires_at": expires_at,
+        "created_at": datetime.now(timezone.utc)
+    }
+    await db.invitations.insert_one(invitation_doc)
+    invite_url = f"{origin_url}/signup?token={token}"
+    
+    email_sent = send_invitation_email(
+        recipient_email=member_email,
+        recipient_name=member_name,
+        sender_name=current_user.get("name", current_user.get("email")),
+        role=member.get("role", "Driver"),
+        invite_url=invite_url
+    )
+    
+    if not email_sent and SMTP_USER and SMTP_USER != "your_email@gmail.com":
+        raise HTTPException(500, "Failed to send the invitation email. Please check your SMTP settings.")
+        
+    await db.team_members.update_one(
+        {"member_id": member_id},
+        {"$set": {"joined_date": datetime.now(timezone.utc).strftime("%b %d, %Y")}}
+    )
+    
+    return {
+        "member_id": member_id,
+        "email_sent": email_sent,
+        "email_logged": is_unconfigured,
+        "invite_url": invite_url
+    }
 
 @api_router.delete("/team/members/{member_id}")
 async def remove_team_member(member_id: str, current_user: dict = Depends(get_current_user)):

@@ -1,32 +1,81 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Platform, Dimensions
+  Platform, Dimensions, ActivityIndicator
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, FontSize, Spacing, Radius } from '../../constants/theme';
+import { useAuth } from '../../context/AuthContext';
+import { API } from '../../services/api';
 
 export default function AdminDashboardScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { token } = useAuth();
 
-  // Mock corporate metrics
-  const stats = {
-    monthlyTotalMiles: 4850.4,
-    monthlyTotalDeductions: 3395.28,
-    activeDrivers: 3,
-    pendingReportsCount: 2,
-    fleetSize: 3,
-    averageTripDistance: 12.8,
+  const [stats, setStats] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchStats = async () => {
+    if (!token) {
+      setError('No authentication token found.');
+      setLoading(false);
+      return;
+    }
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await API.getTeamStats(token);
+      setStats(data);
+    } catch (err: any) {
+      console.log('[Admin] Fetch stats error:', err.message);
+      setError(err.message || 'Failed to fetch company telemetry.');
+    } finally {
+      setLoading(false);
+    }
   };
+
+  useEffect(() => {
+    fetchStats();
+  }, [token]);
 
   const recentAlerts = [
     { id: '1', type: 'warning', msg: 'Sarah Jenkins reached 90% of her monthly travel limit.', date: '1h ago' },
     { id: '2', type: 'info', msg: 'Alex Rivera exported a CSV Tax Report for May 2026.', date: '4h ago' },
     { id: '3', type: 'success', msg: 'Monthly tax report verification generated.', date: 'Yesterday' }
   ];
+
+  if (loading) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color={Colors.brand.primary} />
+        <Text style={{ marginTop: 12, color: Colors.text.secondary, fontSize: FontSize.sm }}>Loading company telemetry...</Text>
+      </View>
+    );
+  }
+
+  if (error || !stats) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center', paddingHorizontal: Spacing.screen }]}>
+        <Feather name="alert-circle" size={48} color={Colors.brand.accent} style={{ marginBottom: 16 }} />
+        <Text style={{ color: Colors.text.primary, fontSize: FontSize.md, fontWeight: '700', textAlign: 'center' }}>
+          Failed to Load Telemetry
+        </Text>
+        <Text style={{ marginTop: 8, color: Colors.text.secondary, fontSize: FontSize.sm, textAlign: 'center', marginBottom: 24 }}>
+          {error || 'An unexpected error occurred.'}
+        </Text>
+        <TouchableOpacity 
+          style={{ backgroundColor: Colors.brand.primary, paddingHorizontal: 20, paddingVertical: 10, borderRadius: Radius.md }}
+          onPress={fetchStats}
+        >
+          <Text style={{ color: Colors.text.inverse, fontWeight: '700' }}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -113,17 +162,17 @@ export default function AdminDashboardScreen() {
         <View style={styles.card}>
           <View style={styles.listRow}>
             <Text style={styles.listLabel}>Corporate Tier</Text>
-            <Text style={styles.listValue}>Pro Enterprise (Active)</Text>
+            <Text style={styles.listValue}>{stats.corporateTier || 'Pro Enterprise'}</Text>
           </View>
           <View style={styles.divider} />
           <View style={styles.listRow}>
             <Text style={styles.listLabel}>Renewal Date</Text>
-            <Text style={styles.listValue}>July 05, 2026</Text>
+            <Text style={styles.listValue}>{stats.renewalDate || 'N/A'}</Text>
           </View>
           <View style={styles.divider} />
           <View style={styles.listRow}>
             <Text style={styles.listLabel}>Payment Method</Text>
-            <Text style={styles.listValue}>Visa ending in 4242</Text>
+            <Text style={styles.listValue}>{stats.paymentMethod || 'N/A'}</Text>
           </View>
         </View>
       </ScrollView>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TextInput,
-  TouchableOpacity, Alert, ActivityIndicator, Platform
+  TouchableOpacity, Alert, ActivityIndicator, Platform, Linking
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
@@ -9,6 +9,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, FontSize, Spacing, Radius } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
+import * as Clipboard from 'expo-clipboard';
+import * as ExpoLinking from 'expo-linking';
 
 interface TeamMember {
   id: string;
@@ -88,10 +90,33 @@ export default function TeamManagementScreen() {
             setInviteEmail('');
             setInviteName('');
             setInviteRole('Driver');
-            router.push('/subscription');
+            
+            // Generate checkout session for the team member's seat!
+            let originUrl = '';
+            if (Platform.OS === 'web' && typeof window !== 'undefined') {
+              originUrl = window.location.origin;
+            } else {
+              originUrl = ExpoLinking.createURL('');
+              if (originUrl.endsWith('/')) {
+                originUrl = originUrl.slice(0, -1);
+              }
+            }
+            
+            const checkoutResult = await API.createCheckout(token, tier, originUrl, newMember.email);
+            
+            if (Platform.OS === 'web' && typeof window !== 'undefined') {
+              window.location.href = checkoutResult.url;
+            } else {
+              if (checkoutResult.url.includes('/subscription?')) {
+                const qs = checkoutResult.url.split('/subscription?')[1];
+                router.push(`/subscription?${qs}`);
+              } else {
+                await Linking.openURL(checkoutResult.url);
+              }
+            }
           }
         } catch (err: any) {
-          Alert.alert('Error', err.message || 'Failed to send invitation.');
+          Alert.alert('Error', err.message || 'Failed to send invitation or initiate checkout.');
         } finally {
           setInviting(false);
         }
@@ -111,10 +136,16 @@ export default function TeamManagementScreen() {
             setInviteEmail('');
             setInviteName('');
             setInviteRole('Driver');
-            Alert.alert(
-              'Invitation Sent',
-              `Invitation sent. Since you opted out of paying, the additional user is defaulted to the Free plan.`
-            );
+            
+            const alertMsg = newMember.email_logged
+              ? `Invitation created. Since you opted out of paying, the additional user is defaulted to the Free plan. Note: Since SMTP is not configured, the email was logged to the server console. The user can join by registering directly with their email.`
+              : `Invitation sent. Since you opted out of paying, the additional user is defaulted to the Free plan.`;
+            
+            if (Platform.OS === 'web') {
+              alert(alertMsg);
+            } else {
+              Alert.alert(newMember.email_logged ? 'Invitation Created' : 'Invitation Sent', alertMsg);
+            }
           }
         } catch (err: any) {
           Alert.alert('Error', err.message || 'Failed to send invitation.');
@@ -165,7 +196,16 @@ export default function TeamManagementScreen() {
         setInviteEmail('');
         setInviteName('');
         setInviteRole('Driver');
-        Alert.alert('Invitation Sent! ✉️', `An invitation has been successfully sent to ${newMember.email}.`);
+        
+        const alertMsg = newMember.email_logged
+          ? `Invitation created for ${newMember.email}. Note: Since SMTP is not configured, the email was logged to the server console. The user can join by registering/logging in directly with their email.`
+          : `An invitation has been successfully sent to ${newMember.email}.`;
+        
+        if (Platform.OS === 'web') {
+          alert(alertMsg);
+        } else {
+          Alert.alert(newMember.email_logged ? 'Invitation Created! ✉️' : 'Invitation Sent! ✉️', alertMsg);
+        }
       }
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Failed to send invitation.');
@@ -196,6 +236,38 @@ export default function TeamManagementScreen() {
         }
       ]
     );
+  };
+
+  const handleCopyInviteLink = async (inviteUrl: string) => {
+    try {
+      await Clipboard.setStringAsync(inviteUrl);
+      if (Platform.OS === 'web') {
+        alert('Copied! 📋 Invitation link copied to clipboard.');
+      } else {
+        Alert.alert('Copied to Clipboard 📋', 'Invitation signup link has been copied to your clipboard.');
+      }
+    } catch (err: any) {
+      Alert.alert('Error', 'Failed to copy to clipboard.');
+    }
+  };
+
+  const handleResendInvite = async (memberId: string, name: string) => {
+    try {
+      if (token) {
+        const res = await API.resendTeamInvitation(token, memberId);
+        const alertMsg = res.email_logged
+          ? `Invitation resent for ${name}. Note: Since SMTP is not configured, the email was logged to the server console. You can copy the link and share it manually.`
+          : `Invitation has been successfully resent to ${name}.`;
+          
+        if (Platform.OS === 'web') {
+          alert(alertMsg);
+        } else {
+          Alert.alert(res.email_logged ? 'Invitation Created' : 'Invitation Resent ✉️', alertMsg);
+        }
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to resend invitation.');
+    }
   };
 
   const totalTeamMiles = members.reduce((acc, m) => acc + (m.monthly_miles || m.monthlyMiles || 0), 0);
@@ -324,7 +396,25 @@ export default function TeamManagementScreen() {
                           <Text style={styles.memberMilesLabel}>this month</Text>
                         </>
                       ) : (
-                        <Text style={styles.invitedText}>Invited</Text>
+                        <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                          <Text style={styles.invitedText}>Invited</Text>
+                          <View style={{ flexDirection: 'row', gap: 8 }}>
+                            <TouchableOpacity
+                              onPress={() => handleCopyInviteLink(member.invite_url || `http://localhost:3000/signup?email=${member.email}&name=${member.name}`)}
+                              style={styles.actionIconBtn}
+                              testID={`copy-invite-${memberId}`}
+                            >
+                              <Feather name="copy" size={13} color={Colors.brand.primary} />
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              onPress={() => handleResendInvite(memberId, member.name)}
+                              style={styles.actionIconBtn}
+                              testID={`resend-invite-${memberId}`}
+                            >
+                              <Feather name="mail" size={13} color={Colors.brand.secondary} />
+                            </TouchableOpacity>
+                          </View>
+                        </View>
                       )}
                       {member.role !== 'Admin' && (
                         <TouchableOpacity
@@ -387,4 +477,11 @@ const styles = StyleSheet.create({
   memberMilesLabel: { color: Colors.text.tertiary, fontSize: 9 },
   invitedText: { color: Colors.text.tertiary, fontSize: FontSize.xs, fontStyle: 'italic' },
   removeBtn: { padding: 4, marginTop: 4 },
+  actionIconBtn: {
+    padding: 6,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.bg.tertiary,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
 });

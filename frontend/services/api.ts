@@ -85,6 +85,9 @@ class APIService {
   async authRegister(data: Record<string, unknown>) {
     return this.request('/auth/register', { method: 'POST', body: JSON.stringify(data) });
   }
+  async validateInvitationToken(token: string) {
+    return this.request(`/auth/validate-token?token=${token}`, {});
+  }
   async getMe(token: string) {
     return this.request('/auth/me', {}, token);
   }
@@ -168,8 +171,8 @@ class APIService {
   }
 
   // Payments
-  async createCheckout(token: string, plan: string, origin_url: string) {
-    return this.request('/payments/create-checkout', { method: 'POST', body: JSON.stringify({ plan, origin_url }) }, token);
+  async createCheckout(token: string, plan: string, origin_url: string, invitee_email?: string) {
+    return this.request('/payments/create-checkout', { method: 'POST', body: JSON.stringify({ plan, origin_url, invitee_email }) }, token);
   }
   async getPaymentStatus(token: string, sessionId: string) {
     return this.request(`/payments/status/${sessionId}`, {}, token);
@@ -180,16 +183,28 @@ class APIService {
   async downgradeSubscription(token: string) {
     return this.request('/payments/downgrade', { method: 'POST' }, token);
   }
+  async getApiKey(token: string) {
+    return this.request('/auth/api-key', {}, token);
+  }
+  async generateApiKey(token: string) {
+    return this.request('/auth/api-key', { method: 'POST' }, token);
+  }
 
   // Team Management
   async getTeamMembers(token: string) {
     return this.request('/team/members', {}, token);
+  }
+  async getTeamStats(token: string) {
+    return this.request('/team/stats', {}, token);
   }
   async inviteTeamMember(token: string, data: { name: string, email: string, role: string, subscription_tier?: string }) {
     return this.request('/team/invite', { method: 'POST', body: JSON.stringify(data) }, token);
   }
   async removeTeamMember(token: string, memberId: string) {
     return this.request(`/team/members/${memberId}`, { method: 'DELETE' }, token);
+  }
+  async resendTeamInvitation(token: string, memberId: string) {
+    return this.request(`/team/members/${memberId}/resend`, { method: 'POST' }, token);
   }
 
   // Seed

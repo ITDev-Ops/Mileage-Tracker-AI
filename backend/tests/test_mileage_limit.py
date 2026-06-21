@@ -18,7 +18,13 @@ def new_user_session():
     token = reg_resp.json().get("access_token") or reg_resp.json().get("token")
     user_id = reg_resp.json()["user"]["user_id"]
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    
+    # Downgrade to free to test mileage limit
+    downgrade_resp = requests.post(f"{BASE_URL}/api/payments/downgrade", headers=headers)
+    assert downgrade_resp.status_code == 200, f"Downgrade failed: {downgrade_resp.text}"
+    
     return {"headers": headers, "user_id": user_id, "token": token}
+
 
 def test_mileage_limit_flow(new_user_session):
     headers = new_user_session["headers"]

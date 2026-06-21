@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Alert, Platform, ActivityIndicator
@@ -8,33 +8,89 @@ import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { Colors, FontSize, Spacing, Radius } from '../../constants/theme';
+import { useAuth } from '../../context/AuthContext';
+import { API } from '../../services/api';
 
 export default function ApiAccessScreen() {
-  const [apiKey, setApiKey] = useState('mm_live_4a82fce08f1b621db7c2718e285a22d9');
+  const { user, token } = useAuth();
+  const [apiKey, setApiKey] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [showKey, setShowKey] = useState(false);
   
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  const handleGenerateKey = () => {
+  useEffect(() => {
+    let active = true;
+    const fetchApiKey = async () => {
+      if (!token) return;
+      const tier = user?.subscription_tier || 'free';
+      if (tier !== 'pro' && tier !== 'business') {
+        setError('Premium Plan Required. Developer API access requires a Pro or Business plan.');
+        setLoading(false);
+        return;
+      }
+      try {
+        setLoading(true);
+        setError(null);
+        const res = await API.getApiKey(token);
+        if (active) {
+          setApiKey(res.api_key);
+        }
+      } catch (err: any) {
+        console.log('[API Key] Fetch error:', err.message);
+        if (active) {
+          setError(err.message || 'Failed to retrieve API key.');
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+    fetchApiKey();
+    return () => {
+      active = false;
+    };
+  }, [token, user]);
+
+  const handleGenerateKey = async () => {
+    if (!token) return;
     setGenerating(true);
-    setTimeout(() => {
-      const hex = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
-      setApiKey(`mm_live_${hex}`);
+    try {
+      const res = await API.generateApiKey(token);
+      setApiKey(res.api_key);
       setShowKey(true);
+      if (Platform.OS === 'web') {
+        alert('New API Key Generated! 🔑 Please make sure to copy your new token. For security reasons, it cannot be shown again once you leave this screen.');
+      } else {
+        Alert.alert('New API Key Generated! 🔑', 'Please make sure to copy your new token. For security reasons, it cannot be shown again once you leave this screen.');
+      }
+    } catch (err: any) {
+      if (Platform.OS === 'web') {
+        alert(err.message || 'Failed to generate new API key.');
+      } else {
+        Alert.alert('Error', err.message || 'Failed to generate new API key.');
+      }
+    } finally {
       setGenerating(false);
-      Alert.alert('New API Key Generated! 🔑', 'Please make sure to copy your new token. For security reasons, it cannot be shown again once you leave this screen.');
-    }, 1000);
+    }
   };
 
   const handleCopyKey = async () => {
+    if (!apiKey) return;
     await Clipboard.setStringAsync(apiKey);
-    Alert.alert('Copied to Clipboard 📋', 'API Key has been copied to your clipboard.');
+    if (Platform.OS === 'web') {
+      alert('Copied! 📋 API Key has been copied to your clipboard.');
+    } else {
+      Alert.alert('Copied to Clipboard 📋', 'API Key has been copied to your clipboard.');
+    }
   };
 
   const sampleCurl = `curl -X POST "https://api.multimile.ai/v1/trips" \\
-  -H "Authorization: Bearer ${apiKey}" \\
+  -H "Authorization: Bearer ${apiKey || 'YOUR_API_KEY'}" \\
   -H "Content-Type: application/json" \\
   -d '{
     "start_address": "Office",
@@ -42,6 +98,48 @@ export default function ApiAccessScreen() {
     "distance": 12.4,
     "classification": "business"
   }'`;
+
+  if (loading) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color={Colors.brand.primary} />
+        <Text style={{ marginTop: 12, color: Colors.text.secondary, fontSize: FontSize.sm }}>Loading credentials...</Text>
+      </View>
+    );
+  }
+
+  if (error) {
+    const isPremiumError = error.toLowerCase().includes('requires a pro') || error.toLowerCase().includes('premium plan required');
+    return (
+      <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center', paddingHorizontal: Spacing.screen }]}>
+        <Feather name={isPremiumError ? "lock" : "alert-circle"} size={48} color={isPremiumError ? Colors.brand.primary : Colors.brand.accent} style={{ marginBottom: 16 }} />
+        <Text style={{ color: Colors.text.primary, fontSize: FontSize.md, fontWeight: '700', textAlign: 'center' }}>
+          {isPremiumError ? 'Premium Plan Required' : 'Failed to Load'}
+        </Text>
+        <Text style={{ marginTop: 8, color: Colors.text.secondary, fontSize: FontSize.sm, textAlign: 'center', marginBottom: 24, lineHeight: 20 }}>
+          {error}
+        </Text>
+        {isPremiumError ? (
+          <TouchableOpacity 
+            style={{ backgroundColor: Colors.brand.primary, paddingHorizontal: 20, paddingVertical: 12, borderRadius: Radius.md }}
+            onPress={() => router.push('/subscription')}
+          >
+            <Text style={{ color: Colors.text.inverse, fontWeight: '700' }}>Upgrade to Pro</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity 
+            style={{ backgroundColor: Colors.brand.primary, paddingHorizontal: 20, paddingVertical: 12, borderRadius: Radius.md }}
+            onPress={() => {
+              setLoading(true);
+              setError(null);
+            }}
+          >
+            <Text style={{ color: Colors.text.inverse, fontWeight: '700' }}>Retry</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -61,14 +159,18 @@ export default function ApiAccessScreen() {
           <Text style={styles.cardLabel}>Active API Token</Text>
           <View style={styles.keyContainer}>
             <Text style={styles.keyValue} numberOfLines={1}>
-              {showKey ? apiKey : '••••••••••••••••••••••••••••••••••••••••'}
+              {apiKey ? (showKey ? apiKey : '••••••••••••••••••••••••••••••••••••••••') : 'No API Key generated yet'}
             </Text>
-            <TouchableOpacity onPress={() => setShowKey(!showKey)} style={styles.iconBtn}>
-              <Feather name={showKey ? 'eye-off' : 'eye'} size={16} color={Colors.text.secondary} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleCopyKey} style={styles.iconBtn} disabled={!showKey}>
-              <Feather name="copy" size={16} color={showKey ? Colors.brand.primary : Colors.text.tertiary} />
-            </TouchableOpacity>
+            {apiKey ? (
+              <>
+                <TouchableOpacity onPress={() => setShowKey(!showKey)} style={styles.iconBtn}>
+                  <Feather name={showKey ? 'eye-off' : 'eye'} size={16} color={Colors.text.secondary} />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleCopyKey} style={styles.iconBtn} disabled={!showKey}>
+                  <Feather name="copy" size={16} color={showKey ? Colors.brand.primary : Colors.text.tertiary} />
+                </TouchableOpacity>
+              </>
+            ) : null}
           </View>
           
           <TouchableOpacity style={styles.generateBtn} onPress={handleGenerateKey} disabled={generating}>

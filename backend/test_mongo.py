@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv('MONGO_URI'))
 
-async def test():
+async def run_mongo_test():
     print('Connecting...')
     try:
         user = await client[os.getenv('DB_NAME')].users.find_one({})
@@ -14,4 +14,4 @@ async def test():
     except Exception as e:
         print("Error:", e)
 
-asyncio.run(test())
+asyncio.run(run_mongo_test())
