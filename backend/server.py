@@ -95,6 +95,10 @@ async def startup_db_client():
     # Create indexes for expenses
     await db.expenses.create_index([("user_id", 1)])
     await db.expenses.create_index([("created_at", -1)])
+    
+    # Create indexes for system alerts
+    await db.alerts.create_index([("owner_id", 1)])
+    await db.alerts.create_index([("created_at", -1)])
     logger.info("MongoDB Indexes built explicitly.")
 
 # ============================================================
@@ -1617,6 +1621,24 @@ async def get_report_summary(year: int = None, month: int = None, current_user: 
 async def export_csv(year: int = None, current_user: dict = Depends(get_current_user)):
     now = datetime.now(timezone.utc)
     year = year or now.year
+    
+    # Record system alert for the team owner (admin) if user is a team member
+    try:
+        member_email = current_user.get("email", "").strip().lower()
+        if member_email:
+            team_member = await db.team_members.find_one({"email": member_email})
+            if team_member and "owner_id" in team_member:
+                display_name = current_user.get("name") or team_member.get("name") or member_email
+                alert_msg = f"{display_name} exported a CSV Tax Report for {year}."
+                await db.alerts.insert_one({
+                    "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                    "owner_id": team_member["owner_id"],
+                    "type": "info",
+                    "msg": alert_msg,
+                    "created_at": datetime.now(timezone.utc)
+                })
+    except Exception as ae:
+        logger.error(f"Failed to create csv export alert: {ae}")
     trips = await db.trips.find(
         {"user_id": current_user["user_id"], "start_time": {"$gte": datetime(year, 1, 1, tzinfo=timezone.utc), "$lt": datetime(year + 1, 1, 1, tzinfo=timezone.utc)}, "is_active": False},
         {"_id": 0}
@@ -1701,6 +1723,24 @@ async def export_pdf(year: int = None, current_user: dict = Depends(get_current_
     
     now_dt = datetime.now(timezone.utc)
     year = year or now_dt.year
+    
+    # Record system alert for the team owner (admin) if user is a team member
+    try:
+        member_email = current_user.get("email", "").strip().lower()
+        if member_email:
+            team_member = await db.team_members.find_one({"email": member_email})
+            if team_member and "owner_id" in team_member:
+                display_name = current_user.get("name") or team_member.get("name") or member_email
+                alert_msg = f"{display_name} exported a PDF Tax Report for {year}."
+                await db.alerts.insert_one({
+                    "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                    "owner_id": team_member["owner_id"],
+                    "type": "info",
+                    "msg": alert_msg,
+                    "created_at": datetime.now(timezone.utc)
+                })
+    except Exception as ae:
+        logger.error(f"Failed to create pdf export alert: {ae}")
     
     tax_country = current_user.get("tax_country", "US").upper()
     if tax_country == "CAN":
@@ -2282,6 +2322,8 @@ async def payments_redirect(
     </html>
     """
     return HTMLResponse(content=html_content, status_code=200)
+
+@api_router.get("/payments/status/{session_id}")
 async def get_payment_status(session_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     import stripe
     stripe.api_key = STRIPE_API_KEY
@@ -2508,6 +2550,31 @@ Mileage Tracker AI Team"""
         # Return false so the API call can report if it failed
         return False
 
+def format_relative_time(dt: datetime) -> str:
+    if not dt:
+        return "Unknown"
+    # Ensure dt is offset-aware
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    diff = now - dt
+    
+    seconds = diff.total_seconds()
+    if seconds < 0:
+        return "Just now"
+    if seconds < 60:
+        return "Just now"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{int(minutes)}m ago"
+    hours = minutes / 60
+    if hours < 24:
+        return f"{int(hours)}h ago"
+    days = hours / 24
+    if days < 7:
+        return f"{int(days)}d ago"
+    return dt.strftime("%b %d")
+
 @api_router.get("/team/stats")
 async def get_team_stats(current_user: dict = Depends(get_current_user)):
     tier = current_user.get("subscription_tier", "free")
@@ -2576,6 +2643,18 @@ async def get_team_stats(current_user: dict = Depends(get_current_user)):
             renewal_date = renewal_dt.strftime("%B %d, %Y")
         payment_method = "Visa ending in 4242"
         
+    # Fetch dynamic alerts for the admin
+    db_alerts = await db.alerts.find({"owner_id": current_user["user_id"]}).sort("created_at", -1).limit(10).to_list(10)
+    alerts_list = []
+    for a in db_alerts:
+        created = a.get("created_at")
+        alerts_list.append({
+            "id": a.get("alert_id") or str(a.get("_id")),
+            "type": a.get("type", "info"),
+            "msg": a.get("msg", ""),
+            "date": format_relative_time(created)
+        })
+
     return {
         "monthlyTotalMiles": round(monthly_total_miles, 2),
         "monthlyTotalDeductions": round(monthly_total_deductions, 2),
@@ -2585,7 +2664,8 @@ async def get_team_stats(current_user: dict = Depends(get_current_user)):
         "averageTripDistance": round(avg_trip_dist, 2),
         "renewalDate": renewal_date,
         "paymentMethod": payment_method,
-        "corporateTier": f"{tier.capitalize()} Plan"
+        "corporateTier": f"{tier.capitalize()} Plan",
+        "alerts": alerts_list
     }
 
 @api_router.get("/team/members")

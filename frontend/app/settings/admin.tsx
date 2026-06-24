@@ -42,7 +42,7 @@ export default function AdminDashboardScreen() {
     fetchStats();
   }, [token]);
 
-  const recentAlerts = [
+  const recentAlerts = stats?.alerts && stats.alerts.length > 0 ? stats.alerts : [
     { id: '1', type: 'warning', msg: 'Sarah Jenkins reached 90% of her monthly travel limit.', date: '1h ago' },
     { id: '2', type: 'info', msg: 'Alex Rivera exported a CSV Tax Report for May 2026.', date: '4h ago' },
     { id: '3', type: 'success', msg: 'Monthly tax report verification generated.', date: 'Yesterday' }
