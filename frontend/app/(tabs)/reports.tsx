@@ -344,14 +344,19 @@ export default function ReportsScreen() {
           </View>
 
           {/* Pro Feature Teaser */}
-          <View testID="pro-feature-teaser" style={styles.proCard}>
+          <TouchableOpacity 
+            testID="pro-feature-teaser" 
+            style={styles.proCard}
+            onPress={() => router.push('/reports/tax-insights')}
+            activeOpacity={0.7}
+          >
             <View style={styles.proCardLeft}>
               <View style={styles.proBadge}><Text style={styles.proBadgeText}>PRO</Text></View>
               <Text style={styles.proTitle}>Advanced Tax Insights</Text>
               <Text style={styles.proDesc}>AI-powered deduction optimizer, CPA partnership portal, and quarterly tax estimates.</Text>
             </View>
             <Feather name="trending-up" size={24} color={Colors.brand.warning} />
-          </View>
+          </TouchableOpacity>
         </ScrollView>
       )}
     </View>

@@ -801,7 +801,7 @@ export default function DashboardScreen() {
     init();
   }, [loadData]);
 
-  // Mileage limits check on app open / stats load
+  // Mileage and trip limits check on app open / stats load
   const hasPromptedRef = useRef(false);
 
   useEffect(() => {
@@ -809,7 +809,8 @@ export default function DashboardScreen() {
     
     const checkLimits = async () => {
       const miles = stats.monthly_miles;
-      if (miles >= 40.0) {
+      const trips = stats.monthly_trips || 0;
+      if (trips >= 40 || miles >= 200.0) {
         // Stop background tracking if running
         const status = await getTrackingStatus();
         if (status.isRunning) {
@@ -819,20 +820,20 @@ export default function DashboardScreen() {
         if (!hasPromptedRef.current) {
           hasPromptedRef.current = true;
           Alert.alert(
-            'Mileage Limit Reached',
-            'Please upgrade your plan to Pro or Business or wait for a new month to continue tracking miles.',
+            'Limit Reached',
+            'Please upgrade your plan to Pro or Business or wait for a new month to continue tracking miles and trips.',
             [
               { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
               { text: 'Cancel', style: 'cancel' }
             ]
           );
         }
-      } else if (miles >= 35.0) {
+      } else if (trips >= 35 || miles >= 180.0) {
         if (!hasPromptedRef.current) {
           hasPromptedRef.current = true;
           Alert.alert(
             'Limit Warning',
-            ' Please you are nearing your 40 free miles limit, please upgrade to continue tracking your miles. Thanks',
+            'Please you are nearing your free plan limit (40 trips or 200 miles), please upgrade to continue tracking. Thanks',
             [
               { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
               { text: 'OK', style: 'default' }
@@ -842,7 +843,7 @@ export default function DashboardScreen() {
       }
     };
     checkLimits();
-  }, [stats?.monthly_miles, user?.subscription_tier]);
+  }, [stats?.monthly_miles, stats?.monthly_trips, user?.subscription_tier]);
 
   // Live trip tracking - updates distance and duration in real-time
   useEffect(() => {
@@ -974,30 +975,32 @@ export default function DashboardScreen() {
   const handleStartTrip = async () => {
     if (user?.subscription_tier === 'free') {
       let currentMiles = stats?.monthly_miles || 0;
+      let currentTrips = stats?.monthly_trips || 0;
       if (!stats) {
         try {
           const cached = await AsyncStorage.getItem('cached_dashboard_stats');
           if (cached) {
             const parsed = JSON.parse(cached);
             currentMiles = parsed.monthly_miles || 0;
+            currentTrips = parsed.monthly_trips || 0;
           }
         } catch {}
       }
 
-      if (currentMiles >= 40.0) {
+      if (currentTrips >= 40 || currentMiles >= 200.0) {
         Alert.alert(
-          'Mileage Limit Reached',
-          'Please upgrade your plan to Pro or Business or wait for a new month to continue tracking miles.',
+          'Limit Reached',
+          'Please upgrade your plan to Pro or Business or wait for a new month to continue tracking miles and trips.',
           [
             { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
             { text: 'Cancel', style: 'cancel' }
           ]
         );
         return;
-      } else if (currentMiles >= 35.0) {
+      } else if (currentTrips >= 35 || currentMiles >= 180.0) {
         Alert.alert(
           'Limit Warning',
-          ' Please you are nearing your 40 free miles limit, please upgrade to continue tracking your miles. Thanks',
+          'Please you are nearing your free plan limit (40 trips or 200 miles), please upgrade to continue tracking. Thanks',
           [
             { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
             { text: 'OK', onPress: () => runStartTripFlow() }

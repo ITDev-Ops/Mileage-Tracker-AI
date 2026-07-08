@@ -18,7 +18,7 @@ const PLANS = [
     price: '$0',
     period: '/user/month',
     color: Colors.text.tertiary,
-    features: ['40 trips/month', 'Manual entry unlimited', 'Basic reports', 'CSV export'],
+    features: ['40 trips or 200 miles/user/month', 'Manual entry unlimited', 'Basic reports', 'CSV export'],
     notIncluded: ['AI auto-classification', 'Receipt scanning', 'PDF tax reports', 'Unlimited trips'],
     cta: 'Current Plan',
     popular: false,

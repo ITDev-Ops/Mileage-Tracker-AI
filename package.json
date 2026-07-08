@@ -1,0 +1,13 @@
+{
+  "name": "mileage-tracker-root",
+  "version": "1.0.0",
+  "description": "Root runner for Mileage Tracker AI workspace",
+  "scripts": {
+    "start": "npm run start --prefix frontend",
+    "android": "npm run android --prefix frontend",
+    "ios": "npm run ios --prefix frontend",
+    "web": "npm run web --prefix frontend",
+    "lint": "npm run lint --prefix frontend"
+  },
+  "private": true
+}

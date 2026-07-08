@@ -292,7 +292,14 @@ export default function SettingsScreen() {
             <Feather name="star" size={18} color={Colors.brand.primary} />
             <View style={styles.settingsRowInfo}>
               <Text style={styles.settingsRowTitle}>Plan: {tierData.label}</Text>
-              <Text style={styles.settingsRowSub}>{tier === 'free' ? 'Upgrade for unlimited trips + AI features' : 'Active subscription'}</Text>
+              <Text style={styles.settingsRowSub}>
+                {tier === 'free'
+                  ? 'Upgrade for unlimited trips + AI features'
+                  : (subscription?.card_brand && subscription?.card_last4
+                    ? `Active subscription (${subscription.card_brand} ending in ${subscription.card_last4})`
+                    : 'Active subscription')
+                }
+              </Text>
             </View>
             <Feather name="chevron-right" size={16} color={Colors.text.tertiary} />
           </TouchableOpacity>

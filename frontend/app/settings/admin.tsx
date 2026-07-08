@@ -141,7 +141,7 @@ export default function AdminDashboardScreen() {
         {/* Activity & System Alerts */}
         <Text style={styles.sectionTitle}>System Alerts & Notifications</Text>
         <View style={styles.card}>
-          {recentAlerts.map((alert, index) => (
+          {recentAlerts.map((alert: any, index: number) => (
             <View key={alert.id}>
               {index > 0 && <View style={styles.divider} />}
               <View style={styles.alertRow}>

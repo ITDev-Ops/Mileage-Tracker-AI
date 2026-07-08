@@ -242,7 +242,7 @@ export default function SignUpScreen() {
           ) : (
             <View style={styles.banner}>
               <Feather name="check-circle" size={16} color="#10B981" style={styles.bannerIcon} />
-              <Text style={styles.bannerText}>Free plan · 40 trips/month · No credit card needed</Text>
+              <Text style={styles.bannerText}>Free plan · 40 trips or 200 miles/user/month · No credit card needed</Text>
             </View>
           )}
 

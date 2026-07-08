@@ -258,9 +258,9 @@ export async function processLocationUpdate(locations: Location.LocationObject[]
     if (cachedStatsStr) {
       try {
         const cachedStats = JSON.parse(cachedStatsStr);
-        if (cachedStats && cachedStats.monthly_miles >= 40.0) {
+        if (cachedStats && (cachedStats.monthly_trips >= 40 || cachedStats.monthly_miles >= 200.0)) {
           if (!currentAutoTrip && !currentManualTrip) {
-            log('processLocationUpdate blocked: free user reached 40 miles limit');
+            log('processLocationUpdate blocked: free user reached 40 trips or 200 miles limit');
             return;
           }
         }

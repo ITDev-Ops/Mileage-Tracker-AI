@@ -74,6 +74,7 @@ export default function RootLayout() {
         <Stack.Screen name="trip/[id]" options={{ presentation: 'modal' }} />
         <Stack.Screen name="ai/assistant" options={{ presentation: 'modal' }} />
         <Stack.Screen name="subscription/index" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="reports/tax-insights" />
         <Stack.Screen name="auth-callback" />
       </Stack>
     </AuthProvider>

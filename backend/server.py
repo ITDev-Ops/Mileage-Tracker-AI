@@ -271,10 +271,8 @@ async def get_current_user(request: Request) -> dict:
                     await db.users.update_one({"user_id": user_id}, {"$set": {"subscription_tier": target_tier}})
                     user["subscription_tier"] = target_tier
             else:
-                # Primary user: upgrade to pro if free
-                if user.get("subscription_tier", "free") == "free":
-                    await db.users.update_one({"user_id": user_id}, {"$set": {"subscription_tier": "pro"}})
-                    user["subscription_tier"] = "pro"
+                # Primary user: keep their current subscription tier
+                pass
             
         return user
             
@@ -293,7 +291,8 @@ async def check_mileage_limit(current_user: dict):
         }, {"distance": 1}).to_list(None)
         
         monthly_miles = sum(t.get("distance", 0.0) for t in completed_trips)
-        if monthly_miles >= 40.0:
+        monthly_trips_count = len(completed_trips)
+        if monthly_trips_count >= 40 or monthly_miles >= 200.0:
             return True, monthly_miles
         return False, monthly_miles
     return False, 0.0
@@ -595,7 +594,7 @@ async def get_trips(
 async def create_trip(data: TripCreate, current_user: dict = Depends(get_current_user)):
     limit_reached, _ = await check_mileage_limit(current_user)
     if limit_reached:
-        raise HTTPException(status_code=403, detail="Mileage limit reached. Please upgrade your plan.")
+        raise HTTPException(status_code=403, detail="Mileage or trip limit reached. Please upgrade your plan.")
         
     trip_id = f"trip_{uuid.uuid4().hex[:12]}"
     trip_doc = {
@@ -628,7 +627,7 @@ async def create_trip_direct(data: TripDirectCreate, current_user: dict = Depend
     """Create a complete trip directly (used for syncing auto-tracked trips)"""
     limit_reached, _ = await check_mileage_limit(current_user)
     if limit_reached:
-        raise HTTPException(status_code=403, detail="Mileage limit reached. Please upgrade your plan.")
+        raise HTTPException(status_code=403, detail="Mileage or trip limit reached. Please upgrade your plan.")
         
     trip_id = f"trip_{uuid.uuid4().hex[:12]}"
     
@@ -2029,6 +2028,74 @@ async def create_checkout(data: PaymentCheckout, request: Request, current_user:
         logger.error(f"Stripe error: {e}")
         raise HTTPException(400, f"Payment error: {str(e)}")
 
+async def extract_stripe_card_details(session_id: str):
+    card_brand = None
+    card_last4 = None
+    
+    if session_id.startswith("cs_test_mock_"):
+        return "Visa", "4242"
+        
+    try:
+        import stripe
+        stripe.api_key = STRIPE_API_KEY
+        session = stripe.checkout.Session.retrieve(session_id, expand=['payment_intent.payment_method'])
+        
+        payment_intent = session.get("payment_intent")
+        if payment_intent:
+            if isinstance(payment_intent, str):
+                pi = stripe.PaymentIntent.retrieve(payment_intent, expand=['payment_method'])
+            else:
+                pi = payment_intent
+                
+            payment_method = pi.get("payment_method") if pi else None
+            if payment_method:
+                if isinstance(payment_method, str):
+                    pm = stripe.PaymentMethod.retrieve(payment_method)
+                else:
+                    pm = payment_method
+                    
+                card = pm.get("card") if pm else None
+                if card:
+                    card_brand = card.get("brand")
+                    card_last4 = card.get("last4")
+    except Exception as e:
+        logger.error(f"Error extracting card details from Stripe: {e}")
+        
+    return card_brand, card_last4
+
+def extract_metadata(session) -> dict:
+    metadata = getattr(session, "metadata", None)
+    if not metadata:
+        return {}
+    if hasattr(metadata, "_data"):
+        return metadata._data
+    if isinstance(metadata, dict):
+        return metadata
+    try:
+        return dict(metadata)
+    except Exception:
+        return {}
+
+def construct_target_url(base_redirect: str, path: str, query_params: dict) -> str:
+    import urllib.parse
+    
+    parsed = urllib.parse.urlparse(base_redirect)
+    scheme = parsed.scheme
+    
+    query_str = urllib.parse.urlencode(query_params) if query_params else ""
+    query_part = f"?{query_str}" if query_str else ""
+    clean_path = path.lstrip('/')
+    
+    if scheme and scheme not in ("http", "https"):
+        netloc = parsed.netloc
+        if netloc:
+            return f"{scheme}://{netloc}/{clean_path}{query_part}"
+        else:
+            return f"{scheme}://{clean_path}{query_part}"
+            
+    base_redirect = base_redirect.rstrip('/')
+    return f"{base_redirect}/{clean_path}{query_part}"
+
 @api_router.get("/payments/redirect")
 async def payments_redirect(
     redirect_url: str,
@@ -2040,7 +2107,6 @@ async def payments_redirect(
     import stripe
     stripe.api_key = STRIPE_API_KEY
     
-    base_redirect = redirect_url.rstrip('/')
     message = "Processing your payment..."
     subtitle = "Please wait while we activate your subscription."
     is_success = False
@@ -2070,22 +2136,22 @@ async def payments_redirect(
                             {"user_id": user_id}, 
                             {"$set": {"subscription_tier": plan}}
                         )
+                    card_brand, card_last4 = await extract_stripe_card_details(session_id)
                     await db.payment_transactions.update_one(
                         {"session_id": session_id}, 
-                        {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc)}}
+                        {"$set": {
+                            "payment_status": "paid", 
+                            "card_brand": card_brand,
+                            "card_last4": card_last4,
+                            "updated_at": datetime.now(timezone.utc)
+                        }}
                     )
                     is_success = True
                     message = "Payment Successful!"
                     subtitle = f"Your {plan.capitalize()} Plan is now active. Returning you to the app..."
             else:
                 session = stripe.checkout.Session.retrieve(session_id)
-                metadata = getattr(session, "metadata", None)
-                metadata_dict = {}
-                if metadata:
-                    if hasattr(metadata, "_data"):
-                        metadata_dict = metadata._data
-                    elif isinstance(metadata, dict):
-                        metadata_dict = metadata
+                metadata_dict = extract_metadata(session)
                 
                 if session.payment_status == "paid":
                     plan = metadata_dict.get("plan", "pro")
@@ -2118,9 +2184,16 @@ async def payments_redirect(
                                 {"$set": {"subscription_tier": plan}}
                             )
                     
+                    card_brand, card_last4 = await extract_stripe_card_details(session_id)
                     await db.payment_transactions.update_one(
                         {"session_id": session_id}, 
-                        {"$set": {"payment_status": "paid", "invitee_email": invitee_email, "updated_at": datetime.now(timezone.utc)}}
+                        {"$set": {
+                            "payment_status": "paid", 
+                            "invitee_email": invitee_email, 
+                            "card_brand": card_brand,
+                            "card_last4": card_last4,
+                            "updated_at": datetime.now(timezone.utc)
+                        }}
                     )
                     is_success = True
                     message = "Payment Successful!"
@@ -2133,11 +2206,11 @@ async def payments_redirect(
             message = "Payment Status Verification Error"
             subtitle = "We had an issue verifying your payment, but our webhook will process it shortly."
             
-        target_url = f"{base_redirect}/subscription?session_id={session_id}&plan={plan}"
+        target_url = construct_target_url(redirect_url, "/subscription", {"session_id": session_id, "plan": plan})
     else:
         message = "Subscription Cancelled"
         subtitle = "You cancelled the payment process. Returning you to subscription plans..."
-        target_url = f"{base_redirect}/subscription"
+        target_url = construct_target_url(redirect_url, "/subscription", {})
         is_success = False
 
     status_icon_color = "#00E676" if is_success or status == "success" else "#FF3D00"
@@ -2365,13 +2438,7 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
             }
             
         session = stripe.checkout.Session.retrieve(session_id)
-        metadata = getattr(session, "metadata", None)
-        metadata_dict = {}
-        if metadata:
-            if hasattr(metadata, "_data"):
-                metadata_dict = metadata._data
-            elif isinstance(metadata, dict):
-                metadata_dict = metadata
+        metadata_dict = extract_metadata(session)
                 
         if session.payment_status == "paid":
             plan = metadata_dict.get("plan", "pro")
@@ -2422,13 +2489,7 @@ async def stripe_webhook(request: Request):
         event = stripe.Webhook.construct_event(body, sig_header, WEBHOOK_SECRET)
         if event.type == "checkout.session.completed":
             session = event.data.object
-            metadata = getattr(session, "metadata", None)
-            metadata_dict = {}
-            if metadata:
-                if hasattr(metadata, "_data"):
-                    metadata_dict = metadata._data
-                elif isinstance(metadata, dict):
-                    metadata_dict = metadata
+            metadata_dict = extract_metadata(session)
                     
             if session.payment_status == "paid":
                 user_id = metadata_dict.get("user_id")
@@ -2456,9 +2517,15 @@ async def stripe_webhook(request: Request):
                 else:
                     if user_id:
                         await db.users.update_one({"user_id": user_id}, {"$set": {"subscription_tier": plan}})
+                card_brand, card_last4 = await extract_stripe_card_details(session.id)
                 await db.payment_transactions.update_one(
                     {"session_id": session.id},
-                    {"$set": {"payment_status": "paid", "invitee_email": invitee_email}}
+                    {"$set": {
+                        "payment_status": "paid", 
+                        "invitee_email": invitee_email,
+                        "card_brand": card_brand,
+                        "card_last4": card_last4
+                    }}
                 )
     except stripe.error.SignatureVerificationError as e:
         logger.error(f"Invalid Webhook signature: {e}")
@@ -2470,7 +2537,24 @@ async def stripe_webhook(request: Request):
 
 @api_router.get("/payments/subscription")
 async def get_subscription(current_user: dict = Depends(get_current_user)):
-    return {"tier": current_user.get("subscription_tier", "free"), "plans": SUBSCRIPTION_PLANS}
+    latest_paid = await db.payment_transactions.find_one(
+        {
+            "$or": [
+                {"user_id": current_user["user_id"]},
+                {"invitee_email": current_user.get("email", "").strip().lower()}
+            ],
+            "payment_status": "paid"
+        },
+        sort=[("created_at", -1)]
+    )
+    card_brand = latest_paid.get("card_brand") if latest_paid else None
+    card_last4 = latest_paid.get("card_last4") if latest_paid else None
+    return {
+        "tier": current_user.get("subscription_tier", "free"), 
+        "plans": SUBSCRIPTION_PLANS,
+        "card_brand": card_brand,
+        "card_last4": card_last4
+    }
 
 @api_router.post("/payments/downgrade")
 async def downgrade_subscription(current_user: dict = Depends(get_current_user)):

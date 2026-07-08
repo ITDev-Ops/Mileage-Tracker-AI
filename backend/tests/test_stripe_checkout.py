@@ -54,6 +54,13 @@ def test_stripe_checkout_and_status(user_session):
         me_resp = requests.get(f"{BASE_URL}/api/auth/me", headers=headers)
         assert me_resp.status_code == 200
         assert me_resp.json()["subscription_tier"] == "pro"
+        
+        # Verify subscription details returns card info accurately
+        sub_resp = requests.get(f"{BASE_URL}/api/payments/subscription", headers=headers)
+        assert sub_resp.status_code == 200
+        sub_data = sub_resp.json()
+        assert sub_data["card_brand"] == "Visa"
+        assert sub_data["card_last4"] == "4242"
     else:
         status_resp = requests.get(f"{BASE_URL}/api/payments/status/{session_id}", headers=headers)
         assert status_resp.status_code == 200
