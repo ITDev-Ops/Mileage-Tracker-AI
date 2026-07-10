@@ -44,8 +44,8 @@ export default function TaxInsightsScreen() {
         setLoading(true);
         const data = await API.getReportSummary(token, new Date().getFullYear());
         setSummary(data);
-      } catch (e) {
-        console.error('[TaxInsights] Failed to load summary data:', e);
+      } catch (e: any) {
+        console.warn('[TaxInsights] Failed to load summary data:', e.message || e);
       } finally {
         setLoading(false);
       }
@@ -61,7 +61,7 @@ export default function TaxInsightsScreen() {
     }, 2000);
   };
 
-  const handleCPAShare = () => {
+  const handleCPAShare = async () => {
     if (!cpaName.trim() || !cpaEmail.trim()) {
       Alert.alert('Error', 'Please fill in both CPA Name and CPA Email.');
       return;
@@ -74,18 +74,31 @@ export default function TaxInsightsScreen() {
       return;
     }
 
+    if (!token) {
+      Alert.alert('Error', 'Please log in to share reports.');
+      return;
+    }
+
     setSharing(true);
-    setTimeout(() => {
-      setSharing(false);
+    try {
+      const res = await API.shareReportWithCPA(token, cpaName, cpaEmail, cpaMessage, new Date().getFullYear());
+      
       Alert.alert(
         'Success! 📧',
-        `Secure download link and mileage report successfully sent to ${cpaName} (${cpaEmail}).`,
+        res.simulated
+          ? `[Simulation] Secure download link and mileage report successfully sent to ${cpaName} (${cpaEmail}). Check server logs.`
+          : `Secure download link and mileage report successfully sent to ${cpaName} (${cpaEmail}).`,
         [{ text: 'OK', onPress: () => {
           setCpaName('');
           setCpaEmail('');
         }}]
       );
-    }, 1500);
+    } catch (e: any) {
+      console.warn('[TaxInsights] Failed to share report with CPA:', e.message || e);
+      Alert.alert('Error', e.message || 'Failed to email report to CPA. Please check your connection and try again.');
+    } finally {
+      setSharing(false);
+    }
   };
 
   // Determine if premium features should be locked

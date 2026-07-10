@@ -73,7 +73,7 @@ export default function TripsScreen() {
       setTrips(data);
       applySearch(data, search);
     } catch (e: any) {
-      console.error('Load trips error:', e);
+      console.warn('Load trips error:', e.message || e);
     }
   }, [token, activeFilter]);
 

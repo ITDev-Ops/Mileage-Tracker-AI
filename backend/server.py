@@ -1707,12 +1707,7 @@ async def export_csv(year: int = None, current_user: dict = Depends(get_current_
         writer.writerow([st, t.get("start_address",""), t.get("end_address",""), f"{t.get('distance',0):.2f}", t.get("classification",""), t.get("purpose",""), t.get("client_name",""), f"{t.get('deduction_value',0):.2f}", t.get("notes","")])
     return StreamingResponse(io.BytesIO(output.getvalue().encode()), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=mileage_tracker_ai_{year}.csv"})
 
-@api_router.get("/reports/export/pdf")
-async def export_pdf(year: int = None, current_user: dict = Depends(get_current_user)):
-    """Generate professional IRS/CRA/HMRC/ATO-compliant PDF mileage report"""
-    if current_user.get("subscription_tier", "free") == "free":
-        raise HTTPException(status_code=403, detail="PDF report exports require a Pro or Business plan.")
-        
+async def generate_pdf_report_bytes(year: int, current_user: dict) -> bytes:
     from reportlab.lib.pagesizes import letter
     from reportlab.lib import colors
     from reportlab.lib.units import inch
@@ -1722,24 +1717,6 @@ async def export_pdf(year: int = None, current_user: dict = Depends(get_current_
     
     now_dt = datetime.now(timezone.utc)
     year = year or now_dt.year
-    
-    # Record system alert for the team owner (admin) if user is a team member
-    try:
-        member_email = current_user.get("email", "").strip().lower()
-        if member_email:
-            team_member = await db.team_members.find_one({"email": member_email})
-            if team_member and "owner_id" in team_member:
-                display_name = current_user.get("name") or team_member.get("name") or member_email
-                alert_msg = f"{display_name} exported a PDF Tax Report for {year}."
-                await db.alerts.insert_one({
-                    "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
-                    "owner_id": team_member["owner_id"],
-                    "type": "info",
-                    "msg": alert_msg,
-                    "created_at": datetime.now(timezone.utc)
-                })
-    except Exception as ae:
-        logger.error(f"Failed to create pdf export alert: {ae}")
     
     tax_country = current_user.get("tax_country", "US").upper()
     if tax_country == "CAN":
@@ -1938,7 +1915,123 @@ async def export_pdf(year: int = None, current_user: dict = Depends(get_current_
     
     doc.build(elements)
     buffer.seek(0)
-    return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=mileage_report_{year}.pdf"})
+    return buffer.getvalue()
+
+@api_router.get("/reports/export/pdf")
+async def export_pdf(year: int = None, current_user: dict = Depends(get_current_user)):
+    """Generate professional IRS/CRA/HMRC/ATO-compliant PDF mileage report"""
+    if current_user.get("subscription_tier", "free") == "free":
+        raise HTTPException(status_code=403, detail="PDF report exports require a Pro or Business plan.")
+        
+    now_dt = datetime.now(timezone.utc)
+    year = year or now_dt.year
+    
+    # Record system alert for the team owner (admin) if user is a team member
+    try:
+        member_email = current_user.get("email", "").strip().lower()
+        if member_email:
+            team_member = await db.team_members.find_one({"email": member_email})
+            if team_member and "owner_id" in team_member:
+                display_name = current_user.get("name") or team_member.get("name") or member_email
+                alert_msg = f"{display_name} exported a PDF Tax Report for {year}."
+                await db.alerts.insert_one({
+                    "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                    "owner_id": team_member["owner_id"],
+                    "type": "info",
+                    "msg": alert_msg,
+                    "created_at": datetime.now(timezone.utc)
+                })
+    except Exception as ae:
+        logger.error(f"Failed to create pdf export alert: {ae}")
+        
+    pdf_bytes = await generate_pdf_report_bytes(year, current_user)
+    return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=mileage_report_{year}.pdf"})
+
+class CPAShareRequest(BaseModel):
+    cpa_name: str
+    cpa_email: str
+    message: Optional[str] = "Here is my audit-ready mileage log for the tax year."
+    year: Optional[int] = None
+
+@api_router.post("/reports/share/cpa")
+async def share_report_with_cpa(
+    data: CPAShareRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Generate and email PDF mileage report to user's CPA"""
+    if current_user.get("subscription_tier", "free") == "free":
+        raise HTTPException(status_code=403, detail="Sharing PDF reports requires a Pro or Business plan.")
+
+    year = data.year or datetime.now(timezone.utc).year
+    
+    try:
+        pdf_bytes = await generate_pdf_report_bytes(year, current_user)
+    except Exception as e:
+        logger.error(f"Failed to generate report for CPA: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate mileage report: {str(e)}")
+
+    cpa_email = data.cpa_email.strip()
+    cpa_name = data.cpa_name.strip()
+    sender_name = current_user.get("name") or current_user.get("email", "A user")
+    
+    subject = f"Mileage & Tax Report for {sender_name}"
+    body = f"""Hi {cpa_name},
+    
+{sender_name} has shared their audit-ready mileage and tax report for the year {year} with you from Mileage Tracker AI.
+
+Sender Message:
+"{data.message}"
+
+Please find the PDF report attached to this email.
+
+Best regards,
+Mileage Tracker AI Team"""
+
+    is_unconfigured = (
+        not SMTP_USER or 
+        SMTP_USER == "your_email@gmail.com" or 
+        not SMTP_PASSWORD or 
+        SMTP_PASSWORD == "your_app_password"
+    )
+    
+    if is_unconfigured:
+        logger.warning("SMTP not configured. Logging CPA report email instead of sending.")
+        print("==================================================")
+        print("SMTP NOT CONFIG; LOGGING CPA EMAIL WITH ATTACHMENT")
+        print(f"TO: {cpa_email} ({cpa_name})")
+        print(f"FROM: {SMTP_FROM}")
+        print(f"SUBJECT: {subject}")
+        print(f"BODY:\n{body}")
+        print(f"ATTACHMENT: mileage_report_{year}.pdf ({len(pdf_bytes)} bytes)")
+        print("==================================================")
+        return {"status": "success", "message": "Report email simulated (SMTP not configured).", "simulated": True}
+        
+    try:
+        from email.mime.application import MIMEApplication
+        
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_FROM
+        msg['To'] = cpa_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+        
+        # Attach PDF
+        part = MIMEApplication(pdf_bytes, Name=f"mileage_report_{year}.pdf")
+        part['Content-Disposition'] = f'attachment; filename="mileage_report_{year}.pdf"'
+        msg.attach(part)
+        
+        # Send email
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        
+        logger.info(f"CPA Report email sent successfully to {cpa_email}")
+        return {"status": "success", "message": "Mileage report successfully emailed to your CPA.", "simulated": False}
+    except Exception as e:
+        logger.error(f"Failed to send CPA email to {cpa_email}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to email mileage report to CPA: {str(e)}")
 
 # ============================================================
 # PAYMENTS

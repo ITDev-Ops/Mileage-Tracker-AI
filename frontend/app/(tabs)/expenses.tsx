@@ -69,7 +69,9 @@ export default function ExpensesScreen() {
     try {
       const data = await API.getExpenses(token);
       setExpenses(data);
-    } catch (e: any) { console.error(e); }
+    } catch (e: any) {
+      console.warn('[Expenses] Load expenses error:', e.message || e);
+    }
   }, [token]);
 
   useEffect(() => {

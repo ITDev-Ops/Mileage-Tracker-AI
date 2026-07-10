@@ -1,5 +1,21 @@
 import Constants from 'expo-constants';
-import { Platform } from 'react-native';
+import { Platform, Alert } from 'react-native';
+import { isNetworkOnline } from './offlineService';
+
+let lastAlertTime = 0;
+const ALERT_THROTTLE_MS = 5000;
+
+function showConnectionAlert() {
+  const now = Date.now();
+  if (now - lastAlertTime > ALERT_THROTTLE_MS) {
+    lastAlertTime = now;
+    Alert.alert(
+      'Internet Connection Required',
+      'You need an active internet connection to load or retrieve data from the server. Please check your connection and try again.',
+      [{ text: 'OK' }]
+    );
+  }
+}
 
 // Get backend URL from environment, with fallbacks for Expo Go
 const getBackendUrl = (): string => {
@@ -40,6 +56,11 @@ class APIService {
   }
 
   private async request(path: string, options: RequestInit & { timeout?: number } = {}, token?: string | null) {
+    if (!isNetworkOnline()) {
+      showConnectionAlert();
+      throw new Error('Unable to connect to server. Please check your internet connection and try again.');
+    }
+
     const url = `${BACKEND_URL}/api${path}`;
     console.log('[API] Request:', options.method || 'GET', url);
     
@@ -68,10 +89,12 @@ class APIService {
       clearTimeout(timeoutId);
       console.log('[API] Fetch error:', error.message);
       if (error.name === 'AbortError' || error.message.includes('aborted')) {
+         showConnectionAlert();
          throw new Error('Network request failed - Timeout');
       }
       // Better error message for network issues
       if (error.message === 'Network request failed' || error.message.includes('fetch')) {
+        showConnectionAlert();
         throw new Error('Unable to connect to server. Please check your internet connection and try again.');
       }
       throw error;
@@ -168,6 +191,12 @@ class APIService {
     if (year) params.set('year', year.toString());
     if (month) params.set('month', month.toString());
     return this.request(`/reports/summary?${params}`, {}, token);
+  }
+  async shareReportWithCPA(token: string, cpaName: string, cpaEmail: string, message: string, year?: number) {
+    return this.request('/reports/share/cpa', {
+      method: 'POST',
+      body: JSON.stringify({ cpa_name: cpaName, cpa_email: cpaEmail, message, year })
+    }, token);
   }
 
   // Payments

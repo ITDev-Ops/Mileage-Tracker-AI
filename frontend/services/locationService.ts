@@ -11,7 +11,7 @@ const STOP_TIME_MS = 5 * 60 * 1000; // 5 min
 if (Platform.OS !== 'web') {
   try {
     TaskManager.defineTask(LOCATION_TASK, async ({ data, error }: any) => {
-      if (error) { console.error('BG Location error:', error.message); return; }
+      if (error) { console.warn('BG Location error:', error.message); return; }
       if (data?.locations) {
         try {
           const stored = JSON.parse(await AsyncStorage.getItem('bg_waypoints') || '[]');
@@ -66,8 +66,8 @@ export async function startBackgroundTracking(): Promise<boolean> {
     }
     await AsyncStorage.setItem('auto_detect_enabled', 'true');
     return true;
-  } catch (e) {
-    console.error('Start BG tracking error:', e);
+  } catch (e: any) {
+    console.warn('Start BG tracking error:', e.message || e);
     return false;
   }
 }

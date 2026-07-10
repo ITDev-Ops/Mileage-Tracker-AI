@@ -37,7 +37,9 @@ export default function ReportsScreen() {
     try {
       const data = await API.getReportSummary(token, selectedYear, selectedMonth ?? undefined);
       setSummary(data);
-    } catch (e: any) { console.error(e); }
+    } catch (e: any) {
+      console.warn('[Reports] Load summary error:', e.message || e);
+    }
   }, [token, selectedYear, selectedMonth]);
 
   useEffect(() => {

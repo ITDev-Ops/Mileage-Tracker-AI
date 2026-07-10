@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  KeyboardAvoidingView, Platform, ScrollView, Alert, ActivityIndicator
+  KeyboardAvoidingView, Platform, ScrollView, Alert, ActivityIndicator,
+  Image
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
@@ -25,8 +26,10 @@ export default function LoginScreen() {
       console.log('[Login] Auth successful, navigating to dashboard...');
       router.push('/(tabs)/dashboard');
     } catch (e: any) {
-      console.log('[Login] Failed:', e.message);
-      if (e.message !== 'a0.session.user_cancelled') {
+      console.warn('[Login] Login error:', e.message || e);
+      if (e.message && e.message.includes('Invalid credentials')) {
+        Alert.alert('Login Failed', 'The email or password you entered is incorrect. Please check your spelling and try again.');
+      } else {
         Alert.alert('Login Failed', e.message || 'An error occurred during login');
       }
     } finally {
@@ -39,9 +42,7 @@ export default function LoginScreen() {
       <ScrollView contentContainerStyle={[styles.scroll, { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 20 }]} keyboardShouldPersistTaps="handled">
         {/* Logo */}
         <View style={styles.logoWrap}>
-          <View style={styles.logoIcon}>
-            <Feather name="navigation" size={32} color="#10B981" />
-          </View>
+          <Image source={require('../../assets/images/icon.png')} style={styles.logoImage} />
           <Text style={styles.logoText}>Mileage Tracker AI</Text>
           <Text style={styles.tagline}>AI-Powered Mileage & Tax Intelligence</Text>
           <Text style={styles.businessName}>Multisystems and Multisystem LLC</Text>
@@ -130,10 +131,11 @@ const styles = StyleSheet.create({
   scroll: { flexGrow: 1, paddingHorizontal: 24, justifyContent: 'center' },
   
   logoWrap: { alignItems: 'center', marginBottom: 32 },
-  logoIcon: {
-    width: 64, height: 64, borderRadius: 16, backgroundColor: '#0D211C',
-    alignItems: 'center', justifyContent: 'center', marginBottom: 16,
-    borderWidth: 1, borderColor: '#10B98120',
+  logoImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 20,
+    marginBottom: 16,
   },
   logoText: { color: '#FFFFFF', fontSize: 24, fontWeight: '800', letterSpacing: -0.5 },
   tagline: { color: '#A1A1AA', fontSize: 13, marginTop: 4, textAlign: 'center' },

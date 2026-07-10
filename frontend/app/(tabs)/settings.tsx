@@ -3,6 +3,7 @@ import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert,
   TextInput, ActivityIndicator, Platform, Switch
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -56,6 +57,29 @@ export default function SettingsScreen() {
   const { user, token, logout, refreshUser } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  
+  const [isLimitReached, setIsLimitReached] = useState(false);
+
+  useEffect(() => {
+    const checkLimit = async () => {
+      if (user?.subscription_tier === 'free') {
+        try {
+          const cached = await AsyncStorage.getItem('cached_dashboard_stats');
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            const miles = parsed.monthly_miles || 0;
+            const trips = parsed.monthly_trips || 0;
+            if (trips >= 40 || miles >= 200.0) {
+              setIsLimitReached(true);
+              return;
+            }
+          }
+        } catch {}
+      }
+      setIsLimitReached(false);
+    };
+    checkLimit();
+  }, [user]);
 
   useEffect(() => {
     if (user) {
@@ -113,6 +137,14 @@ export default function SettingsScreen() {
       return;
     }
     
+    if (isLimitReached && value) {
+      Alert.alert(
+        'Limit Reached',
+        'Please upgrade your plan to Pro or Business or wait for a new month to continue tracking miles and trips.'
+      );
+      return;
+    }
+    
     try {
       if (value) {
         // Request permissions first
@@ -166,7 +198,7 @@ export default function SettingsScreen() {
         // Use router.push instead of router.replace - known Expo Router Android bug workaround
         router.push('/(auth)/login');
       } catch (error: any) {
-        console.error('[Settings] Logout error:', error.message);
+        console.warn('[Settings] Logout error:', error.message);
         // Still try to navigate even if logout had issues
         router.push('/(auth)/login');
       }
@@ -354,7 +386,7 @@ export default function SettingsScreen() {
                   onValueChange={handleToggleAutoTracking}
                   trackColor={{ false: Colors.bg.tertiary, true: Colors.brand.primaryDim }}
                   thumbColor={autoTrackingOn ? Colors.brand.primary : Colors.text.tertiary}
-                  disabled={Platform.OS === 'web'}
+                  disabled={Platform.OS === 'web' || isLimitReached}
                 />
               )}
             </View>
