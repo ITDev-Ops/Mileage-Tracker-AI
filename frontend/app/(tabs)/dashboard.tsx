@@ -52,7 +52,6 @@ import { getCurrencySymbol, getDistanceUnitAbbr, getDistanceUnitFull } from '../
 import {
   getDailyMessage,
   getAllCategoryMessages,
-  shouldShowMagnified,
   resetAppOpenedTime,
 } from '../../services/inspirationService';
 
@@ -126,10 +125,9 @@ export default function DashboardScreen() {
   const [inspirationMessage, setInspirationMessage] = useState('');
   const [inspirationColor, setInspirationColor] = useState('#FFD700');
   const [allMessages, setAllMessages] = useState<string[]>([]);
-  const [currentMessageIndex, setCurrentMessageIndex] = useState(0);
-  const [isMagnified, setIsMagnified] = useState(false);
-  const scrollAnim = useRef(new Animated.Value(0)).current;
-  const magnifyAnim = useRef(new Animated.Value(0)).current;
+  const tickerAnim = useRef(new Animated.Value(375)).current;
+  const [tickerContainerWidth, setTickerContainerWidth] = useState(375);
+  const [tickerTextWidth, setTickerTextWidth] = useState(400);
   
   // Auto trip location tracking
   const [autoStartAddress, setAutoStartAddress] = useState('');
@@ -153,6 +151,7 @@ export default function DashboardScreen() {
   const distanceUnitFull = getDistanceUnitFull(country);
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const isLimitReached = !!(user?.subscription_tier === 'free' && stats && ((stats.monthly_trips || 0) >= 40 || (stats.monthly_miles || 0) >= 200.0));
 
   // Set up API function for background tracking to use
   useEffect(() => {
@@ -206,41 +205,44 @@ export default function DashboardScreen() {
             console.log('[Dashboard] AI inspiration not available, using local:', aiErr);
           }
         }
-        
-        const shouldMagnify = await shouldShowMagnified();
-        setIsMagnified(shouldMagnify);
-        
-        // If magnified, animate after 5 minutes
-        if (shouldMagnify) {
-          Animated.timing(magnifyAnim, {
-            toValue: 1,
-            duration: 500,
-            useNativeDriver: false,
-          }).start();
-          
-          // Reset magnification after 5 minutes
-          setTimeout(() => {
-            Animated.timing(magnifyAnim, {
-              toValue: 0,
-              duration: 500,
-              useNativeDriver: false,
-            }).start(() => setIsMagnified(false));
-          }, 5 * 60 * 1000);
-        }
       } catch (e) {
         console.log('[Dashboard] Error loading inspiration:', e);
       }
     };
     
     loadInspiration();
+  }, [token, isOnline]);
+
+  // Inspiration ticker loop animation
+  useEffect(() => {
+    const tickerText = allMessages.length > 0 
+      ? allMessages.map(m => `✨ ${m}`).join('      •      ') 
+      : (inspirationMessage ? `✨ ${inspirationMessage}` : '');
+      
+    if (!tickerText) return;
+
+    // Reset ticker to start offscreen-right
+    tickerAnim.setValue(tickerContainerWidth);
     
-    // Scroll through messages every 8 seconds
-    const scrollInterval = setInterval(() => {
-      setCurrentMessageIndex(prev => (prev + 1) % Math.max(allMessages.length, 1));
-    }, 8000);
+    // We calculate a duration proportional to the text width for uniform scrolling speed
+    // 35ms per pixel is a smooth, legible speed
+    const duration = Math.max(12000, tickerTextWidth * 35);
     
-    return () => clearInterval(scrollInterval);
-  }, [token, isOnline, allMessages.length]);
+    const animation = Animated.loop(
+      Animated.timing(tickerAnim, {
+        toValue: -tickerTextWidth,
+        duration: duration,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    );
+    
+    animation.start();
+    
+    return () => {
+      animation.stop();
+    };
+  }, [allMessages, inspirationMessage, tickerContainerWidth, tickerTextWidth]);
 
   // Monitor network status and auto-tracking
   useEffect(() => {
@@ -802,6 +804,7 @@ export default function DashboardScreen() {
   }, [loadData]);
 
   // Mileage and trip limits check on app open / stats load
+  const isFirstMount = useRef(true);
   const hasPromptedRef = useRef(false);
 
   useEffect(() => {
@@ -819,28 +822,44 @@ export default function DashboardScreen() {
         
         if (!hasPromptedRef.current) {
           hasPromptedRef.current = true;
-          Alert.alert(
-            'Limit Reached',
-            'Please upgrade your plan to Pro or Business or wait for a new month to continue tracking miles and trips.',
-            [
-              { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
-              { text: 'Cancel', style: 'cancel' }
-            ]
-          );
+          if (isFirstMount.current) {
+            Alert.alert(
+              'Limit Reached',
+              'Please upgrade plan to either Pro or Business or wait for a new month to continue tracking miles.',
+              [
+                { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
+                { text: 'OK', style: 'cancel' }
+              ]
+            );
+          } else {
+            Alert.alert(
+              'Limit Reached',
+              'To continue using the app upgrade to the pro plan or business plan',
+              [
+                { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
+                { text: 'Cancel', style: 'cancel' }
+              ]
+            );
+            router.push('/subscription');
+          }
         }
-      } else if (trips >= 35 || miles >= 180.0) {
-        if (!hasPromptedRef.current) {
-          hasPromptedRef.current = true;
-          Alert.alert(
-            'Limit Warning',
-            'Please you are nearing your free plan limit (40 trips or 200 miles), please upgrade to continue tracking. Thanks',
-            [
-              { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
-              { text: 'OK', style: 'default' }
-            ]
-          );
+      } else {
+        hasPromptedRef.current = false;
+        if (trips >= 35 || miles >= 150.0) {
+          if (!hasPromptedRef.current) {
+            hasPromptedRef.current = true;
+            Alert.alert(
+              'Limit Warning',
+              'Please you are nearing your 40 free trips or 200 miles limit, please upgrade to continue tracking your miles. Thanks',
+              [
+                { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
+                { text: 'OK', style: 'default' }
+              ]
+            );
+          }
         }
       }
+      isFirstMount.current = false;
     };
     checkLimits();
   }, [stats?.monthly_miles, stats?.monthly_trips, user?.subscription_tier]);
@@ -990,17 +1009,18 @@ export default function DashboardScreen() {
       if (currentTrips >= 40 || currentMiles >= 200.0) {
         Alert.alert(
           'Limit Reached',
-          'Please upgrade your plan to Pro or Business or wait for a new month to continue tracking miles and trips.',
+          'To continue using the app upgrade to the pro plan or business plan',
           [
             { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
             { text: 'Cancel', style: 'cancel' }
           ]
         );
+        router.push('/subscription');
         return;
-      } else if (currentTrips >= 35 || currentMiles >= 180.0) {
+      } else if (currentTrips >= 35 || currentMiles >= 150.0) {
         Alert.alert(
           'Limit Warning',
-          'Please you are nearing your free plan limit (40 trips or 200 miles), please upgrade to continue tracking. Thanks',
+          'Please you are nearing your 40 free trips or 200 miles limit, please upgrade to continue tracking your miles. Thanks',
           [
             { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
             { text: 'OK', onPress: () => runStartTripFlow() }
@@ -1418,41 +1438,48 @@ export default function DashboardScreen() {
         )}
 
         {/* Inspiration Banner - Daily Motivational Messages with Ticker Scroll */}
-        <Animated.View style={[
+        <View style={[
           styles.inspirationBanner,
           {
-            minHeight: isMagnified ? 140 : 70,
-            backgroundColor: inspirationColor + '22',
+            minHeight: 50,
+            height: 50,
+            backgroundColor: inspirationColor + '15',
           }
         ]}>
           <View style={styles.inspirationIconContainer}>
-            <Feather name="sun" size={isMagnified ? 28 : 20} color={inspirationColor} />
+            <Feather name="sun" size={18} color={inspirationColor} />
           </View>
-          <ScrollView 
-            horizontal={!isMagnified}
-            showsHorizontalScrollIndicator={false}
-            showsVerticalScrollIndicator={false}
+          <View 
             style={styles.inspirationScrollContainer}
-            contentContainerStyle={isMagnified ? styles.inspirationScrollContentMagnified : styles.inspirationScrollContent}
+            onLayout={(e) => setTickerContainerWidth(e.nativeEvent.layout.width)}
           >
-            <Text 
-              style={[
-                styles.inspirationText,
-                {
-                  color: inspirationColor,
-                  fontSize: isMagnified ? 22 : 15,
-                  lineHeight: isMagnified ? 32 : 22,
-                  fontWeight: isMagnified ? '700' : '600',
-                }
-              ]}
+            <ScrollView 
+              horizontal 
+              scrollEnabled={false}
+              showsHorizontalScrollIndicator={false}
+              showsVerticalScrollIndicator={false}
             >
-              {isMagnified 
-                ? (allMessages[currentMessageIndex] || inspirationMessage)
-                : `✨ ${allMessages[currentMessageIndex] || inspirationMessage} ✨`
-              }
-            </Text>
-          </ScrollView>
-        </Animated.View>
+              <Animated.Text
+                numberOfLines={1}
+                onLayout={(e) => setTickerTextWidth(e.nativeEvent.layout.width)}
+                style={[
+                  styles.inspirationText,
+                  {
+                    color: inspirationColor,
+                    fontSize: 14,
+                    lineHeight: 20,
+                    fontWeight: '600',
+                    transform: [{ translateX: tickerAnim }]
+                  }
+                ]}
+              >
+                {allMessages.length > 0 
+                  ? allMessages.map(m => `✨ ${m}`).join('      •      ') 
+                  : (inspirationMessage ? `✨ ${inspirationMessage}` : '')}
+              </Animated.Text>
+            </ScrollView>
+          </View>
+        </View>
 
         {/* Active Trip Banner - Shows for both manual and auto trips */}
         {(stats?.active_trip || isAutoTrip) ? (
@@ -1553,16 +1580,28 @@ export default function DashboardScreen() {
             testID="start-trip-btn" 
             style={[
               styles.startTripCard,
-              !masterTrackingEnabled && { opacity: 0.5 }
+              (!masterTrackingEnabled || isLimitReached) && { opacity: 0.5 }
             ]} 
             onPress={() => {
+              if (isLimitReached) {
+                Alert.alert(
+                  'Limit Reached',
+                  'To continue using the app upgrade to the pro plan or business plan',
+                  [
+                    { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
+                    { text: 'Cancel', style: 'cancel' }
+                  ]
+                );
+                router.push('/subscription');
+                return;
+              }
               if (!masterTrackingEnabled) {
                 Alert.alert('Tracking Stopped', 'All tracking processes are currently stopped. Please press "Start tracking" below to enable tracking.');
                 return;
               }
               handleStartTrip();
             }} 
-            disabled={startingTrip} 
+            disabled={startingTrip || isLimitReached} 
             activeOpacity={0.85}
           >
             {startingTrip ? (
@@ -1692,10 +1731,22 @@ export default function DashboardScreen() {
           testID="offline-tracking-btn"
           style={[
             styles.offlineActionBtn,
-            (stats?.active_trip || isAutoTrip || !masterTrackingEnabled) ? { opacity: 0.5 } : null
+            (stats?.active_trip || isAutoTrip || !masterTrackingEnabled || isLimitReached) ? { opacity: 0.5 } : null
           ]}
-          disabled={!!(stats?.active_trip || isAutoTrip)}
+          disabled={!!(stats?.active_trip || isAutoTrip) || isLimitReached}
           onPress={async () => {
+            if (isLimitReached) {
+              Alert.alert(
+                'Limit Reached',
+                'To continue using the app upgrade to the pro plan or business plan',
+                [
+                  { text: 'Upgrade Plan', onPress: () => router.push('/subscription') },
+                  { text: 'Cancel', style: 'cancel' }
+                ]
+              );
+              router.push('/subscription');
+              return;
+            }
             if (!masterTrackingEnabled) {
               Alert.alert('Tracking Stopped', 'All tracking processes are currently stopped. Please press "Start tracking" below to enable tracking.');
               return;
@@ -1953,7 +2004,8 @@ const styles = StyleSheet.create({
     gap: 12,
     marginHorizontal: Spacing.screen,
     borderRadius: Radius.lg,
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
     marginBottom: 12,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
@@ -1964,12 +2016,6 @@ const styles = StyleSheet.create({
   },
   inspirationScrollContainer: {
     flex: 1,
-  },
-  inspirationScrollContent: {
-    alignItems: 'center',
-  },
-  inspirationScrollContentMagnified: {
-    paddingVertical: 8,
   },
   inspirationText: {
     fontWeight: '600',

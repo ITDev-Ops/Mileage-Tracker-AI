@@ -1995,16 +1995,11 @@ Mileage Tracker AI Team"""
     )
     
     if is_unconfigured:
-        logger.warning("SMTP not configured. Logging CPA report email instead of sending.")
-        print("==================================================")
-        print("SMTP NOT CONFIG; LOGGING CPA EMAIL WITH ATTACHMENT")
-        print(f"TO: {cpa_email} ({cpa_name})")
-        print(f"FROM: {SMTP_FROM}")
-        print(f"SUBJECT: {subject}")
-        print(f"BODY:\n{body}")
-        print(f"ATTACHMENT: mileage_report_{year}.pdf ({len(pdf_bytes)} bytes)")
-        print("==================================================")
-        return {"status": "success", "message": "Report email simulated (SMTP not configured).", "simulated": True}
+        logger.error("SMTP not configured. Cannot email CPA report.")
+        raise HTTPException(
+            status_code=500, 
+            detail="The email server (SMTP) is not configured on the backend. Please set the SMTP_USER and SMTP_PASSWORD environment variables on Heroku to enable this feature."
+        )
         
     try:
         from email.mime.application import MIMEApplication

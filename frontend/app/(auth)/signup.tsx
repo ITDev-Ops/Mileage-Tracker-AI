@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  KeyboardAvoidingView, Platform, ScrollView, Alert, ActivityIndicator
+  KeyboardAvoidingView, Platform, ScrollView, Alert, ActivityIndicator,
+  Image
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Feather, FontAwesome } from '@expo/vector-icons';
@@ -170,9 +171,7 @@ export default function SignUpScreen() {
         
         {/* Logo/Icon Header */}
         <View style={styles.logoWrap}>
-          <View style={styles.logoIcon}>
-            <Feather name="send" size={28} color="#10B981" />
-          </View>
+          <Image source={require('../../assets/images/icon.png')} style={styles.logoImage} />
           <Text style={styles.logoText}>{params.token ? 'Join Your Team' : 'Create Account'}</Text>
           <Text style={styles.tagline}>{params.token ? 'Complete your driver registration' : 'Start tracking smarter today'}</Text>
         </View>
@@ -285,6 +284,12 @@ const styles = StyleSheet.create({
   scroll: { flexGrow: 1, paddingHorizontal: 24, paddingBottom: 40, justifyContent: 'flex-start' },
   
   logoWrap: { alignItems: 'center', marginBottom: 24 },
+  logoImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 20,
+    marginBottom: 16,
+  },
   logoIcon: {
     width: 64, height: 64, borderRadius: 16, backgroundColor: '#0D211C',
     alignItems: 'center', justifyContent: 'center', marginBottom: 16,

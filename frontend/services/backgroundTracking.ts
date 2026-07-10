@@ -598,6 +598,23 @@ export async function startBackgroundTracking(): Promise<boolean> {
     return false;
   }
   
+  // Check subscription and mileage limits
+  try {
+    const subscriptionTier = await AsyncStorage.getItem('subscription_tier');
+    if (subscriptionTier === 'free') {
+      const cachedStatsStr = await AsyncStorage.getItem('cached_dashboard_stats');
+      if (cachedStatsStr) {
+        const cachedStats = JSON.parse(cachedStatsStr);
+        if (cachedStats && ((cachedStats.monthly_trips || 0) >= 40 || (cachedStats.monthly_miles || 0) >= 200.0)) {
+          log('Background tracking start blocked: free user reached 40 trips or 200 miles limit');
+          return false;
+        }
+      }
+    }
+  } catch (err) {
+    log('Error checking subscription and mileage limits in startBackgroundTracking', err);
+  }
+
   // Check if master tracking is enabled
   try {
     const masterEnabled = await AsyncStorage.getItem('master_tracking_enabled');
