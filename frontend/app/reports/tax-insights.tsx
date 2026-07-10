@@ -285,7 +285,7 @@ export default function TaxInsightsScreen() {
                     Our scan detected 4 drives classified as "personal" which match your client meeting routine. Reclassifying these drives would yield an additional{' '}
                     <Text style={{ fontWeight: '700', color: Colors.brand.primary }}>{currencySymbol}{(24 * (summary?.irs_rate || 0.67)).toFixed(2)}</Text> in business deductions.
                   </Text>
-                  <TouchableOpacity style={styles.insightActionBtn}>
+                  <TouchableOpacity style={styles.insightActionBtn} onPress={() => router.push('/(tabs)/trips')}>
                     <Text style={styles.insightActionText}>Review Commutes</Text>
                     <Feather name="chevron-right" size={12} color={Colors.brand.primary} />
                   </TouchableOpacity>
