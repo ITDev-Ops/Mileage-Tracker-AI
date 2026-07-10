@@ -1812,7 +1812,7 @@ async def generate_pdf_report_bytes(year: int, current_user: dict) -> bytes:
             ["TOTAL", f"{total_miles:.1f}", "", f"{currency}{total_deductions:.2f}"],
         ]
     
-    summary_table = Table(summary_data, colWidths=[2*inch, 1.5*inch, 1.5*inch, 1.5*inch])
+    summary_table = Table(summary_data, colWidths=[2.5*inch, 1.6*inch, 1.7*inch, 1.7*inch])
     summary_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10B981')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -1849,7 +1849,7 @@ async def generate_pdf_report_bytes(year: int, current_user: dict) -> bytes:
         ["TOTAL EXPENSES", f"{currency}{total_expenses:.2f}"],
     ]
     
-    expense_table = Table(expense_summary_data, colWidths=[3*inch, 3.5*inch])
+    expense_table = Table(expense_summary_data, colWidths=[3.5*inch, 4.0*inch])
     expense_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10B981')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -1875,19 +1875,22 @@ async def generate_pdf_report_bytes(year: int, current_user: dict) -> bytes:
         elif isinstance(st, str): st = st[:10]
         trip_data.append([
             st,
-            (t.get("start_address", "")[:20] + "...") if len(t.get("start_address", "")) > 20 else t.get("start_address", ""),
-            (t.get("end_address", "")[:20] + "...") if len(t.get("end_address", "")) > 20 else t.get("end_address", ""),
+            (t.get("start_address", "")[:25] + "...") if len(t.get("start_address", "")) > 25 else t.get("start_address", ""),
+            (t.get("end_address", "")[:25] + "...") if len(t.get("end_address", "")) > 25 else t.get("end_address", ""),
             f"{t.get('distance', 0):.1f}",
             t.get("classification", "")[:8].title(),
             f"{currency}{t.get('deduction_value', 0):.2f}"
         ])
     
-    trip_table = Table(trip_data, colWidths=[0.7*inch, 1.5*inch, 1.5*inch, 0.7*inch, 0.8*inch, 0.9*inch])
+    trip_table = Table(trip_data, colWidths=[0.8*inch, 2.0*inch, 2.0*inch, 1.0*inch, 0.8*inch, 0.9*inch])
     trip_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#374151')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('ALIGN', (3, 0), (5, -1), 'RIGHT'),
+        ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+        ('ALIGN', (1, 0), (2, -1), 'LEFT'),
+        ('ALIGN', (3, 0), (3, -1), 'RIGHT'),
+        ('ALIGN', (4, 0), (4, -1), 'CENTER'),
+        ('ALIGN', (5, 0), (5, -1), 'RIGHT'),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 8),
         ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
