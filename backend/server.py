@@ -2518,9 +2518,15 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
                     {"user_id": current_user["user_id"]}, 
                     {"$set": {"subscription_tier": plan}}
                 )
+            card_brand, card_last4 = await extract_stripe_card_details(session_id)
             await db.payment_transactions.update_one(
                 {"session_id": session_id}, 
-                {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc)}}
+                {"$set": {
+                    "payment_status": "paid", 
+                    "card_brand": card_brand,
+                    "card_last4": card_last4,
+                    "updated_at": datetime.now(timezone.utc)
+                }}
             )
             return {
                 "status": "complete", 
@@ -2555,9 +2561,16 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
                     {"user_id": user_id}, 
                     {"$set": {"subscription_tier": plan}}
                 )
+            card_brand, card_last4 = await extract_stripe_card_details(session_id)
             await db.payment_transactions.update_one(
                 {"session_id": session_id}, 
-                {"$set": {"payment_status": "paid", "invitee_email": invitee_email, "updated_at": datetime.now(timezone.utc)}}
+                {"$set": {
+                    "payment_status": "paid", 
+                    "invitee_email": invitee_email, 
+                    "card_brand": card_brand,
+                    "card_last4": card_last4,
+                    "updated_at": datetime.now(timezone.utc)
+                }}
             )
         return {
             "status": session.status, 
@@ -2816,7 +2829,10 @@ async def get_team_stats(current_user: dict = Depends(get_current_user)):
         if isinstance(created, datetime):
             renewal_dt = created + timedelta(days=30)
             renewal_date = renewal_dt.strftime("%B %d, %Y")
-        payment_method = "Visa ending in 4242"
+        brand = last_payment.get("card_brand") or "Visa"
+        last4 = last_payment.get("card_last4") or "4242"
+        brand_cap = brand.capitalize() if brand else "Visa"
+        payment_method = f"{brand_cap} ending in {last4}"
         
     # Fetch dynamic alerts for the admin
     db_alerts = await db.alerts.find({"owner_id": current_user["user_id"]}).sort("created_at", -1).limit(10).to_list(10)
