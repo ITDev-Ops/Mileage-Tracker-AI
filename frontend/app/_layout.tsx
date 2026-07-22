@@ -6,6 +6,7 @@ import { AuthProvider, useAuth } from '../context/AuthContext';
 import { Colors } from '../constants/theme';
 import { initializeAutoTracking, startBackgroundTracking, requestTrackingPermissions, setAutoTrackingEnabled } from '../services/backgroundTracking';
 import { initializeOfflineService } from '../services/offlineService';
+import { useOTAUpdate } from '../hooks/useOTAUpdate';
 
 function NavigationGuard() {
   const { user, loading } = useAuth();
@@ -30,6 +31,9 @@ function NavigationGuard() {
 }
 
 export default function RootLayout() {
+  // Check and apply OTA updates on app startup
+  useOTAUpdate();
+
   // Initialize background tracking and offline service on app start
   useEffect(() => {
     const initialize = async () => {

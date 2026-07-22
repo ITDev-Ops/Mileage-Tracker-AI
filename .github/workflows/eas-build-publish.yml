@@ -1,0 +1,70 @@
+name: EAS Build, Submit and OTA Updates
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'update'
+        type: choice
+        options:
+          - update
+          - build-and-submit
+          - build-only
+
+jobs:
+  deploy:
+    name: Build / Deploy / Publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Setup Expo / EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      # Run OTA update when pushing to main (but not when tagging)
+      - name: Publish OTA Update
+        if: |
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'update')
+        working-directory: ./frontend
+        run: |
+          eas update --branch production --message "OTA Update: ${{ github.event.head_commit.message || 'Manual OTA trigger' }}"
+
+      # Run full build and submit when tagging with v* (e.g., v1.1.0)
+      - name: Build and Submit Production Binaries (AAB/IPA)
+        if: |
+          startsWith(github.ref, 'refs/tags/v') ||
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'build-and-submit')
+        working-directory: ./frontend
+        run: |
+          eas build --platform all --profile production --non-interactive --auto-submit
+
+      # Manual run option to only build binaries without store submission
+      - name: Build Production Binaries Only (No Store Submission)
+        if: |
+          github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'build-only'
+        working-directory: ./frontend
+        run: |
+          eas build --platform all --profile production --non-interactive

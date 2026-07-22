@@ -9,7 +9,8 @@
     "updates": {
       "enabled": true,
       "checkAutomatically": "ON_LOAD",
-      "fallbackToCacheTimeout": 0
+      "fallbackToCacheTimeout": 0,
+      "url": "https://u.expo.dev/mileage-tracker-ai"
     },
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
