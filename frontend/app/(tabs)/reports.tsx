@@ -38,7 +38,7 @@ export default function ReportsScreen() {
       const data = await API.getReportSummary(token, selectedYear, selectedMonth ?? undefined);
       setSummary(data);
     } catch (e: any) {
-      console.warn('[Reports] Load summary error:', e.message || e);
+      console.log('[Reports] Load summary error:', e.message || e);
     }
   }, [token, selectedYear, selectedMonth]);
 
@@ -353,7 +353,7 @@ export default function ReportsScreen() {
             activeOpacity={0.7}
           >
             <View style={styles.proCardLeft}>
-              <View style={styles.proBadge}><Text style={styles.proBadgeText}>PRO</Text></View>
+              <View style={styles.proBadge}><Text style={styles.proBadgeText}>BUSINESS</Text></View>
               <Text style={styles.proTitle}>Advanced Tax Insights</Text>
               <Text style={styles.proDesc}>AI-powered deduction optimizer, CPA partnership portal, and quarterly tax estimates.</Text>
             </View>

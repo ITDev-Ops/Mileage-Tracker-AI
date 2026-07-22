@@ -1,11 +1,33 @@
 import { useEffect } from 'react';
-import { Stack } from 'expo-router';
+import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Platform, Alert } from 'react-native';
-import { AuthProvider } from '../context/AuthContext';
+import { AuthProvider, useAuth } from '../context/AuthContext';
 import { Colors } from '../constants/theme';
 import { initializeAutoTracking, startBackgroundTracking, requestTrackingPermissions, setAutoTrackingEnabled } from '../services/backgroundTracking';
 import { initializeOfflineService } from '../services/offlineService';
+
+function NavigationGuard() {
+  const { user, loading } = useAuth();
+  const segments = useSegments();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (loading) return;
+
+    const inAuthGroup = segments[0] === '(auth)';
+    
+    if (!user && !inAuthGroup) {
+      console.log('[NavigationGuard] Redirecting to login because user is null and not in (auth) group');
+      router.replace('/(auth)/login');
+    } else if (user && segments[0] === '(auth)' && segments[1] === 'login') {
+      console.log('[NavigationGuard] User is authenticated but on login screen, redirecting to dashboard');
+      router.replace('/(tabs)/dashboard');
+    }
+  }, [user, loading, segments]);
+
+  return null;
+}
 
 export default function RootLayout() {
   // Initialize background tracking and offline service on app start
@@ -66,6 +88,7 @@ export default function RootLayout() {
 
   return (
     <AuthProvider>
+      <NavigationGuard />
       <StatusBar style="light" />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.bg.primary } }}>
         <Stack.Screen name="index" />

@@ -6,6 +6,7 @@ import {
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
@@ -70,7 +71,7 @@ export default function ExpensesScreen() {
       const data = await API.getExpenses(token);
       setExpenses(data);
     } catch (e: any) {
-      console.warn('[Expenses] Load expenses error:', e.message || e);
+      console.log('[Expenses] Load expenses error:', e.message || e);
     }
   }, [token]);
 
@@ -100,18 +101,35 @@ export default function ExpensesScreen() {
 
     try {
       let base64: string | null = null;
+      let selectedUri: string | null = null;
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       
       if (status !== 'granted') {
-        const galleryResult = await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.7 });
-        if (galleryResult.canceled || !galleryResult.assets[0]?.base64) return;
-        base64 = galleryResult.assets[0].base64;
+        const galleryResult = await ImagePicker.launchImageLibraryAsync({
+          quality: 0.9,
+          allowsEditing: true
+        });
+        if (galleryResult.canceled || !galleryResult.assets[0]?.uri) return;
+        selectedUri = galleryResult.assets[0].uri;
       } else {
-        const cameraResult = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.7 });
-        if (cameraResult.canceled || !cameraResult.assets[0]?.base64) return;
-        base64 = cameraResult.assets[0].base64;
+        const cameraResult = await ImagePicker.launchCameraAsync({
+          quality: 0.9,
+          allowsEditing: true
+        });
+        if (cameraResult.canceled || !cameraResult.assets[0]?.uri) return;
+        selectedUri = cameraResult.assets[0].uri;
       }
 
+      if (!selectedUri) return;
+
+      console.log('[Expenses] Resizing and compressing picked receipt image...');
+      const manipResult = await ImageManipulator.manipulateAsync(
+        selectedUri,
+        [{ resize: { width: 1200 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+      
+      base64 = manipResult.base64 || null;
       if (!base64) return;
 
       setScanning(true);

@@ -55,10 +55,12 @@ class APIService {
     return headers;
   }
 
-  private async request(path: string, options: RequestInit & { timeout?: number } = {}, token?: string | null) {
+  private async request(path: string, options: RequestInit & { timeout?: number; silent?: boolean } = {}, token?: string | null) {
+    const isGet = !options.method || options.method.toUpperCase() === 'GET';
+    const silent = options.silent !== undefined ? options.silent : isGet;
+
     if (!isNetworkOnline()) {
-      showConnectionAlert();
-      throw new Error('Unable to connect to server. Please check your internet connection and try again.');
+      console.log(`[API] NetInfo reports offline. Proceeding with fetch anyway for: ${path}`);
     }
 
     const url = `${BACKEND_URL}/api${path}`;
@@ -89,12 +91,16 @@ class APIService {
       clearTimeout(timeoutId);
       console.log('[API] Fetch error:', error.message);
       if (error.name === 'AbortError' || error.message.includes('aborted')) {
-         showConnectionAlert();
+         if (!silent) {
+           showConnectionAlert();
+         }
          throw new Error('Network request failed - Timeout');
       }
       // Better error message for network issues
       if (error.message === 'Network request failed' || error.message.includes('fetch')) {
-        showConnectionAlert();
+        if (!silent) {
+          showConnectionAlert();
+        }
         throw new Error('Unable to connect to server. Please check your internet connection and try again.');
       }
       throw error;
@@ -122,14 +128,20 @@ class APIService {
     const q = classification && classification !== 'all' ? `?classification=${classification}` : '';
     return this.request(`/trips${q}`, {}, token);
   }
-  async createTrip(token: string, data: Record<string, unknown>) {
-    return this.request('/trips', { method: 'POST', body: JSON.stringify(data) }, token);
+  async createTrip(token: string, data: Record<string, unknown>, silent: boolean = false) {
+    return this.request('/trips', { method: 'POST', body: JSON.stringify(data), silent }, token);
   }
   
   // Create a complete trip with all data at once (for syncing auto-tracked trips)
-  async createTripDirect(token: string, data: Record<string, unknown>) {
-    return this.request('/trips/direct', { method: 'POST', body: JSON.stringify(data) }, token);
+  async createTripDirect(token: string, data: Record<string, unknown>, silent: boolean = true) {
+    return this.request('/trips/direct', { method: 'POST', body: JSON.stringify(data), silent }, token);
   }
+  
+  // Create multiple trips at once (for batch syncing offline trips)
+  async createTripsBulk(token: string, trips: Array<Record<string, unknown>>, silent: boolean = true) {
+    return this.request('/trips/bulk', { method: 'POST', body: JSON.stringify({ trips }), silent }, token);
+  }
+  
   async getTrip(token: string, tripId: string) {
     return this.request(`/trips/${tripId}`, {}, token);
   }

@@ -7,10 +7,20 @@ BASE_URL = os.environ.get('EXPO_PUBLIC_BACKEND_URL', '').rstrip('/')
 
 @pytest.fixture(scope="module")
 def auth_token():
-    """Login and get token"""
+    """Login and get token, creating the user if they do not exist"""
+    try:
+        # Pre-register the test user so login tests succeed on fresh/local databases
+        requests.post(f"{BASE_URL}/api/auth/register", json={
+            "email": "test@demo.com",
+            "password": "test123",
+            "name": "Test Demo"
+        })
+    except Exception:
+        pass
     resp = requests.post(f"{BASE_URL}/api/auth/login", json={"email": "test@demo.com", "password": "test123"})
     assert resp.status_code == 200, f"Login failed: {resp.text}"
-    return resp.json()["token"]
+    data = resp.json()
+    return data.get("access_token") or data.get("token")
 
 @pytest.fixture(scope="module")
 def headers(auth_token):
@@ -19,10 +29,18 @@ def headers(auth_token):
 # Auth tests
 class TestAuth:
     def test_login_success(self):
+        try:
+            requests.post(f"{BASE_URL}/api/auth/register", json={
+                "email": "test@demo.com",
+                "password": "test123",
+                "name": "Test Demo"
+            })
+        except Exception:
+            pass
         resp = requests.post(f"{BASE_URL}/api/auth/login", json={"email": "test@demo.com", "password": "test123"})
         assert resp.status_code == 200
         data = resp.json()
-        assert "token" in data
+        assert "token" in data or "access_token" in data
         assert "user" in data
         assert data["user"]["email"] == "test@demo.com"
 
@@ -36,7 +54,7 @@ class TestAuth:
         resp = requests.post(f"{BASE_URL}/api/auth/register", json={"email": email, "password": "pass123", "name": "Test User"})
         assert resp.status_code == 200
         data = resp.json()
-        assert "token" in data
+        assert "token" in data or "access_token" in data
 
     def test_get_profile(self, headers):
         resp = requests.get(f"{BASE_URL}/api/auth/me", headers=headers)

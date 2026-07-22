@@ -304,7 +304,8 @@ export async function updateQueueAttempt(callId: string): Promise<void> {
 // Sync all offline trips to server
 export async function syncOfflineTrips(
   token: string,
-  createTripFn: (token: string, data: any) => Promise<any>
+  createTripFn: (token: string, data: any) => Promise<any>,
+  bulkCreateTripFn?: (token: string, data: any[]) => Promise<any>
 ): Promise<{ synced: number; failed: number }> {
   // Don't check isOnline here - let the caller decide (they already check)
   // This function should just attempt to sync what's available
@@ -317,24 +318,33 @@ export async function syncOfflineTrips(
     return { synced: 0, failed: 0 };
   }
   
-  log('Syncing offline trips:', unsyncedTrips.length);
-  let synced = 0;
-  let failed = 0;
-  
-  for (const trip of unsyncedTrips) {
-    // Skip trips with too many failed attempts
+  // Filter out trips with too many attempts
+  const eligibleTrips = unsyncedTrips.filter(trip => {
     if (trip.sync_attempts >= 5) {
       log('Skipping trip with too many attempts:', trip.id);
-      failed++;
-      continue;
+      return false;
     }
-    
+    return true;
+  });
+  
+  const failedCount = unsyncedTrips.length - eligibleTrips.length;
+  if (eligibleTrips.length === 0) {
+    return { synced: 0, failed: failedCount };
+  }
+  
+  log('Syncing offline trips:', eligibleTrips.length);
+  let synced = 0;
+  let failed = failedCount;
+  
+  // If bulk sync function is available, try bulk sync first
+  if (bulkCreateTripFn) {
     try {
-      await updateTripSyncAttempt(trip.id);
+      // Mark attempts for all eligible trips
+      for (const trip of eligibleTrips) {
+        await updateTripSyncAttempt(trip.id);
+      }
       
-      log('Syncing trip:', { id: trip.id, distance: trip.distance, start: trip.start_time });
-      
-      await createTripFn(token, {
+      const payload = eligibleTrips.map(trip => ({
         start_time: trip.start_time,
         end_time: trip.end_time,
         start_lat: trip.start_lat,
@@ -344,17 +354,68 @@ export async function syncOfflineTrips(
         start_address: trip.start_address || 'Offline tracked',
         end_address: trip.end_address || 'Offline tracked',
         distance: trip.distance,
-        // Default to 'business' for deduction calculation (Issue #2 fix)
         classification: trip.classification || 'business',
         notes: trip.notes || 'Tracked offline',
-      });
+      }));
       
-      await markTripSynced(trip.id);
-      synced++;
-      log('Synced trip successfully:', trip.id);
-    } catch (e: any) {
-      log('Failed to sync trip:', { id: trip.id, error: e.message });
-      failed++;
+      log('Attempting bulk sync of trips...');
+      await bulkCreateTripFn(token, payload);
+      
+      // Mark all as synced
+      for (const trip of eligibleTrips) {
+        await markTripSynced(trip.id);
+      }
+      synced = eligibleTrips.length;
+      log('Bulk sync completed successfully');
+    } catch (bulkError: any) {
+      log('Bulk sync failed, falling back to sequential sync:', bulkError.message || bulkError);
+      // If bulk fails, fall back to sequential sync
+      for (const trip of eligibleTrips) {
+        try {
+          await createTripFn(token, {
+            start_time: trip.start_time,
+            end_time: trip.end_time,
+            start_lat: trip.start_lat,
+            start_lng: trip.start_lng,
+            end_lat: trip.end_lat,
+            end_lng: trip.end_lng,
+            start_address: trip.start_address || 'Offline tracked',
+            end_address: trip.end_address || 'Offline tracked',
+            distance: trip.distance,
+            classification: trip.classification || 'business',
+            notes: trip.notes || 'Tracked offline',
+          });
+          await markTripSynced(trip.id);
+          synced++;
+        } catch (seqError: any) {
+          log('Failed to sync trip sequentially:', { id: trip.id, error: seqError.message });
+          failed++;
+        }
+      }
+    }
+  } else {
+    // Legacy sequential execution if bulkCreateTripFn not provided
+    for (const trip of eligibleTrips) {
+      try {
+        await createTripFn(token, {
+          start_time: trip.start_time,
+          end_time: trip.end_time,
+          start_lat: trip.start_lat,
+          start_lng: trip.start_lng,
+          end_lat: trip.end_lat,
+          end_lng: trip.end_lng,
+          start_address: trip.start_address || 'Offline tracked',
+          end_address: trip.end_address || 'Offline tracked',
+          distance: trip.distance,
+          classification: trip.classification || 'business',
+          notes: trip.notes || 'Tracked offline',
+        });
+        await markTripSynced(trip.id);
+        synced++;
+      } catch (e: any) {
+        log('Failed to sync trip sequentially:', { id: trip.id, error: e.message });
+        failed++;
+      }
     }
   }
   

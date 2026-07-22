@@ -714,24 +714,26 @@ export async function getTrackingStatus(): Promise<{
 }
 
 // Sync pending trips to server (call this when user logs in)
-export async function syncPendingTrips(token: string, createTripFn: (token: string, data: any) => Promise<any>): Promise<number> {
+export async function syncPendingTrips(
+  token: string,
+  createTripFn: (token: string, data: any) => Promise<any>,
+  bulkCreateTripFn?: (token: string, data: any[]) => Promise<any>
+): Promise<number> {
   const pendingTrips = await getPendingTrips();
+  const eligibleTrips = pendingTrips.filter(t => !t.synced);
   
-  if (pendingTrips.length === 0) {
+  if (eligibleTrips.length === 0) {
     log('No pending trips to sync');
     return 0;
   }
   
-  log('Syncing pending trips', { count: pendingTrips.length });
+  log('Syncing pending trips', { count: eligibleTrips.length });
   let syncedCount = 0;
   const remainingTrips: PendingTrip[] = [];
   
-  for (const trip of pendingTrips) {
-    if (trip.synced) continue;
-    
+  if (bulkCreateTripFn) {
     try {
-      // Create trip on server
-      await createTripFn(token, {
+      const payload = eligibleTrips.map(trip => ({
         start_time: trip.start_time,
         end_time: trip.end_time,
         start_lat: trip.start_lat,
@@ -741,17 +743,60 @@ export async function syncPendingTrips(token: string, createTripFn: (token: stri
         start_address: trip.start_address || 'Auto-detected start',
         end_address: trip.end_address || 'Auto-detected end',
         distance: trip.distance,
-        // Default to 'business' for proper deduction calculation
         classification: 'business',
         notes: 'Auto-tracked trip',
-      });
+      }));
       
-      trip.synced = true;
-      syncedCount++;
-      log('Trip synced successfully', { tripId: trip.id });
-    } catch (e) {
-      log('Failed to sync trip', { tripId: trip.id, error: e });
-      remainingTrips.push(trip);
+      log('Attempting bulk sync of pending trips...');
+      await bulkCreateTripFn(token, payload);
+      
+      syncedCount = eligibleTrips.length;
+      log('Bulk sync of pending trips completed successfully');
+    } catch (bulkError: any) {
+      log('Bulk sync of pending trips failed, falling back to sequential:', bulkError.message || bulkError);
+      for (const trip of eligibleTrips) {
+        try {
+          await createTripFn(token, {
+            start_time: trip.start_time,
+            end_time: trip.end_time,
+            start_lat: trip.start_lat,
+            start_lng: trip.start_lng,
+            end_lat: trip.end_lat,
+            end_lng: trip.end_lng,
+            start_address: trip.start_address || 'Auto-detected start',
+            end_address: trip.end_address || 'Auto-detected end',
+            distance: trip.distance,
+            classification: 'business',
+            notes: 'Auto-tracked trip',
+          });
+          syncedCount++;
+        } catch (seqError) {
+          log('Failed to sync trip sequentially', { tripId: trip.id, error: seqError });
+          remainingTrips.push(trip);
+        }
+      }
+    }
+  } else {
+    for (const trip of eligibleTrips) {
+      try {
+        await createTripFn(token, {
+          start_time: trip.start_time,
+          end_time: trip.end_time,
+          start_lat: trip.start_lat,
+          start_lng: trip.start_lng,
+          end_lat: trip.end_lat,
+          end_lng: trip.end_lng,
+          start_address: trip.start_address || 'Auto-detected start',
+          end_address: trip.end_address || 'Auto-detected end',
+          distance: trip.distance,
+          classification: 'business',
+          notes: 'Auto-tracked trip',
+        });
+        syncedCount++;
+      } catch (e) {
+        log('Failed to sync trip sequentially', { tripId: trip.id, error: e });
+        remainingTrips.push(trip);
+      }
     }
   }
   

@@ -45,7 +45,7 @@ export default function TaxInsightsScreen() {
         const data = await API.getReportSummary(token, new Date().getFullYear());
         setSummary(data);
       } catch (e: any) {
-        console.warn('[TaxInsights] Failed to load summary data:', e.message || e);
+        console.log('[TaxInsights] Failed to load summary data:', e.message || e);
       } finally {
         setLoading(false);
       }
@@ -102,10 +102,10 @@ export default function TaxInsightsScreen() {
   };
 
   // Determine if premium features should be locked
-  const isPremium = user?.subscription_tier === 'pro' || user?.subscription_tier === 'business';
+  const isBusiness = user?.subscription_tier === 'business';
 
   // Lock / Upgrade Promotion Screen
-  if (!isPremium) {
+  if (!isBusiness) {
     return (
       <View style={[styles.container, { paddingTop: insets.top }]}>
         <View style={styles.header}>
@@ -170,7 +170,7 @@ export default function TaxInsightsScreen() {
             style={styles.upgradeBtn}
             onPress={() => router.push('/subscription')}
           >
-            <Text style={styles.upgradeBtnText}>Upgrade to Pro / Business Plan</Text>
+            <Text style={styles.upgradeBtnText}>Upgrade to Business Plan</Text>
             <Feather name="chevron-right" size={16} color={Colors.text.inverse} />
           </TouchableOpacity>
         </ScrollView>

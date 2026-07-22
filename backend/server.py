@@ -21,6 +21,8 @@ import httpx
 import urllib.parse
 from PIL import Image, ImageEnhance, ImageOps, ImageFilter
 import numpy as np
+import time
+import threading
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -84,21 +86,33 @@ async def startup_db_client():
     
     logger.info("Initializing MongoDB Indexes...")
     # Create indexes for trips tracking real-time
-    await db.trips.create_index([("user_id", 1)])
-    await db.trips.create_index([("start_time", -1)])
-    await db.trips.create_index([("is_active", 1)])
+    await db.trips.create_index([("trip_id", 1)], unique=True)
+    await db.trips.create_index([("user_id", 1), ("start_time", -1)])
+    await db.trips.create_index([("user_id", 1), ("is_active", 1), ("start_time", -1)])
     
     # Create indexes for user performance
     await db.users.create_index([("user_id", 1)], unique=True)
     await db.users.create_index([("email", 1)], unique=True)
+    await db.users.create_index([("api_key", 1)], sparse=True)
     
     # Create indexes for expenses
-    await db.expenses.create_index([("user_id", 1)])
-    await db.expenses.create_index([("created_at", -1)])
+    await db.expenses.create_index([("expense_id", 1)], unique=True)
+    await db.expenses.create_index([("user_id", 1), ("created_at", -1)])
     
     # Create indexes for system alerts
-    await db.alerts.create_index([("owner_id", 1)])
-    await db.alerts.create_index([("created_at", -1)])
+    await db.alerts.create_index([("alert_id", 1)], unique=True)
+    await db.alerts.create_index([("owner_id", 1), ("created_at", -1)])
+
+    # Create indexes for team members, invitations, and payment transactions
+    await db.team_members.create_index([("member_id", 1)], unique=True)
+    await db.team_members.create_index([("email", 1)])
+    await db.team_members.create_index([("owner_id", 1)])
+    
+    await db.invitations.create_index([("token", 1)], unique=True)
+    await db.invitations.create_index([("email", 1)])
+    
+    await db.payment_transactions.create_index([("session_id", 1)], unique=True, partialFilterExpression={"session_id": {"$type": "string"}})
+    await db.payment_transactions.create_index([("user_id", 1)])
     logger.info("MongoDB Indexes built explicitly.")
 
 # ============================================================
@@ -164,6 +178,9 @@ class TripDirectCreate(BaseModel):
     classification: str = "unclassified"
     notes: Optional[str] = None
 
+class TripBulkCreate(BaseModel):
+    trips: List[TripDirectCreate]
+
 class ExpenseCreate(BaseModel):
     amount: float
     merchant: Optional[str] = None
@@ -220,6 +237,38 @@ def verify_password(plain_password, hashed_password):
 def get_password_hash(password):
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
+class TokenCache:
+    def __init__(self, ttl_seconds: float = 60.0):
+        self.ttl = ttl_seconds
+        self.cache = {}
+        self.lock = threading.Lock()
+
+    def get(self, token: str) -> Optional[dict]:
+        with self.lock:
+            if token in self.cache:
+                data, expiry = self.cache[token]
+                if time.time() < expiry:
+                    return data
+                else:
+                    del self.cache[token]
+            return None
+
+    def set(self, token: str, user_data: dict):
+        with self.lock:
+            self.cache[token] = (user_data, time.time() + self.ttl)
+
+    def invalidate_user(self, user_id: str):
+        with self.lock:
+            to_remove = [t for t, (data, _) in self.cache.items() if data.get("user_id") == user_id]
+            for t in to_remove:
+                self.cache.pop(t, None)
+
+    def clear(self):
+        with self.lock:
+            self.cache.clear()
+
+auth_cache = TokenCache(ttl_seconds=60.0)
+
 async def get_current_user(request: Request) -> dict:
     token = None
     auth_header = request.headers.get("Authorization")
@@ -229,12 +278,17 @@ async def get_current_user(request: Request) -> dict:
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
         
+    cached_user = auth_cache.get(token)
+    if cached_user:
+        return cached_user
+        
     if token.startswith("mm_live_"):
         user = await db.users.find_one({"api_key": token}, {"_id": 0, "password_hash": 0})
         if not user:
             raise HTTPException(status_code=401, detail="Invalid API key")
         if user.get("subscription_tier", "free") not in ["pro", "business"]:
             raise HTTPException(status_code=403, detail="Developer API access requires a Pro or Business plan.")
+        auth_cache.set(token, user)
         return user
 
     try:
@@ -274,6 +328,7 @@ async def get_current_user(request: Request) -> dict:
                 # Primary user: keep their current subscription tier
                 pass
             
+        auth_cache.set(token, user)
         return user
             
     except JWTError as e:
@@ -288,7 +343,7 @@ async def check_mileage_limit(current_user: dict):
             "user_id": current_user["user_id"],
             "start_time": {"$gte": month_start},
             "is_active": False
-        }, {"distance": 1}).to_list(None)
+        }, {"distance": 1}).limit(100).to_list(100)
         
         monthly_miles = sum(t.get("distance", 0.0) for t in completed_trips)
         monthly_trips_count = len(completed_trips)
@@ -551,6 +606,7 @@ async def update_profile(data: dict = Body(...), current_user: dict = Depends(ge
     update_data = {k: v for k, v in data.items() if k in allowed}
     if update_data:
         await db.users.update_one({"user_id": current_user["user_id"]}, {"$set": update_data})
+        auth_cache.invalidate_user(current_user["user_id"])
     user = await db.users.find_one({"user_id": current_user["user_id"]}, {"_id": 0, "password_hash": 0})
     return user
 
@@ -569,6 +625,7 @@ async def generate_api_key(current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Developer API access requires a Pro or Business plan.")
     new_key = f"mm_live_{uuid.uuid4().hex}{uuid.uuid4().hex}"
     await db.users.update_one({"user_id": current_user["user_id"]}, {"$set": {"api_key": new_key}})
+    auth_cache.invalidate_user(current_user["user_id"])
     return {"api_key": new_key}
 
 # ============================================================
@@ -673,6 +730,65 @@ async def create_trip_direct(data: TripDirectCreate, current_user: dict = Depend
     }
     await db.trips.insert_one(trip_doc)
     return {k: v for k, v in trip_doc.items() if k != "_id"}
+
+@api_router.post("/trips/bulk")
+async def create_trips_bulk(data: TripBulkCreate, current_user: dict = Depends(get_current_user)):
+    """Create multiple complete trips at once (used for syncing auto-tracked offline trips in a single network request)"""
+    limit_reached, _ = await check_mileage_limit(current_user)
+    if limit_reached:
+        raise HTTPException(status_code=403, detail="Mileage or trip limit reached. Please upgrade your plan.")
+        
+    tax_country = current_user.get("tax_country", "US")
+    trip_docs = []
+    
+    for t in data.trips:
+        trip_id = f"trip_{uuid.uuid4().hex[:12]}"
+        
+        # Parse start time
+        try:
+            start_time = datetime.fromisoformat(t.start_time.replace('Z', '+00:00'))
+        except:
+            start_time = datetime.now(timezone.utc)
+        
+        # Parse end time if provided
+        end_time = None
+        if t.end_time:
+            try:
+                end_time = datetime.fromisoformat(t.end_time.replace('Z', '+00:00'))
+            except:
+                end_time = datetime.now(timezone.utc)
+                
+        deduction = calculate_deduction(t.distance, t.classification, tax_country)
+        
+        trip_doc = {
+            "trip_id": trip_id,
+            "user_id": current_user["user_id"],
+            "start_time": start_time,
+            "end_time": end_time,
+            "distance": t.distance,
+            "start_lat": t.start_lat,
+            "start_lng": t.start_lng,
+            "end_lat": t.end_lat,
+            "end_lng": t.end_lng,
+            "start_address": t.start_address or "Auto-detected start",
+            "end_address": t.end_address or "Auto-detected end",
+            "classification": t.classification,
+            "ai_confidence": 0.0,
+            "risk_score": None,
+            "notes": t.notes or "Auto-tracked trip",
+            "purpose": None,
+            "client_name": None,
+            "is_active": False,
+            "deduction_value": deduction,
+            "created_at": datetime.now(timezone.utc),
+            "source": "auto_tracking"
+        }
+        trip_docs.append(trip_doc)
+        
+    if trip_docs:
+        await db.trips.insert_many(trip_docs)
+        
+    return [{k: v for k, v in doc.items() if k != "_id"} for doc in trip_docs]
 
 @api_router.get("/trips/active")
 async def get_active_trip(current_user: dict = Depends(get_current_user)):
@@ -1249,6 +1365,7 @@ Return ONLY JSON: {{"classification": "business|personal|medical|charity", "conf
 @api_router.post("/ai/classify-all")
 async def classify_all_trips(current_user: dict = Depends(get_current_user)):
     """Bulk classify all unclassified trips using AI"""
+    import asyncio
     if current_user.get("subscription_tier", "free") == "free":
         raise HTTPException(status_code=403, detail="AI bulk trip classification requires a Pro or Business plan.")
     unclassified = await db.trips.find(
@@ -1259,7 +1376,6 @@ async def classify_all_trips(current_user: dict = Depends(get_current_user)):
     if not unclassified:
         return {"classified": 0, "results": [], "message": "No unclassified trips found"}
     
-    results = []
     try:
         # Get user's trip history for context
         history = await db.trips.find(
@@ -1269,46 +1385,51 @@ async def classify_all_trips(current_user: dict = Depends(get_current_user)):
         history_text = "\n".join([f"- {t.get('start_address','?')} → {t.get('end_address','?')}: {t.get('classification')} ({t.get('purpose','N/A')})" for t in history[:10]])
         system_msg = "You are a trip classification AI. Return ONLY valid JSON. No explanation."
         
-        for trip in unclassified:
-            try:
-                prompt = f"""Classify this trip:
+        sem = asyncio.Semaphore(5)  # Respect rate limits by allowing max 5 concurrent calls
+        
+        async def classify_trip(trip):
+            async with sem:
+                try:
+                    prompt = f"""Classify this trip:
 Start: {trip.get('start_address','Unknown')} | End: {trip.get('end_address','Unknown')}
 Distance: {trip.get('distance',0):.1f} miles | Notes: {trip.get('notes','None')}
 User occupation: {current_user.get('occupation_type','self_employed')}
 Past trips: {history_text}
 Return ONLY JSON: {{"classification": "business|personal|medical|charity", "confidence": 0.85, "purpose": "brief reason"}}"""
-                
-                response = await openai_client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"}
-                )
-                content = response.choices[0].message.content
-                result = json.loads(content) if content else {"classification": "personal", "confidence": 0.5, "purpose": "Auto-classification"}
-                
-                dist = trip.get("distance", 0)
-                cls = result.get("classification", "personal")
-                
-                await db.trips.update_one(
-                    {"trip_id": trip["trip_id"]},
-                    {"$set": {
+                    
+                    response = await openai_client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
+                        response_format={"type": "json_object"}
+                    )
+                    content = response.choices[0].message.content
+                    result = json.loads(content) if content else {"classification": "personal", "confidence": 0.5, "purpose": "Auto-classification"}
+                    
+                    dist = trip.get("distance", 0)
+                    cls = result.get("classification", "personal")
+                    
+                    await db.trips.update_one(
+                        {"trip_id": trip["trip_id"]},
+                        {"$set": {
+                            "classification": cls,
+                            "ai_confidence": result.get("confidence", 0.5),
+                            "purpose": result.get("purpose"),
+                            "deduction_value": calculate_deduction(dist, cls, current_user.get("tax_country", "US"))
+                        }}
+                    )
+                    
+                    return {
+                        "trip_id": trip["trip_id"],
                         "classification": cls,
-                        "ai_confidence": result.get("confidence", 0.5),
-                        "purpose": result.get("purpose"),
-                        "deduction_value": calculate_deduction(dist, cls, current_user.get("tax_country", "US"))
-                    }}
-                )
-                
-                results.append({
-                    "trip_id": trip["trip_id"],
-                    "classification": cls,
-                    "confidence": result.get("confidence", 0.5),
-                    "deduction": calculate_deduction(dist, cls, current_user.get("tax_country", "US"))
-                })
-                
-            except Exception as e:
-                logger.error(f"Bulk classify error for {trip['trip_id']}: {e}")
-                results.append({"trip_id": trip["trip_id"], "error": str(e)})
+                        "confidence": result.get("confidence", 0.5),
+                        "deduction": calculate_deduction(dist, cls, current_user.get("tax_country", "US"))
+                    }
+                except Exception as e:
+                    logger.error(f"Bulk classify error for {trip['trip_id']}: {e}")
+                    return {"trip_id": trip["trip_id"], "error": str(e)}
+
+        tasks = [classify_trip(t) for t in unclassified]
+        results = await asyncio.gather(*tasks)
                 
     except Exception as e:
         logger.error(f"Bulk classify setup error: {e}")
@@ -1446,19 +1567,9 @@ async def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
 
-    # Optimized queries with projections and limits
-    trip_projection = {"_id": 0, "trip_id": 1, "distance": 1, "classification": 1, "deduction_value": 1, "is_active": 1, "start_time": 1}
-    yearly_trips = await db.trips.find({"user_id": current_user["user_id"], "start_time": {"$gte": year_start}}, trip_projection).limit(2000).to_list(2000)
+    # Fast indexed queries for active trip and recent 5 completed trips
     active_trip = await db.trips.find_one({"user_id": current_user["user_id"], "is_active": True}, {"_id": 0, "trip_id": 1, "start_time": 1, "start_address": 1, "distance": 1})
     recent_trips = await db.trips.find({"user_id": current_user["user_id"], "is_active": False}, {"_id": 0, "trip_id": 1, "start_time": 1, "start_address": 1, "end_address": 1, "distance": 1, "classification": 1, "deduction_value": 1}).sort("start_time", -1).limit(5).to_list(5)
-
-    yearly_miles = 0.0
-    yearly_deductions = 0.0
-    yearly_trips_count = 0
-    monthly_miles = 0.0
-    monthly_deductions = 0.0
-    monthly_trips_count = 0
-    unclassified_count = 0
 
     import calendar
     chart_buckets = {}
@@ -1476,38 +1587,68 @@ async def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
             "order": i
         }
 
-    for t in yearly_trips:
-        is_active = t.get("is_active", False)
-        dist = t.get("distance", 0)
-        deduction = t.get("deduction_value", 0)
-        
-        st = t.get("start_time")
-        if isinstance(st, str):
-            try: st = datetime.fromisoformat(st.replace("Z", "+00:00"))
-            except: continue
-        if st and st.tzinfo is None:
-            st = st.replace(tzinfo=timezone.utc)
-            
-        if not st:
-            continue
-            
-        if not is_active:
-            yearly_miles += dist
-            yearly_trips_count += 1
-        yearly_deductions += deduction
-        
-        if st >= month_start:
-            if not is_active:
-                monthly_miles += dist
-                monthly_trips_count += 1
-                if t.get("classification") == "unclassified":
-                    unclassified_count += 1
-            monthly_deductions += deduction
-                
-        bucket_key = f"{st.year}-{st.month:02d}"
-        if bucket_key in chart_buckets:
-            chart_buckets[bucket_key]["miles"] += dist
-            chart_buckets[bucket_key]["deductions"] += deduction
+    # Perform DB-side aggregation to calculate yearly/monthly statistics and chart grouping
+    pipeline = [
+        {"$match": {
+            "user_id": current_user["user_id"],
+            "start_time": {"$gte": year_start}
+        }},
+        {"$facet": {
+            "totals": [
+                {"$group": {
+                    "_id": None,
+                    "yearly_miles": {"$sum": {"$cond": [{"$eq": ["$is_active", False]}, "$distance", 0.0]}},
+                    "yearly_deductions": {"$sum": "$deduction_value"},
+                    "yearly_trips_count": {"$sum": {"$cond": [{"$eq": ["$is_active", False]}, 1, 0]}},
+                    "monthly_miles": {"$sum": {"$cond": [{"$and": [{"$eq": ["$is_active", False]}, {"$gte": ["$start_time", month_start]}]}, "$distance", 0.0]}},
+                    "monthly_deductions": {"$sum": {"$cond": [{"$gte": ["$start_time", month_start]}, "$deduction_value", 0.0]}},
+                    "monthly_trips_count": {"$sum": {"$cond": [{"$and": [{"$eq": ["$is_active", False]}, {"$gte": ["$start_time", month_start]}]}, 1, 0]}},
+                    "unclassified_count": {"$sum": {"$cond": [{"$and": [{"$eq": ["$is_active", False]}, {"$gte": ["$start_time", month_start]}, {"$eq": ["$classification", "unclassified"]}]}, 1, 0]}}
+                }}
+            ],
+            "chart_data": [
+                {"$group": {
+                    "_id": {
+                        "year": {"$year": "$start_time"},
+                        "month": {"$month": "$start_time"}
+                    },
+                    "miles": {"$sum": {"$cond": [{"$eq": ["$is_active", False]}, "$distance", 0.0]}},
+                    "deductions": {"$sum": "$deduction_value"}
+                }}
+            ]
+        }}
+    ]
+
+    results = await db.trips.aggregate(pipeline).to_list(1)
+    
+    yearly_miles = 0.0
+    yearly_deductions = 0.0
+    yearly_trips_count = 0
+    monthly_miles = 0.0
+    monthly_deductions = 0.0
+    monthly_trips_count = 0
+    unclassified_count = 0
+
+    if results and results[0]["totals"]:
+        totals = results[0]["totals"][0]
+        yearly_miles = totals.get("yearly_miles", 0.0)
+        yearly_deductions = totals.get("yearly_deductions", 0.0)
+        yearly_trips_count = totals.get("yearly_trips_count", 0)
+        monthly_miles = totals.get("monthly_miles", 0.0)
+        monthly_deductions = totals.get("monthly_deductions", 0.0)
+        monthly_trips_count = totals.get("monthly_trips_count", 0)
+        unclassified_count = totals.get("unclassified_count", 0)
+
+    if results and "chart_data" in results[0]:
+        for item in results[0]["chart_data"]:
+            gid = item.get("_id")
+            if gid and isinstance(gid, dict) and "year" in gid and "month" in gid:
+                yr = gid["year"]
+                mo = gid["month"]
+                bucket_key = f"{yr}-{mo:02d}"
+                if bucket_key in chart_buckets:
+                    chart_buckets[bucket_key]["miles"] = item.get("miles", 0.0)
+                    chart_buckets[bucket_key]["deductions"] = item.get("deductions", 0.0)
 
     chart_data = sorted(chart_buckets.values(), key=lambda x: x["order"], reverse=True)
     for data in chart_data:
@@ -2509,6 +2650,7 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
                         {"user_id": invitee_user["user_id"]}, 
                         {"$set": {"subscription_tier": plan}}
                     )
+                    auth_cache.invalidate_user(invitee_user["user_id"])
                 await db.team_members.update_many(
                     {"email": invitee_email},
                     {"$set": {"subscription_tier": plan}}
@@ -2518,6 +2660,7 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
                     {"user_id": current_user["user_id"]}, 
                     {"$set": {"subscription_tier": plan}}
                 )
+                auth_cache.invalidate_user(current_user["user_id"])
             card_brand, card_last4 = await extract_stripe_card_details(session_id)
             await db.payment_transactions.update_one(
                 {"session_id": session_id}, 
@@ -2552,6 +2695,7 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
                         {"user_id": invitee_user["user_id"]}, 
                         {"$set": {"subscription_tier": plan}}
                     )
+                    auth_cache.invalidate_user(invitee_user["user_id"])
                 await db.team_members.update_many(
                     {"email": invitee_email},
                     {"$set": {"subscription_tier": plan}}
@@ -2561,6 +2705,7 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
                     {"user_id": user_id}, 
                     {"$set": {"subscription_tier": plan}}
                 )
+                auth_cache.invalidate_user(user_id)
             card_brand, card_last4 = await extract_stripe_card_details(session_id)
             await db.payment_transactions.update_one(
                 {"session_id": session_id}, 
@@ -2614,6 +2759,7 @@ async def stripe_webhook(request: Request):
                             {"user_id": invitee_user["user_id"]}, 
                             {"$set": {"subscription_tier": plan}}
                         )
+                        auth_cache.invalidate_user(invitee_user["user_id"])
                     await db.team_members.update_many(
                         {"email": invitee_email},
                         {"$set": {"subscription_tier": plan}}
@@ -2621,6 +2767,7 @@ async def stripe_webhook(request: Request):
                 else:
                     if user_id:
                         await db.users.update_one({"user_id": user_id}, {"$set": {"subscription_tier": plan}})
+                        auth_cache.invalidate_user(user_id)
                 card_brand, card_last4 = await extract_stripe_card_details(session.id)
                 await db.payment_transactions.update_one(
                     {"session_id": session.id},
@@ -2666,6 +2813,7 @@ async def downgrade_subscription(current_user: dict = Depends(get_current_user))
         {"user_id": current_user["user_id"]},
         {"$set": {"subscription_tier": "free"}}
     )
+    auth_cache.invalidate_user(current_user["user_id"])
     return {"status": "success", "tier": "free"}
 
 # ============================================================
@@ -2769,7 +2917,7 @@ async def get_team_stats(current_user: dict = Depends(get_current_user)):
     if tier not in ["pro", "business"]:
         raise HTTPException(status_code=403, detail="Access denied. Premium subscription required.")
         
-    members = await db.team_members.find({"owner_id": current_user["user_id"]}).to_list(None)
+    members = await db.team_members.find({"owner_id": current_user["user_id"]}).limit(100).to_list(100)
     
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -2793,7 +2941,7 @@ async def get_team_stats(current_user: dict = Depends(get_current_user)):
                     "user_id": user["user_id"],
                     "start_time": {"$gte": month_start},
                     "is_active": False
-                }, {"distance": 1, "deduction_value": 1}).to_list(None)
+                }, {"distance": 1, "deduction_value": 1}).limit(1000).to_list(1000)
                 
                 for t in trips:
                     dist = t.get("distance", 0.0)
@@ -2864,7 +3012,7 @@ async def get_team_members(current_user: dict = Depends(get_current_user)):
     members = await db.team_members.find(
         {"owner_id": current_user["user_id"]},
         {"_id": 0}
-    ).to_list(None)
+    ).limit(100).to_list(100)
     
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -2886,7 +3034,7 @@ async def get_team_members(current_user: dict = Depends(get_current_user)):
                     "user_id": user["user_id"],
                     "start_time": {"$gte": month_start},
                     "is_active": False
-                }, {"distance": 1}).to_list(None)
+                }, {"distance": 1}).limit(1000).to_list(1000)
                 
                 m["monthly_miles"] = sum(t.get("distance", 0.0) for t in user_trips)
             else:

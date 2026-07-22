@@ -7,7 +7,7 @@ Based on specific user request for validation of trip sync functionality
 import requests
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import os
 # Base URL from review request or environment variable
@@ -87,9 +87,13 @@ def test_sync_flow():
     print("\n🚗 STEP 3: Create Direct Trip (Offline Sync)")
     print("-" * 45)
     
+    now_utc = datetime.now(timezone.utc)
+    start_time_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_time_str = (now_utc + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    
     trip_data = {
-        "start_time": "2026-03-15T10:00:00Z",
-        "end_time": "2026-03-15T10:30:00Z", 
+        "start_time": start_time_str,
+        "end_time": end_time_str, 
         "start_lat": 40.7128,
         "start_lng": -74.0060,
         "end_lat": 40.7580,
@@ -187,7 +191,7 @@ def test_sync_flow():
             monthly_deductions = stats.get("monthly_deductions", 0)
             yearly_miles = stats.get("yearly_miles", 0)
             yearly_deductions = stats.get("yearly_deductions", 0)
-            total_trips = stats.get("total_trips", 0)
+            total_trips = stats.get("monthly_trips", 0)
             
             print(f"     Total Trips: {total_trips}")
             print(f"     Monthly Miles: {monthly_miles}")

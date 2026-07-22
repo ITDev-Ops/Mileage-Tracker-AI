@@ -269,8 +269,8 @@ export default function DashboardScreen() {
       if (online && token) {
         console.log('[Dashboard] Connectivity restored - sweeping offline queues...');
         try {
-          await syncOfflineTrips(token, API.createTrip);
-          await syncPendingTrips(token, API.createTrip);
+          await syncOfflineTrips(token, (t, d) => API.createTripDirect(t, d, true), (t, ds) => API.createTripsBulk(t, ds, true));
+          await syncPendingTrips(token, (t, d) => API.createTripDirect(t, d, true), (t, ds) => API.createTripsBulk(t, ds, true));
           await loadData();
         } catch (e) {
           console.log('[Dashboard] Queue sweep error:', e);
@@ -768,8 +768,8 @@ export default function DashboardScreen() {
     // If online, perform a quick sweep to sync any pending or offline trips first
     try {
       console.log('[Dashboard] Online - sweeping pending/offline trips on load...');
-      await syncOfflineTrips(token, API.createTrip);
-      await syncPendingTrips(token, API.createTrip);
+      await syncOfflineTrips(token, (t, d) => API.createTripDirect(t, d, true), (t, ds) => API.createTripsBulk(t, ds, true));
+      await syncPendingTrips(token, (t, d) => API.createTripDirect(t, d, true), (t, ds) => API.createTripsBulk(t, ds, true));
     } catch (syncErr) {
       console.log('[Dashboard] Error sweeping queues on load:', syncErr);
     }
@@ -780,7 +780,7 @@ export default function DashboardScreen() {
       // Cache the successfully retrieved clean server stats
       await AsyncStorage.setItem('cached_dashboard_stats', JSON.stringify(data));
     } catch (e: any) {
-      console.warn('Dashboard load server connection error - falling back to offline mode:', e.message || e);
+      console.log('Dashboard load server connection error - falling back to offline mode:', e.message || e);
       await loadOfflineStats();
     }
   }, [token, isOnline, loadOfflineStats]);
