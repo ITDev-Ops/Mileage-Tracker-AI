@@ -63,7 +63,9 @@ class APIService {
       console.log(`[API] NetInfo reports offline. Proceeding with fetch anyway for: ${path}`);
     }
 
-    const url = `${BACKEND_URL}/api${path}`;
+    const baseUrlClean = BACKEND_URL.replace(/\/api\/?$/, '').replace(/\/$/, '');
+    const cleanPath = path.startsWith('/') ? path : `/${path}`;
+    const url = cleanPath.startsWith('/api/') ? `${baseUrlClean}${cleanPath}` : `${baseUrlClean}/api${cleanPath}`;
     console.log('[API] Request:', options.method || 'GET', url);
     
     // Create an explicit timeout to prevent fetch from hanging indefinitely
@@ -119,6 +121,12 @@ class APIService {
   }
   async getMe(token: string) {
     return this.request('/auth/me', {}, token);
+  }
+  async acceptLegalTerms(token: string, data: Record<string, unknown>) {
+    return this.request('/auth/accept-legal-terms', { method: 'POST', body: JSON.stringify(data) }, token);
+  }
+  async getLegalTerms() {
+    return this.request('/auth/legal-terms', {});
   }
   async updateProfile(token: string, data: Record<string, string>) {
     return this.request('/auth/profile', { method: 'PUT', body: JSON.stringify(data) }, token);

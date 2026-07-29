@@ -13,6 +13,10 @@ export interface User {
   tax_country: string;
   vehicle_type?: string;
   invited_team_plan?: string;
+  legal_consent_required?: boolean;
+  missing_consents?: string[];
+  current_legal_versions?: Record<string, string>;
+  legal_agreements?: Record<string, any>;
 }
 
 interface AuthContextType {
@@ -20,7 +24,8 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   login: (email?: string, password?: string) => Promise<void>;
-  register: (name?: string, email?: string, password?: string, token?: string) => Promise<void>;
+  register: (name?: string, email?: string, password?: string, token?: string, legalConsent?: Record<string, any>) => Promise<void>;
+  acceptLegalTerms: (consentData: { tos_agreed: boolean; privacy_policy_agreed: boolean; product_video_agreed: boolean }) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -150,14 +155,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const register = async (name?: string, email?: string, password?: string, token?: string) => {
+  const register = async (name?: string, email?: string, password?: string, token?: string, legalConsent?: Record<string, any>) => {
     setLoading(true);
     authLog('register: Calling custom backend register API...');
     try {
       if (!email || !password || !name) {
         throw new Error('Name, email, and password required');
       }
-      const response = await API.authRegister({ name, email, password, token });
+      const payload = { name, email, password, token, ...(legalConsent || {}) };
+      const response = await API.authRegister(payload);
       await persistSession(response.access_token, response.user);
       authLog('register: Custom register complete');
     } catch (error: any) {
@@ -165,6 +171,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw error;
     } finally {
       setLoading(false);
+    }
+  };
+
+  const acceptLegalTerms = async (consentData: { tos_agreed: boolean; privacy_policy_agreed: boolean; product_video_agreed: boolean }) => {
+    if (!token) throw new Error('Not authenticated');
+    try {
+      const updatedUser = await API.acceptLegalTerms(token, consentData);
+      setUser(updatedUser);
+      await AsyncStorage.setItem('@multimile_user', JSON.stringify(updatedUser));
+      authLog('acceptLegalTerms: successfully recorded legal agreement.');
+    } catch (error: any) {
+      authLog('acceptLegalTerms: ERROR', error.message);
+      throw error;
     }
   };
 
@@ -229,7 +248,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, loginWithGoogle, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, token, loading, login, register, acceptLegalTerms, loginWithGoogle, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

@@ -3,6 +3,8 @@ import { Feather } from '@expo/vector-icons';
 import { Colors } from '../../constants/theme';
 import { Platform, View, StyleSheet } from 'react-native';
 
+import LegalConsentModal from '../../components/LegalConsentModal';
+
 function TabIcon({ name, color, focused }: { name: string; color: string; focused: boolean }) {
   return (
     <View style={[styles.iconWrap, focused && styles.iconWrapFocused]}>
@@ -13,44 +15,47 @@ function TabIcon({ name, color, focused }: { name: string; color: string; focuse
 
 export default function TabsLayout() {
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarStyle: {
-          backgroundColor: Colors.bg.secondary,
-          borderTopColor: Colors.border,
-          borderTopWidth: 1,
-          height: Platform.OS === 'ios' ? 88 : 64,
-          paddingBottom: Platform.OS === 'ios' ? 28 : 8,
-          paddingTop: 8,
-        },
-        tabBarActiveTintColor: Colors.brand.primary,
-        tabBarInactiveTintColor: Colors.text.tertiary,
-        tabBarShowLabel: true,
-        tabBarLabelStyle: { fontSize: 10, fontWeight: '600', marginTop: 2 },
-      }}
-    >
-      <Tabs.Screen
-        name="dashboard"
-        options={{ title: 'Dashboard', tabBarIcon: ({ color, focused }) => <TabIcon name="home" color={color} focused={focused} /> }}
-      />
-      <Tabs.Screen
-        name="trips"
-        options={{ title: 'Trips', tabBarIcon: ({ color, focused }) => <TabIcon name="map" color={color} focused={focused} /> }}
-      />
-      <Tabs.Screen
-        name="expenses"
-        options={{ title: 'Expenses', tabBarIcon: ({ color, focused }) => <TabIcon name="credit-card" color={color} focused={focused} /> }}
-      />
-      <Tabs.Screen
-        name="reports"
-        options={{ title: 'Reports', tabBarIcon: ({ color, focused }) => <TabIcon name="bar-chart-2" color={color} focused={focused} /> }}
-      />
-      <Tabs.Screen
-        name="settings"
-        options={{ title: 'Settings', tabBarIcon: ({ color, focused }) => <TabIcon name="settings" color={color} focused={focused} /> }}
-      />
-    </Tabs>
+    <>
+      <LegalConsentModal />
+      <Tabs
+        screenOptions={{
+          headerShown: false,
+          tabBarStyle: {
+            backgroundColor: Colors.bg.secondary,
+            borderTopColor: Colors.border,
+            borderTopWidth: 1,
+            height: Platform.OS === 'ios' ? 88 : 64,
+            paddingBottom: Platform.OS === 'ios' ? 28 : 8,
+            paddingTop: 8,
+          },
+          tabBarActiveTintColor: Colors.brand.primary,
+          tabBarInactiveTintColor: Colors.text.tertiary,
+          tabBarShowLabel: true,
+          tabBarLabelStyle: { fontSize: 10, fontWeight: '600', marginTop: 2 },
+        }}
+      >
+        <Tabs.Screen
+          name="dashboard"
+          options={{ title: 'Dashboard', tabBarIcon: ({ color, focused }) => <TabIcon name="home" color={color} focused={focused} /> }}
+        />
+        <Tabs.Screen
+          name="trips"
+          options={{ title: 'Trips', tabBarIcon: ({ color, focused }) => <TabIcon name="map" color={color} focused={focused} /> }}
+        />
+        <Tabs.Screen
+          name="expenses"
+          options={{ title: 'Expenses', tabBarIcon: ({ color, focused }) => <TabIcon name="credit-card" color={color} focused={focused} /> }}
+        />
+        <Tabs.Screen
+          name="reports"
+          options={{ title: 'Reports', tabBarIcon: ({ color, focused }) => <TabIcon name="bar-chart-2" color={color} focused={focused} /> }}
+        />
+        <Tabs.Screen
+          name="settings"
+          options={{ title: 'Settings', tabBarIcon: ({ color, focused }) => <TabIcon name="settings" color={color} focused={focused} /> }}
+        />
+      </Tabs>
+    </>
   );
 }
 

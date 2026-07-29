@@ -8,6 +8,8 @@ import { initializeAutoTracking, startBackgroundTracking, requestTrackingPermiss
 import { initializeOfflineService } from '../services/offlineService';
 import { useOTAUpdate } from '../hooks/useOTAUpdate';
 
+import LegalConsentModal from '../components/LegalConsentModal';
+
 function NavigationGuard() {
   const { user, loading } = useAuth();
   const segments = useSegments();
@@ -93,6 +95,7 @@ export default function RootLayout() {
   return (
     <AuthProvider>
       <NavigationGuard />
+      <LegalConsentModal />
       <StatusBar style="light" />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.bg.primary } }}>
         <Stack.Screen name="index" />

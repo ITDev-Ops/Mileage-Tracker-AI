@@ -2,13 +2,17 @@ import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
   KeyboardAvoidingView, Platform, ScrollView, Alert, ActivityIndicator,
-  Image
+  Image, Linking
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Feather, FontAwesome } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
+
+const TOS_URL = 'https://globalsysnetcyber.com/apps/terms-of-service';
+const PRIVACY_POLICY_URL = 'https://globalsysnetcyber.com/apps/privacy-policy';
+const PRODUCT_VIDEO_URL = 'https://globalsysnetcyber.com/apps/';
 
 export default function SignUpScreen() {
   const params = useLocalSearchParams<{ email?: string; name?: string; token?: string }>();
@@ -17,6 +21,13 @@ export default function SignUpScreen() {
   const [isValidatingToken, setIsValidatingToken] = useState(!!params.token);
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [registrationSuccess, setRegistrationSuccess] = useState(false);
+
+  // Legal Consent Checkbox States
+  const [tosAgreed, setTosAgreed] = useState(false);
+  const [privacyAgreed, setPrivacyAgreed] = useState(false);
+  const [videoAgreed, setVideoAgreed] = useState(false);
+  
+  const isAllAgreed = tosAgreed && privacyAgreed && videoAgreed;
   
   useEffect(() => {
     let active = true;
@@ -62,10 +73,22 @@ export default function SignUpScreen() {
   const { register } = useAuth();
 
   const handleSignUp = async () => {
+    if (!isAllAgreed) {
+      Alert.alert(
+        'Legal Agreement Required',
+        'Please check all three boxes agreeing to the Terms of Service, Privacy Policy, and Watched Product Video before creating your account.'
+      );
+      return;
+    }
+
     setLoading(true);
-    console.log('[SignUp] Starting custom backend sign up process...');
+    console.log('[SignUp] Starting custom backend sign up process with legal consent...');
     try {
-      await register(fullName, email, password, params.token);
+      await register(fullName, email, password, params.token, {
+        tos_agreed: tosAgreed,
+        privacy_policy_agreed: privacyAgreed,
+        product_video_agreed: videoAgreed
+      });
       console.log('[SignUp] Auth successful...');
       if (params.token) {
         setRegistrationSuccess(true);
@@ -232,6 +255,62 @@ export default function SignUpScreen() {
             </View>
           </View>
 
+          {/* Legal Checkboxes Section */}
+          <View style={styles.legalSection}>
+            <Text style={styles.legalHeader}>Required Legal Agreements</Text>
+            
+            {/* Checkbox 1: Terms of Service */}
+            <View style={styles.checkboxRow}>
+              <TouchableOpacity
+                style={[styles.checkbox, tosAgreed && styles.checkboxSelected]}
+                onPress={() => setTosAgreed(!tosAgreed)}
+                activeOpacity={0.7}
+              >
+                {tosAgreed && <Feather name="check" size={14} color="#09090B" />}
+              </TouchableOpacity>
+              <View style={styles.checkboxTextWrap}>
+                <Text style={styles.checkboxText}>I agree to the </Text>
+                <TouchableOpacity onPress={() => Linking.openURL(TOS_URL)}>
+                  <Text style={styles.legalLink}>Terms of Service</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Checkbox 2: Privacy Policy */}
+            <View style={styles.checkboxRow}>
+              <TouchableOpacity
+                style={[styles.checkbox, privacyAgreed && styles.checkboxSelected]}
+                onPress={() => setPrivacyAgreed(!privacyAgreed)}
+                activeOpacity={0.7}
+              >
+                {privacyAgreed && <Feather name="check" size={14} color="#09090B" />}
+              </TouchableOpacity>
+              <View style={styles.checkboxTextWrap}>
+                <Text style={styles.checkboxText}>I agree to the </Text>
+                <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>
+                  <Text style={styles.legalLink}>Privacy Policy</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Checkbox 3: Watched Product Video */}
+            <View style={styles.checkboxRow}>
+              <TouchableOpacity
+                style={[styles.checkbox, videoAgreed && styles.checkboxSelected]}
+                onPress={() => setVideoAgreed(!videoAgreed)}
+                activeOpacity={0.7}
+              >
+                {videoAgreed && <Feather name="check" size={14} color="#09090B" />}
+              </TouchableOpacity>
+              <View style={styles.checkboxTextWrap}>
+                <Text style={styles.checkboxText}>I confirm I have watched the </Text>
+                <TouchableOpacity onPress={() => Linking.openURL(PRODUCT_VIDEO_URL)}>
+                  <Text style={styles.legalLink}>Product Video</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+
           {/* Pricing Banner */}
           {params.token ? (
             <View style={[styles.banner, { borderColor: '#10B98130', backgroundColor: '#0D211C' }]}>
@@ -246,11 +325,16 @@ export default function SignUpScreen() {
           )}
 
           {/* Sign Up Button */}
-          <TouchableOpacity style={[styles.primaryBtn, loading && styles.disabledBtn]} onPress={handleSignUp} disabled={loading} activeOpacity={0.8}>
+          <TouchableOpacity
+            style={[styles.primaryBtn, (!isAllAgreed || loading) && styles.disabledBtn]}
+            onPress={handleSignUp}
+            disabled={!isAllAgreed || loading}
+            activeOpacity={0.8}
+          >
             {loading ? (
               <ActivityIndicator color="#09090B" />
             ) : (
-              <Text style={styles.primaryBtnText}>
+              <Text style={[styles.primaryBtnText, !isAllAgreed && styles.disabledBtnText]}>
                 {params.token ? 'Accept Invite & Sign Up' : 'Create Free Account'}
               </Text>
             )}
@@ -269,7 +353,7 @@ export default function SignUpScreen() {
 
         {/* Terms */}
         <Text style={styles.termsText}>
-          By signing up, you agree to our Terms of Service and Privacy Policy
+          By tapping Sign Up, you acknowledge and agree to our Terms of Service, Privacy Policy, and Product Video guidelines.
         </Text>
 
       </ScrollView>
@@ -310,6 +394,18 @@ const styles = StyleSheet.create({
   inputIcon: { marginRight: 12 },
   input: { flex: 1, color: '#FFFFFF', fontSize: 15 },
   eyeBtn: { padding: 4 },
+
+  legalSection: { marginBottom: 20, gap: 12 },
+  legalHeader: { color: '#D4D4D8', fontSize: 13, fontWeight: '600', marginBottom: 4 },
+  checkboxRow: { flexDirection: 'row', alignItems: 'center' },
+  checkbox: {
+    width: 22, height: 22, borderRadius: 6, borderWidth: 2, borderColor: '#52525B',
+    alignItems: 'center', justifyContent: 'center', marginRight: 10, backgroundColor: '#27272A'
+  },
+  checkboxSelected: { backgroundColor: '#10B981', borderColor: '#10B981' },
+  checkboxTextWrap: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', flex: 1 },
+  checkboxText: { color: '#A1A1AA', fontSize: 13 },
+  legalLink: { color: '#10B981', fontSize: 13, fontWeight: '700', textDecorationLine: 'underline' },
   
   banner: {
     flexDirection: 'row', alignItems: 'center',
@@ -324,8 +420,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#10B981', borderRadius: 12,
     height: 52, alignItems: 'center', justifyContent: 'center',
   },
-  disabledBtn: { opacity: 0.6 },
+  disabledBtn: { opacity: 0.5, backgroundColor: '#27272A' },
   primaryBtnText: { color: '#09090B', fontSize: 16, fontWeight: '700' },
+  disabledBtnText: { color: '#71717A' },
   
   footer: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 24, marginBottom: 16 },
   footerText: { color: '#A1A1AA', fontSize: 14 },

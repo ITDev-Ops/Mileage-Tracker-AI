@@ -124,6 +124,28 @@ class UserCreate(BaseModel):
     password: str
     name: str
     token: Optional[str] = None
+    tos_agreed: Optional[bool] = False
+    privacy_policy_agreed: Optional[bool] = False
+    product_video_agreed: Optional[bool] = False
+    tos_version: Optional[str] = None
+    privacy_policy_version: Optional[str] = None
+    product_video_version: Optional[str] = None
+
+class LegalTermsAccept(BaseModel):
+    tos_agreed: bool
+    privacy_policy_agreed: bool
+    product_video_agreed: bool
+    tos_version: Optional[str] = None
+    privacy_policy_version: Optional[str] = None
+    product_video_version: Optional[str] = None
+
+class LegalVersionsUpdate(BaseModel):
+    tos_version: Optional[str] = None
+    privacy_policy_version: Optional[str] = None
+    product_video_version: Optional[str] = None
+    tos_url: Optional[str] = None
+    privacy_policy_url: Optional[str] = None
+    product_video_url: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: str
@@ -270,6 +292,7 @@ class TokenCache:
 auth_cache = TokenCache(ttl_seconds=60.0)
 
 async def get_current_user(request: Request) -> dict:
+    ensure_db()
     token = None
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
@@ -328,6 +351,12 @@ async def get_current_user(request: Request) -> dict:
                 # Primary user: keep their current subscription tier
                 pass
             
+        current_legal = await get_current_legal_versions()
+        requires_consent, missing = check_user_legal_status(user, current_legal)
+        user["legal_consent_required"] = requires_consent
+        user["missing_consents"] = missing
+        user["current_legal_versions"] = current_legal
+
         auth_cache.set(token, user)
         return user
             
@@ -372,6 +401,61 @@ def calculate_deduction(distance: float, classification: str, country: str = "US
             return round(distance * 0.88, 2)
     return 0.0
 
+TOS_URL = "https://globalsysnetcyber.com/apps/terms-of-service"
+PRIVACY_POLICY_URL = "https://globalsysnetcyber.com/apps/privacy-policy"
+PRODUCT_VIDEO_URL = "https://globalsysnetcyber.com/apps/"
+
+def ensure_db():
+    global client, db
+    if db is None:
+        import certifi
+        client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
+        db = client[DB_NAME]
+    return db
+
+async def get_current_legal_versions():
+    database = ensure_db()
+    try:
+        settings = await database.system_settings.find_one({"setting": "legal_versions"})
+        if settings:
+            return {
+                "tos_version": settings.get("tos_version", "1.0"),
+                "privacy_policy_version": settings.get("privacy_policy_version", "1.0"),
+                "product_video_version": settings.get("product_video_version", "1.0"),
+                "tos_url": settings.get("tos_url", TOS_URL),
+                "privacy_policy_url": settings.get("privacy_policy_url", PRIVACY_POLICY_URL),
+                "product_video_url": settings.get("product_video_url", PRODUCT_VIDEO_URL)
+            }
+    except Exception as e:
+        logger.warning(f"Error fetching legal_versions: {e}")
+            
+    return {
+        "tos_version": "1.0",
+        "privacy_policy_version": "1.0",
+        "product_video_version": "1.0",
+        "tos_url": TOS_URL,
+        "privacy_policy_url": PRIVACY_POLICY_URL,
+        "product_video_url": PRODUCT_VIDEO_URL
+    }
+
+def check_user_legal_status(user_doc: dict, current_versions: dict):
+    agreements = user_doc.get("legal_agreements") or {}
+    
+    tos_ok = (agreements.get("tos_agreed") is True) and (str(agreements.get("tos_version")) == str(current_versions["tos_version"]))
+    privacy_ok = (agreements.get("privacy_policy_agreed") is True) and (str(agreements.get("privacy_policy_version")) == str(current_versions["privacy_policy_version"]))
+    video_ok = (agreements.get("product_video_agreed") is True) and (str(agreements.get("product_video_version")) == str(current_versions["product_video_version"]))
+    
+    missing = []
+    if not tos_ok:
+        missing.append("tos")
+    if not privacy_ok:
+        missing.append("privacy_policy")
+    if not video_ok:
+        missing.append("product_video")
+        
+    requires_consent = len(missing) > 0
+    return requires_consent, missing
+
 # ============================================================
 # AUTH ROUTES
 # ============================================================
@@ -397,6 +481,13 @@ async def validate_token(token: str):
 @api_router.post("/auth/register")
 async def register_user(user_data: UserCreate):
     email_lower = user_data.email.strip().lower()
+    
+    # Enforce active checkboxes for Terms of Service, Privacy Policy, and Product Video
+    if not (user_data.tos_agreed and user_data.privacy_policy_agreed and user_data.product_video_agreed):
+        raise HTTPException(
+            status_code=400,
+            detail="You must agree to the Terms of Service, Privacy Policy, and confirm you watched the Product Video to create an account."
+        )
     
     invitation = None
     if user_data.token:
@@ -482,6 +573,21 @@ async def register_user(user_data: UserCreate):
             subscription_tier = "pro" # Primary user auto-pro
             role = "Admin"
     
+    # Generate legal consent log with exact timestamp & versions
+    current_legal = await get_current_legal_versions()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    legal_agreements = {
+        "tos_agreed": True,
+        "tos_version": user_data.tos_version or current_legal["tos_version"],
+        "tos_agreed_at": now_iso,
+        "privacy_policy_agreed": True,
+        "privacy_policy_version": user_data.privacy_policy_version or current_legal["privacy_policy_version"],
+        "privacy_policy_agreed_at": now_iso,
+        "product_video_agreed": True,
+        "product_video_version": user_data.product_video_version or current_legal["product_video_version"],
+        "product_video_agreed_at": now_iso
+    }
+
     # Set user details
     user_doc = {
         "user_id": user_id,
@@ -494,6 +600,7 @@ async def register_user(user_data: UserCreate):
         "vehicle_type": "car",
         "is_active": True,
         "status": "active",
+        "legal_agreements": legal_agreements,
         "created_at": datetime.now(timezone.utc)
     }
     
@@ -504,6 +611,15 @@ async def register_user(user_data: UserCreate):
         # Insert new user
         await db.users.insert_one(user_doc)
         
+    # Log audit entry in db.legal_consents
+    await db.legal_consents.insert_one({
+        "user_id": user_id,
+        "email": email_lower,
+        "event_type": "signup",
+        "legal_agreements": legal_agreements,
+        "created_at": datetime.now(timezone.utc)
+    })
+
     # Link Team: Update pending team member status to Active, and set the user_id!
     await db.team_members.update_many(
         {"email": email_lower, "status": "Pending"},
@@ -520,6 +636,11 @@ async def register_user(user_data: UserCreate):
     if "password_hash" in user_doc:
         del user_doc["password_hash"]
         
+    requires_consent, missing = check_user_legal_status(user_doc, current_legal)
+    user_doc["legal_consent_required"] = requires_consent
+    user_doc["missing_consents"] = missing
+    user_doc["current_legal_versions"] = current_legal
+
     return {"access_token": access_token, "token_type": "bearer", "user": user_doc}
 
 @api_router.post("/auth/login")
@@ -548,6 +669,13 @@ async def login_user(user_data: UserLogin):
     if "password_hash" in user:
         del user["password_hash"]
         
+    current_legal = await get_current_legal_versions()
+    requires_consent, missing = check_user_legal_status(user, current_legal)
+    user["legal_consent_required"] = requires_consent
+    user["missing_consents"] = missing
+    user["current_legal_versions"] = current_legal
+
+    auth_cache.invalidate_user(user["user_id"])
     return {"access_token": access_token, "token_type": "bearer", "user": user}
 
 @api_router.get("/auth/me")
@@ -598,7 +726,97 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     user_data = {k: v for k, v in current_user.items() if k != "password_hash"}
     if invited_team_plan:
         user_data["invited_team_plan"] = invited_team_plan
+        
+    current_legal = await get_current_legal_versions()
+    requires_consent, missing = check_user_legal_status(user_data, current_legal)
+    user_data["legal_consent_required"] = requires_consent
+    user_data["missing_consents"] = missing
+    user_data["current_legal_versions"] = current_legal
+
     return user_data
+
+@api_router.get("/auth/legal-terms")
+@app.get("/api/auth/legal-terms")
+@app.get("/auth/legal-terms")
+async def get_legal_terms():
+    return await get_current_legal_versions()
+
+@api_router.post("/auth/accept-legal-terms")
+@app.post("/api/auth/accept-legal-terms")
+@app.post("/auth/accept-legal-terms")
+async def accept_legal_terms(data: LegalTermsAccept, current_user: dict = Depends(get_current_user)):
+    if not (data.tos_agreed and data.privacy_policy_agreed and data.product_video_agreed):
+        raise HTTPException(
+            status_code=400,
+            detail="You must agree to the Terms of Service, Privacy Policy, and confirm you watched the Product Video."
+        )
+        
+    current_legal = await get_current_legal_versions()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    
+    updated_agreements = {
+        "tos_agreed": True,
+        "tos_version": data.tos_version or current_legal["tos_version"],
+        "tos_agreed_at": now_iso,
+        "privacy_policy_agreed": True,
+        "privacy_policy_version": data.privacy_policy_version or current_legal["privacy_policy_version"],
+        "privacy_policy_agreed_at": now_iso,
+        "product_video_agreed": True,
+        "product_video_version": data.product_video_version or current_legal["product_video_version"],
+        "product_video_agreed_at": now_iso
+    }
+    
+    await db.users.update_one(
+        {"user_id": current_user["user_id"]},
+        {"$set": {"legal_agreements": updated_agreements}}
+    )
+    
+    await db.legal_consents.insert_one({
+        "user_id": current_user["user_id"],
+        "email": current_user.get("email"),
+        "event_type": "re_consent",
+        "legal_agreements": updated_agreements,
+        "created_at": datetime.now(timezone.utc)
+    })
+    
+    auth_cache.invalidate_user(current_user["user_id"])
+    updated_user = await db.users.find_one({"user_id": current_user["user_id"]}, {"_id": 0, "password_hash": 0})
+    requires_consent, missing = check_user_legal_status(updated_user, current_legal)
+    updated_user["legal_consent_required"] = requires_consent
+    updated_user["missing_consents"] = missing
+    updated_user["current_legal_versions"] = current_legal
+    return updated_user
+
+@api_router.post("/admin/legal-terms/update")
+@app.post("/api/admin/legal-terms/update")
+@app.post("/admin/legal-terms/update")
+async def update_legal_terms(data: LegalVersionsUpdate):
+    current = await get_current_legal_versions()
+    new_tos_ver = data.tos_version or current["tos_version"]
+    new_privacy_ver = data.privacy_policy_version or current["privacy_policy_version"]
+    new_video_ver = data.product_video_version or current["product_video_version"]
+    new_tos_url = data.tos_url or current["tos_url"]
+    new_privacy_url = data.privacy_policy_url or current["privacy_policy_url"]
+    new_video_url = data.product_video_url or current["product_video_url"]
+    
+    doc = {
+        "setting": "legal_versions",
+        "tos_version": new_tos_ver,
+        "privacy_policy_version": new_privacy_ver,
+        "product_video_version": new_video_ver,
+        "tos_url": new_tos_url,
+        "privacy_policy_url": new_privacy_url,
+        "product_video_url": new_video_url,
+        "updated_at": datetime.now(timezone.utc)
+    }
+    
+    await db.system_settings.update_one(
+        {"setting": "legal_versions"},
+        {"$set": doc},
+        upsert=True
+    )
+    auth_cache.clear()
+    return doc
 
 @api_router.put("/auth/profile")
 async def update_profile(data: dict = Body(...), current_user: dict = Depends(get_current_user)):
