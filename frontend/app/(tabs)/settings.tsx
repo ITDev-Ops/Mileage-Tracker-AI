@@ -327,9 +327,13 @@ export default function SettingsScreen() {
               <Text style={styles.settingsRowSub}>
                 {tier === 'free'
                   ? 'Upgrade for unlimited trips + AI features'
-                  : (subscription?.card_brand && subscription?.card_last4
-                    ? `Active subscription (${subscription.card_brand} ending in ${subscription.card_last4})`
-                    : 'Active subscription')
+                  : (subscription?.subscription_status === 'past_due_retry'
+                    ? '⚠️ Payment Retry Scheduled (No funds available)'
+                    : (subscription?.subscription_status === 'grace_period'
+                      ? '🚨 Grace Period Active (Action required)'
+                      : (subscription?.card_brand && subscription?.card_last4
+                        ? `Active subscription (${subscription.card_brand} ending in ${subscription.card_last4})`
+                        : 'Active subscription')))
                 }
               </Text>
             </View>
@@ -471,6 +475,12 @@ export default function SettingsScreen() {
             <TouchableOpacity testID="ai-assistant-settings" style={styles.listRow} onPress={() => router.push('/ai/assistant')}>
               <Feather name="zap" size={18} color={Colors.brand.secondary} />
               <Text style={styles.listRowText}>AI Assistant</Text>
+              <Feather name="chevron-right" size={16} color={Colors.text.tertiary} />
+            </TouchableOpacity>
+            <View style={styles.divider} />
+            <TouchableOpacity testID="contact-support-settings" style={styles.listRow} onPress={() => router.push('/settings/contact')}>
+              <Feather name="headphones" size={18} color={Colors.brand.primary} />
+              <Text style={styles.listRowText}>Contact Support & Help</Text>
               <Feather name="chevron-right" size={16} color={Colors.text.tertiary} />
             </TouchableOpacity>
             <View style={styles.divider} />

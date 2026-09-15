@@ -232,11 +232,35 @@ class APIService {
   async downgradeSubscription(token: string) {
     return this.request('/payments/downgrade', { method: 'POST' }, token);
   }
+  async retryPayment(token: string, simulateFailure: boolean = false) {
+    return this.request('/payments/retry-payment', {
+      method: 'POST',
+      body: JSON.stringify({ simulate_failure: simulateFailure })
+    }, token);
+  }
+  async triggerProcessRecurring(token: string, data?: any) {
+    return this.request('/payments/process-recurring', {
+      method: 'POST',
+      body: JSON.stringify(data || {})
+    }, token);
+  }
   async getApiKey(token: string) {
     return this.request('/auth/api-key', {}, token);
   }
   async generateApiKey(token: string) {
     return this.request('/auth/api-key', { method: 'POST' }, token);
+  }
+  async requestPasswordReset(email: string) {
+    return this.request('/auth/request-password-reset', {
+      method: 'POST',
+      body: JSON.stringify({ email })
+    });
+  }
+  async resetPassword(email: string, code: string, new_password: string) {
+    return this.request('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ email, code, new_password })
+    });
   }
 
   // Team Management

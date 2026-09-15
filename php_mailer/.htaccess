@@ -1,0 +1,12 @@
+# Block direct public access to sensitive environment files
+<FilesMatch "^\.env">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Apache 2.4+ compatibility
+<IfModule mod_authz_core.c>
+    <Files ".env">
+        Require all denied
+    </Files>
+</IfModule>

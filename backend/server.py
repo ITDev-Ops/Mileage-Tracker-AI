@@ -19,6 +19,7 @@ import json
 import re
 import httpx
 import urllib.parse
+import asyncio
 from PIL import Image, ImageEnhance, ImageOps, ImageFilter
 import numpy as np
 import time
@@ -64,6 +65,12 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+@app.get("/")
+@app.get("/health")
+@api_router.get("/health")
+async def health_check():
+    return {"status": "ok", "app": "Mileage Tracker AI API"}
+
 @app.on_event("startup")
 async def startup_db_client():
     global client, db
@@ -81,39 +88,52 @@ async def startup_db_client():
             
     logger.info("Connecting to MongoDB Atlas...")
     import certifi
-    client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
-    db = client[DB_NAME]
+    try:
+        client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
+        db = client[DB_NAME]
+    except Exception as e:
+        logger.error(f"MongoDB connection init error: {e}")
     
-    logger.info("Initializing MongoDB Indexes...")
-    # Create indexes for trips tracking real-time
-    await db.trips.create_index([("trip_id", 1)], unique=True)
-    await db.trips.create_index([("user_id", 1), ("start_time", -1)])
-    await db.trips.create_index([("user_id", 1), ("is_active", 1), ("start_time", -1)])
-    
-    # Create indexes for user performance
-    await db.users.create_index([("user_id", 1)], unique=True)
-    await db.users.create_index([("email", 1)], unique=True)
-    await db.users.create_index([("api_key", 1)], sparse=True)
-    
-    # Create indexes for expenses
-    await db.expenses.create_index([("expense_id", 1)], unique=True)
-    await db.expenses.create_index([("user_id", 1), ("created_at", -1)])
-    
-    # Create indexes for system alerts
-    await db.alerts.create_index([("alert_id", 1)], unique=True)
-    await db.alerts.create_index([("owner_id", 1), ("created_at", -1)])
+    try:
+        logger.info("Initializing MongoDB Indexes...")
+        # Create indexes for trips tracking real-time
+        await db.trips.create_index([("trip_id", 1)], unique=True)
+        await db.trips.create_index([("user_id", 1), ("start_time", -1)])
+        await db.trips.create_index([("user_id", 1), ("is_active", 1), ("start_time", -1)])
+        
+        # Create indexes for user performance
+        await db.users.create_index([("user_id", 1)], unique=True)
+        await db.users.create_index([("email", 1)], unique=True)
+        await db.users.create_index([("api_key", 1)], sparse=True)
+        
+        # Create indexes for expenses
+        await db.expenses.create_index([("expense_id", 1)], unique=True)
+        await db.expenses.create_index([("user_id", 1), ("created_at", -1)])
+        
+        # Create indexes for system alerts
+        await db.alerts.create_index([("alert_id", 1)], unique=True)
+        await db.alerts.create_index([("owner_id", 1), ("created_at", -1)])
 
-    # Create indexes for team members, invitations, and payment transactions
-    await db.team_members.create_index([("member_id", 1)], unique=True)
-    await db.team_members.create_index([("email", 1)])
-    await db.team_members.create_index([("owner_id", 1)])
-    
-    await db.invitations.create_index([("token", 1)], unique=True)
-    await db.invitations.create_index([("email", 1)])
-    
-    await db.payment_transactions.create_index([("session_id", 1)], unique=True, partialFilterExpression={"session_id": {"$type": "string"}})
-    await db.payment_transactions.create_index([("user_id", 1)])
-    logger.info("MongoDB Indexes built explicitly.")
+        # Create indexes for team members, invitations, and payment transactions
+        await db.team_members.create_index([("member_id", 1)], unique=True)
+        await db.team_members.create_index([("email", 1)])
+        await db.team_members.create_index([("owner_id", 1)])
+        
+        await db.invitations.create_index([("token", 1)], unique=True)
+        await db.invitations.create_index([("email", 1)])
+        
+        await db.payment_transactions.create_index([("session_id", 1)], unique=True, partialFilterExpression={"session_id": {"$type": "string"}})
+        await db.payment_transactions.create_index([("user_id", 1)])
+        await db.users.create_index([("subscription_tier", 1), ("subscription_status", 1), ("next_billing_date", 1)])
+        logger.info("MongoDB Indexes built explicitly.")
+    except Exception as ie:
+        logger.error(f"Non-fatal error initializing MongoDB indexes on startup: {ie}")
+
+    # Start background recurring subscription worker safely
+    try:
+        asyncio.create_task(start_recurring_subscription_worker())
+    except Exception as we:
+        logger.error(f"Error starting background worker: {we}")
 
 # ============================================================
 # MODELS
@@ -677,6 +697,138 @@ async def login_user(user_data: UserLogin):
 
     auth_cache.invalidate_user(user["user_id"])
     return {"access_token": access_token, "token_type": "bearer", "user": user}
+
+def send_password_reset_email(to_email: str, code: str):
+    """Sends password reset email using active Gmail SMTP App Password."""
+    smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER", "hubert.nyadroh@gmail.com")
+    smtp_pass = os.environ.get("SMTP_PASSWORD", "ktyi nnjg wgnn bdjp")
+    smtp_from = os.environ.get("SMTP_FROM", smtp_user)
+
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    import smtplib
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Mileage Tracker AI - Password Reset Code"
+    msg["From"] = f"Mileage Tracker AI <{smtp_from}>"
+    msg["To"] = to_email
+
+    text_content = f"Your Mileage Tracker AI password reset code is: {code}\nThis code will expire in 15 minutes."
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>Password Reset Code</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; background-color: #09090B; color: #FFFFFF; margin: 0; padding: 40px 20px;">
+      <div style="max-width: 480px; margin: 0 auto; background-color: #18181B; border: 1px solid #27272A; border-radius: 16px; padding: 32px;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h1 style="color: #10B981; font-size: 24px; font-weight: 800; margin: 0;">Mileage Tracker AI</h1>
+          <p style="color: #A1A1AA; font-size: 14px; margin-top: 6px;">Password Reset Request</p>
+        </div>
+        <p style="color: #E4E4E7; font-size: 15px; line-height: 1.6;">Hello,</p>
+        <p style="color: #A1A1AA; font-size: 14px; line-height: 1.6;">We received a request to reset the password for your account (<strong>{to_email}</strong>). Please enter the following 6-digit verification code in the app:</p>
+        
+        <div style="background-color: #09090B; border: 1px dashed #10B981; border-radius: 12px; padding: 20px; text-align: center; margin: 28px 0;">
+          <span style="font-size: 36px; font-weight: 800; letter-spacing: 10px; color: #10B981; font-family: monospace;">{code}</span>
+        </div>
+        
+        <p style="color: #71717A; font-size: 13px; line-height: 1.5; margin-bottom: 24px;">This code will expire in <strong>15 minutes</strong>. If you did not request this, please ignore this email.</p>
+        <hr style="border: none; border-top: 1px solid #27272A; margin: 24px 0;" />
+        <p style="color: #52525B; font-size: 11px; text-align: center; margin: 0;">&copy; 2026 Mileage Tracker AI. All rights reserved.</p>
+      </div>
+    </body>
+    </html>
+    """
+
+    msg.attach(MIMEText(text_content, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
+
+    server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+    server.starttls()
+    server.login(smtp_user, smtp_pass)
+    server.send_message(msg)
+    server.quit()
+
+@api_router.post("/auth/request-password-reset")
+@app.post("/api/auth/request-password-reset")
+@app.post("/auth/request-password-reset")
+async def request_password_reset(data: PasswordResetRequest):
+    email_clean = data.email.strip().lower()
+    if not email_clean:
+        raise HTTPException(status_code=400, detail="Email address is required.")
+    
+    import random
+    code = f"{random.randint(100000, 999999)}"
+    user = await db.users.find_one({"email": email_clean})
+    
+    if user:
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+        await db.password_resets.update_one(
+            {"email": email_clean},
+            {"$set": {
+                "email": email_clean,
+                "code": code,
+                "created_at": datetime.now(timezone.utc),
+                "expires_at": expires_at
+            }},
+            upsert=True
+        )
+        
+        try:
+            send_password_reset_email(email_clean, code)
+            logger.info(f"Password reset code successfully emailed to {email_clean}")
+        except Exception as e:
+            logger.error(f"Failed to send password reset email to {email_clean}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to send reset email: {str(e)}")
+            
+    return {"status": "success", "message": "If an account exists with this email address, a password reset code has been sent."}
+
+@api_router.post("/auth/reset-password")
+@app.post("/api/auth/reset-password")
+@app.post("/auth/reset-password")
+async def reset_password_verify(data: PasswordResetVerify):
+    email_clean = data.email.strip().lower()
+    code_clean = data.code.strip()
+    new_password = data.new_password
+    
+    if not email_clean or not code_clean or not new_password:
+        raise HTTPException(status_code=400, detail="Email, reset code, and new password are required.")
+        
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters long.")
+        
+    record = await db.password_resets.find_one({"email": email_clean})
+    if not record or record.get("code") != code_clean:
+        raise HTTPException(status_code=400, detail="Invalid or expired password reset code.")
+        
+    expires_at = record.get("expires_at")
+    if expires_at:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > expires_at:
+            await db.password_resets.delete_one({"email": email_clean})
+            raise HTTPException(status_code=400, detail="Password reset code has expired. Please request a new code.")
+            
+    hashed_password = get_password_hash(new_password)
+    result = await db.users.update_one(
+        {"email": email_clean},
+        {"$set": {"password_hash": hashed_password}}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User account not found.")
+        
+    await db.password_resets.delete_one({"email": email_clean})
+    
+    user = await db.users.find_one({"email": email_clean})
+    if user and "user_id" in user:
+        auth_cache.invalidate_user(user["user_id"])
+        
+    return {"status": "success", "message": "Your password has been reset successfully. You can now log in with your new password."}
 
 @api_router.get("/auth/me")
 async def get_me(current_user: dict = Depends(get_current_user)):
@@ -2391,8 +2543,224 @@ Mileage Tracker AI Team"""
         raise HTTPException(status_code=500, detail=f"Failed to email mileage report to CPA: {str(e)}")
 
 # ============================================================
-# PAYMENTS
+# PAYMENTS & RECURRING BILLING ENGINE
 # ============================================================
+
+async def activate_user_subscription(user_id: str, plan: str):
+    now = datetime.now(timezone.utc)
+    next_billing = now + timedelta(days=30)
+    update_data = {
+        "subscription_tier": plan,
+        "subscription_status": "active",
+        "last_billing_date": now,
+        "next_billing_date": next_billing,
+        "payment_failure_count": 0,
+        "retry_at": None,
+        "grace_period_ends_at": None,
+        "payment_failure_reason": None,
+        "updated_at": now
+    }
+    await db.users.update_one({"user_id": user_id}, {"$set": update_data})
+    auth_cache.invalidate_user(user_id)
+
+async def process_recurring_subscriptions(
+    database, 
+    force_user_id: Optional[str] = None, 
+    simulate_outcome: Optional[str] = None,
+    advance_days: float = 0
+):
+    now = datetime.now(timezone.utc) + timedelta(days=advance_days)
+    
+    query = {"subscription_tier": {"$in": ["pro", "business"]}}
+    if force_user_id:
+        query["user_id"] = force_user_id
+
+    users = await database.users.find(query).to_list(1000)
+    results = []
+
+    for u in users:
+        user_id = u["user_id"]
+        email = u.get("email", "")
+        plan = u.get("subscription_tier", "pro")
+        status = u.get("subscription_status", "active")
+        next_billing = u.get("next_billing_date")
+        retry_at = u.get("retry_at")
+        grace_ends = u.get("grace_period_ends_at")
+
+        if isinstance(next_billing, str):
+            try: next_billing = datetime.fromisoformat(next_billing.replace('Z', '+00:00'))
+            except Exception: next_billing = None
+        if isinstance(retry_at, str):
+            try: retry_at = datetime.fromisoformat(retry_at.replace('Z', '+00:00'))
+            except Exception: retry_at = None
+        if isinstance(grace_ends, str):
+            try: grace_ends = datetime.fromisoformat(grace_ends.replace('Z', '+00:00'))
+            except Exception: grace_ends = None
+
+        # Case 1: Active subscription whose next_billing_date has arrived
+        if status == "active":
+            if not next_billing or now >= next_billing or force_user_id:
+                is_success = (simulate_outcome == "success") if simulate_outcome else (simulate_outcome != "no_funds_available")
+                if is_success:
+                    new_next = now + timedelta(days=30)
+                    await database.users.update_one(
+                        {"user_id": user_id},
+                        {"$set": {
+                            "subscription_status": "active",
+                            "last_billing_date": now,
+                            "next_billing_date": new_next,
+                            "payment_failure_count": 0,
+                            "retry_at": None,
+                            "grace_period_ends_at": None,
+                            "payment_failure_reason": None
+                        }}
+                    )
+                    auth_cache.invalidate_user(user_id)
+                    plan_info = SUBSCRIPTION_PLANS.get(plan, {"amount": 9.99, "currency": "usd"})
+                    await database.payment_transactions.insert_one({
+                        "transaction_id": f"txn_rec_{uuid.uuid4().hex[:12]}",
+                        "user_id": user_id,
+                        "plan": plan,
+                        "amount": float(plan_info["amount"]),
+                        "currency": plan_info.get("currency", "usd"),
+                        "payment_status": "paid",
+                        "type": "recurring_renewal",
+                        "created_at": now
+                    })
+                    await database.alerts.insert_one({
+                        "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                        "owner_id": user_id,
+                        "type": "info",
+                        "msg": f"Your monthly subscription to the {plan.capitalize()} Plan was successfully renewed.",
+                        "created_at": now
+                    })
+                    results.append({"user_id": user_id, "action": "renewed", "status": "active"})
+                else:
+                    scheduled_retry = now + timedelta(days=7)
+                    await database.users.update_one(
+                        {"user_id": user_id},
+                        {"$set": {
+                            "subscription_status": "past_due_retry",
+                            "payment_failure_count": 1,
+                            "retry_at": scheduled_retry,
+                            "payment_failure_reason": "No funds available",
+                            "updated_at": now
+                        }}
+                    )
+                    auth_cache.invalidate_user(user_id)
+                    plan_info = SUBSCRIPTION_PLANS.get(plan, {"amount": 9.99, "currency": "usd"})
+                    await database.payment_transactions.insert_one({
+                        "transaction_id": f"txn_fail_{uuid.uuid4().hex[:12]}",
+                        "user_id": user_id,
+                        "plan": plan,
+                        "amount": float(plan_info["amount"]),
+                        "currency": plan_info.get("currency", "usd"),
+                        "payment_status": "failed",
+                        "failure_reason": "No funds available",
+                        "type": "recurring_attempt_1",
+                        "created_at": now
+                    })
+                    retry_date_str = scheduled_retry.strftime("%b %d, %Y")
+                    msg = f"Monthly payment returned as no funds available. A second attempt will be made in 1 week's time on {retry_date_str}."
+                    await database.alerts.insert_one({
+                        "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                        "owner_id": user_id,
+                        "type": "warning",
+                        "msg": msg,
+                        "created_at": now
+                    })
+                    logger.warning(f"Payment failed for user {email}: {msg}")
+                    results.append({"user_id": user_id, "action": "failed_attempt_1", "status": "past_due_retry", "retry_at": scheduled_retry})
+
+        # Case 2: Past Due Retry attempt (1 week later)
+        elif status == "past_due_retry":
+            if not retry_at or now >= retry_at or force_user_id:
+                is_success = (simulate_outcome == "success") if simulate_outcome else (simulate_outcome != "no_funds_available")
+                if is_success:
+                    new_next = now + timedelta(days=30)
+                    await database.users.update_one(
+                        {"user_id": user_id},
+                        {"$set": {
+                            "subscription_status": "active",
+                            "last_billing_date": now,
+                            "next_billing_date": new_next,
+                            "payment_failure_count": 0,
+                            "retry_at": None,
+                            "grace_period_ends_at": None,
+                            "payment_failure_reason": None
+                        }}
+                    )
+                    auth_cache.invalidate_user(user_id)
+                    await database.alerts.insert_one({
+                        "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                        "owner_id": user_id,
+                        "type": "info",
+                        "msg": f"Second payment attempt successful! Your {plan.capitalize()} Plan subscription is now fully active.",
+                        "created_at": now
+                    })
+                    results.append({"user_id": user_id, "action": "retry_success", "status": "active"})
+                else:
+                    grace_end = now + timedelta(days=2)
+                    await database.users.update_one(
+                        {"user_id": user_id},
+                        {"$set": {
+                            "subscription_status": "grace_period",
+                            "payment_failure_count": 2,
+                            "grace_period_ends_at": grace_end,
+                            "payment_failure_reason": "No funds available",
+                            "updated_at": now
+                        }}
+                    )
+                    auth_cache.invalidate_user(user_id)
+                    grace_date_str = grace_end.strftime("%b %d, %Y %H:%M UTC")
+                    msg = f"Second payment attempt returned as no funds available. You will be moved to the Free plan on {grace_date_str} if payment is not received. Please initiate payment or secure/download your data."
+                    await database.alerts.insert_one({
+                        "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                        "owner_id": user_id,
+                        "type": "danger",
+                        "msg": msg,
+                        "created_at": now
+                    })
+                    logger.warning(f"Second payment attempt failed for user {email}: {msg}")
+                    results.append({"user_id": user_id, "action": "failed_attempt_2", "status": "grace_period", "grace_period_ends_at": grace_end})
+
+        # Case 3: Grace Period expiration (2 days after 2nd failure)
+        elif status == "grace_period":
+            if not grace_ends or now >= grace_ends or force_user_id:
+                await database.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {
+                        "subscription_tier": "free",
+                        "subscription_status": "cancelled",
+                        "payment_failure_count": 0,
+                        "retry_at": None,
+                        "grace_period_ends_at": None,
+                        "payment_failure_reason": None,
+                        "updated_at": now
+                    }}
+                )
+                auth_cache.invalidate_user(user_id)
+                msg = "Grace period has expired and subscription payment was not received. Your account has been moved to the Free plan."
+                await database.alerts.insert_one({
+                    "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                    "owner_id": user_id,
+                    "type": "warning",
+                    "msg": msg,
+                    "created_at": now
+                })
+                logger.info(f"User {email} downgraded to Free plan due to expired grace period.")
+                results.append({"user_id": user_id, "action": "downgraded_to_free", "status": "cancelled", "tier": "free"})
+
+    return results
+
+async def start_recurring_subscription_worker():
+    while True:
+        try:
+            if db is not None:
+                await process_recurring_subscriptions(db)
+        except Exception as e:
+            logger.error(f"Error in recurring subscription worker: {e}")
+        await asyncio.sleep(3600)
 
 @api_router.post("/payments/create-checkout")
 async def create_checkout(data: PaymentCheckout, request: Request, current_user: dict = Depends(get_current_user)):
@@ -2573,19 +2941,14 @@ async def payments_redirect(
                     if invitee_email:
                         invitee_user = await db.users.find_one({"email": invitee_email})
                         if invitee_user:
-                            await db.users.update_one(
-                                {"user_id": invitee_user["user_id"]},
-                                {"$set": {"subscription_tier": plan}}
-                            )
+                            await activate_user_subscription(invitee_user["user_id"], plan)
                         await db.team_members.update_many(
                             {"email": invitee_email},
                             {"$set": {"subscription_tier": plan}}
                         )
                     else:
-                        await db.users.update_one(
-                            {"user_id": user_id}, 
-                            {"$set": {"subscription_tier": plan}}
-                        )
+                        if user_id:
+                            await activate_user_subscription(user_id, plan)
                     card_brand, card_last4 = await extract_stripe_card_details(session_id)
                     await db.payment_transactions.update_one(
                         {"session_id": session_id}, 
@@ -2619,20 +2982,14 @@ async def payments_redirect(
                     if invitee_email:
                         invitee_user = await db.users.find_one({"email": invitee_email})
                         if invitee_user:
-                            await db.users.update_one(
-                                {"user_id": invitee_user["user_id"]},
-                                {"$set": {"subscription_tier": plan}}
-                            )
+                            await activate_user_subscription(invitee_user["user_id"], plan)
                         await db.team_members.update_many(
                             {"email": invitee_email},
                             {"$set": {"subscription_tier": plan}}
                         )
                     else:
                         if user_id:
-                            await db.users.update_one(
-                                {"user_id": user_id}, 
-                                {"$set": {"subscription_tier": plan}}
-                            )
+                            await activate_user_subscription(user_id, plan)
                     
                     card_brand, card_last4 = await extract_stripe_card_details(session_id)
                     await db.payment_transactions.update_one(
@@ -2963,29 +3320,17 @@ async def stripe_webhook(request: Request):
                 plan = metadata_dict.get("plan", "pro")
                 invitee_email = metadata_dict.get("invitee_email") or None
                 
-                txn = await db.payment_transactions.find_one({"session_id": session.id})
-                if txn:
-                    if not invitee_email:
-                        invitee_email = txn.get("invitee_email")
-                    if not user_id:
-                        user_id = txn.get("user_id")
-                        
                 if invitee_email:
                     invitee_user = await db.users.find_one({"email": invitee_email})
                     if invitee_user:
-                        await db.users.update_one(
-                            {"user_id": invitee_user["user_id"]}, 
-                            {"$set": {"subscription_tier": plan}}
-                        )
-                        auth_cache.invalidate_user(invitee_user["user_id"])
+                        await activate_user_subscription(invitee_user["user_id"], plan)
                     await db.team_members.update_many(
                         {"email": invitee_email},
                         {"$set": {"subscription_tier": plan}}
                     )
                 else:
                     if user_id:
-                        await db.users.update_one({"user_id": user_id}, {"$set": {"subscription_tier": plan}})
-                        auth_cache.invalidate_user(user_id)
+                        await activate_user_subscription(user_id, plan)
                 card_brand, card_last4 = await extract_stripe_card_details(session.id)
                 await db.payment_transactions.update_one(
                     {"session_id": session.id},
@@ -3018,18 +3363,103 @@ async def get_subscription(current_user: dict = Depends(get_current_user)):
     )
     card_brand = latest_paid.get("card_brand") if latest_paid else None
     card_last4 = latest_paid.get("card_last4") if latest_paid else None
+    
+    tier = current_user.get("subscription_tier", "free")
+    status = current_user.get("subscription_status", "active" if tier != "free" else "cancelled")
+    
     return {
-        "tier": current_user.get("subscription_tier", "free"), 
+        "tier": tier,
+        "subscription_status": status,
+        "next_billing_date": current_user.get("next_billing_date"),
+        "retry_at": current_user.get("retry_at"),
+        "grace_period_ends_at": current_user.get("grace_period_ends_at"),
+        "payment_failure_reason": current_user.get("payment_failure_reason"),
         "plans": SUBSCRIPTION_PLANS,
         "card_brand": card_brand,
         "card_last4": card_last4
+    }
+
+@api_router.post("/payments/process-recurring")
+async def trigger_process_recurring(
+    data: Optional[dict] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    force_user_id = data.get("user_id") if data else None
+    simulate_outcome = data.get("simulate_outcome") if data else None
+    advance_days = data.get("advance_days", 0) if data else 0
+    
+    results = await process_recurring_subscriptions(
+        db,
+        force_user_id=force_user_id,
+        simulate_outcome=simulate_outcome,
+        advance_days=advance_days
+    )
+    return {"status": "success", "processed_count": len(results), "results": results}
+
+@api_router.post("/payments/retry-payment")
+async def retry_payment(
+    data: Optional[dict] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    user_id = current_user["user_id"]
+    tier = current_user.get("subscription_tier", "pro")
+    if tier == "free":
+        tier = "pro"
+        
+    simulate_failure = data.get("simulate_failure", False) if data else False
+    if simulate_failure:
+        res = await process_recurring_subscriptions(db, force_user_id=user_id, simulate_outcome="no_funds_available")
+        updated_user = await db.users.find_one({"user_id": user_id})
+        return {
+            "status": "failed",
+            "reason": "No funds available",
+            "subscription_status": updated_user.get("subscription_status"),
+            "retry_at": updated_user.get("retry_at"),
+            "grace_period_ends_at": updated_user.get("grace_period_ends_at")
+        }
+        
+    await activate_user_subscription(user_id, tier)
+    updated_user = await db.users.find_one({"user_id": user_id})
+    
+    plan_info = SUBSCRIPTION_PLANS.get(tier, {"amount": 9.99, "currency": "usd"})
+    await db.payment_transactions.insert_one({
+        "transaction_id": f"txn_retry_{uuid.uuid4().hex[:12]}",
+        "user_id": user_id,
+        "plan": tier,
+        "amount": float(plan_info["amount"]),
+        "currency": plan_info.get("currency", "usd"),
+        "payment_status": "paid",
+        "type": "manual_retry",
+        "created_at": datetime.now(timezone.utc)
+    })
+    
+    await db.alerts.insert_one({
+        "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+        "owner_id": user_id,
+        "type": "info",
+        "msg": f"Payment successfully received! Your {tier.capitalize()} Plan subscription is active.",
+        "created_at": datetime.now(timezone.utc)
+    })
+    
+    return {
+        "status": "success",
+        "tier": tier,
+        "subscription_status": "active",
+        "next_billing_date": updated_user.get("next_billing_date")
     }
 
 @api_router.post("/payments/downgrade")
 async def downgrade_subscription(current_user: dict = Depends(get_current_user)):
     await db.users.update_one(
         {"user_id": current_user["user_id"]},
-        {"$set": {"subscription_tier": "free"}}
+        {"$set": {
+            "subscription_tier": "free",
+            "subscription_status": "cancelled",
+            "payment_failure_count": 0,
+            "retry_at": None,
+            "grace_period_ends_at": None,
+            "payment_failure_reason": None
+        }}
     )
     auth_cache.invalidate_user(current_user["user_id"])
     return {"status": "success", "tier": "free"}

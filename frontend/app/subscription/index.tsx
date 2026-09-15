@@ -57,11 +57,57 @@ export default function SubscriptionScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
+  const [subDetails, setSubDetails] = useState<any>(null);
+  const [retryingPayment, setRetryingPayment] = useState(false);
+
   console.log('[Subscription] Rendering - authLoading:', authLoading, 'user:', user?.email, 'token:', token ? 'present' : 'null');
+
+  const fetchSubscriptionDetails = async () => {
+    if (!token) return;
+    try {
+      const data = await API.getSubscription(token);
+      setSubDetails(data);
+      if (data?.tier) {
+        setCurrentTier(data.tier);
+      }
+    } catch (err) {
+      console.log('Error fetching subscription details:', err);
+    }
+  };
 
   useEffect(() => {
     setCurrentTier(user?.subscription_tier || 'free');
-  }, [user]);
+    if (token) {
+      fetchSubscriptionDetails();
+    }
+  }, [user, token]);
+
+  const handleManualRetryPayment = async () => {
+    if (!token) return;
+    setRetryingPayment(true);
+    try {
+      const res = await API.retryPayment(token);
+      if (res.status === 'success') {
+        await refreshUser();
+        await fetchSubscriptionDetails();
+        if (Platform.OS === 'web') {
+          alert('🎉 Payment Successful! Your subscription is now fully active.');
+        } else {
+          Alert.alert('🎉 Payment Successful!', 'Your payment has been processed and your subscription is active.');
+        }
+      } else {
+        const msg = res.reason || 'Payment retry failed';
+        if (Platform.OS === 'web') { alert('Payment Failed: ' + msg); }
+        else { Alert.alert('Payment Failed', msg); }
+      }
+    } catch (e: any) {
+      const msg = e.message || 'Error processing payment retry';
+      if (Platform.OS === 'web') { alert('Error: ' + msg); }
+      else { Alert.alert('Error', msg); }
+    } finally {
+      setRetryingPayment(false);
+    }
+  };
 
   // Redirect to login if not authenticated (after auth loading is done)
   useEffect(() => {
@@ -81,6 +127,7 @@ export default function SubscriptionScreen() {
           const status = await API.getPaymentStatus(token, session_id);
           if (status.payment_status === 'paid') {
             await refreshUser();
+            await fetchSubscriptionDetails();
             setCheckingPayment(false);
             const planName = status.plan ? (status.plan.charAt(0).toUpperCase() + status.plan.slice(1)) : 'Pro';
             if (Platform.OS === 'web') {
@@ -213,6 +260,64 @@ export default function SubscriptionScreen() {
             </Text>
           </View>
         )}
+
+        {subDetails?.subscription_status === 'past_due_retry' && (
+          <View style={styles.pastDueBanner} testID="past-due-retry-banner">
+            <View style={styles.bannerHeader}>
+              <Feather name="alert-triangle" size={20} color={Colors.brand.warning} />
+              <Text style={styles.pastDueTitle}>Payment Failed: Insufficient Funds</Text>
+            </View>
+            <Text style={styles.pastDueText}>
+              Your recent monthly payment attempt returned as no funds available. A second payment attempt will be made in 1 week's time{subDetails?.retry_at ? ` on ${new Date(subDetails.retry_at).toLocaleDateString()}` : ''}. You can also initiate payment now to keep your subscription active without interruption.
+            </Text>
+            <TouchableOpacity
+              testID="initiate-payment-past-due-btn"
+              style={styles.retryPaymentBtn}
+              onPress={handleManualRetryPayment}
+              disabled={retryingPayment}
+            >
+              {retryingPayment ? (
+                <ActivityIndicator color={Colors.text.inverse} size="small" />
+              ) : (
+                <Text style={styles.retryPaymentBtnText}>Initiate Payment Now</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {subDetails?.subscription_status === 'grace_period' && (
+          <View style={styles.gracePeriodBanner} testID="grace-period-banner">
+            <View style={styles.bannerHeader}>
+              <Feather name="alert-circle" size={22} color={Colors.brand.danger} />
+              <Text style={styles.gracePeriodTitle}>Grace Period Active (2 Days Remaining)</Text>
+            </View>
+            <Text style={styles.gracePeriodText}>
+              Your second payment attempt also returned as no funds available. You will be moved to the Free plan if payment is not received{subDetails?.grace_period_ends_at ? ` by ${new Date(subDetails.grace_period_ends_at).toLocaleString()}` : ''}. Please initiate payment to continue using your subscription, or download and secure your data now.
+            </Text>
+            <View style={styles.graceActionRow}>
+              <TouchableOpacity
+                testID="initiate-payment-grace-btn"
+                style={styles.gracePayBtn}
+                onPress={handleManualRetryPayment}
+                disabled={retryingPayment}
+              >
+                {retryingPayment ? (
+                  <ActivityIndicator color={Colors.text.inverse} size="small" />
+                ) : (
+                  <Text style={styles.gracePayBtnText}>Initiate Payment to Continue</Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="download-data-grace-btn"
+                style={styles.graceDownloadBtn}
+                onPress={() => router.push('/(tabs)/reports')}
+              >
+                <Feather name="download" size={14} color={Colors.brand.primary} />
+                <Text style={styles.graceDownloadBtnText}>Secure Data</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
         <Text style={styles.subtitle}>Unlock AI-powered mileage tracking & maximize your tax deductions</Text>
 
         {PLANS.map(plan => {
@@ -305,6 +410,20 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.bg.primary },
   teamNotice: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: Colors.brand.warningDim, borderRadius: Radius.md, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: Colors.brand.warning + '40' },
   teamNoticeText: { flex: 1, color: Colors.brand.warning, fontSize: FontSize.xs, lineHeight: 16 },
+  pastDueBanner: { backgroundColor: Colors.brand.warningDim, borderRadius: Radius.xl, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: Colors.brand.warning + '50' },
+  pastDueTitle: { color: Colors.brand.warning, fontSize: FontSize.md, fontWeight: '700' },
+  pastDueText: { color: Colors.text.primary, fontSize: FontSize.xs, lineHeight: 18, marginVertical: 8 },
+  retryPaymentBtn: { backgroundColor: Colors.brand.warning, borderRadius: Radius.md, paddingVertical: 10, alignItems: 'center', marginTop: 4 },
+  retryPaymentBtnText: { color: Colors.text.inverse, fontSize: FontSize.sm, fontWeight: '700' },
+  gracePeriodBanner: { backgroundColor: Colors.brand.dangerDim || '#FF3D0020', borderRadius: Radius.xl, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: Colors.brand.danger + '60' },
+  gracePeriodTitle: { color: Colors.brand.danger, fontSize: FontSize.md, fontWeight: '800' },
+  gracePeriodText: { color: Colors.text.primary, fontSize: FontSize.xs, lineHeight: 18, marginVertical: 8 },
+  graceActionRow: { flexDirection: 'row', gap: 10, marginTop: 8 },
+  gracePayBtn: { flex: 2, backgroundColor: Colors.brand.danger, borderRadius: Radius.md, paddingVertical: 10, alignItems: 'center' },
+  gracePayBtnText: { color: Colors.text.inverse, fontSize: FontSize.sm, fontWeight: '700' },
+  graceDownloadBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: Colors.bg.secondary, borderWidth: 1, borderColor: Colors.brand.primary, borderRadius: Radius.md, paddingVertical: 10 },
+  graceDownloadBtnText: { color: Colors.brand.primary, fontSize: FontSize.xs, fontWeight: '700' },
+  bannerHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   loadingContainer: { alignItems: 'center', justifyContent: 'center' },
   loadingText: { color: Colors.text.secondary, fontSize: FontSize.sm, marginTop: 12 },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.screen, paddingVertical: 12 },
