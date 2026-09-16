@@ -55,9 +55,10 @@ class APIService {
     return headers;
   }
 
-  private async request(path: string, options: RequestInit & { timeout?: number; silent?: boolean } = {}, token?: string | null) {
+  private async request(path: string, options: RequestInit & { timeout?: number; silent?: boolean; retries?: number } = {}, token?: string | null): Promise<any> {
     const isGet = !options.method || options.method.toUpperCase() === 'GET';
     const silent = options.silent !== undefined ? options.silent : isGet;
+    const maxRetries = options.retries !== undefined ? options.retries : 1;
 
     if (!isNetworkOnline()) {
       console.log(`[API] NetInfo reports offline. Proceeding with fetch anyway for: ${path}`);
@@ -66,46 +67,61 @@ class APIService {
     const baseUrlClean = BACKEND_URL.replace(/\/api\/?$/, '').replace(/\/$/, '');
     const cleanPath = path.startsWith('/') ? path : `/${path}`;
     const url = cleanPath.startsWith('/api/') ? `${baseUrlClean}${cleanPath}` : `${baseUrlClean}/api${cleanPath}`;
-    console.log('[API] Request:', options.method || 'GET', url);
     
-    // Create an explicit timeout to prevent fetch from hanging indefinitely
-    const timeoutMs = options.timeout || 10000;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    // Increased default timeout for mobile networks (30s)
+    const timeoutMs = options.timeout || 30000;
     
-    try {
-      const res = await fetch(url, {
-        ...options,
-        signal: controller.signal as any, // Cast to any to bypass TS DOM types issue in React Native
-        headers: { ...this.getHeaders(token), ...(options.headers as Record<string, string> || {}) },
-      });
+    let attempt = 0;
+    while (attempt <= maxRetries) {
+      console.log(`[API] Request (attempt ${attempt + 1}/${maxRetries + 1}):`, options.method || 'GET', url);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       
-      clearTimeout(timeoutId);
-      console.log('[API] Response status:', res.status);
-      
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Server error' }));
-        console.log('[API] Error response:', err);
-        throw new Error(err.detail || `Request failed with status ${res.status}`);
-      }
-      return res.json();
-    } catch (error: any) {
-      clearTimeout(timeoutId);
-      console.log('[API] Fetch error:', error.message);
-      if (error.name === 'AbortError' || error.message.includes('aborted')) {
-         if (!silent) {
-           showConnectionAlert();
-         }
-         throw new Error('Network request failed - Timeout');
-      }
-      // Better error message for network issues
-      if (error.message === 'Network request failed' || error.message.includes('fetch')) {
-        if (!silent) {
-          showConnectionAlert();
+      try {
+        const res = await fetch(url, {
+          ...options,
+          signal: controller.signal as any, // Cast to any to bypass TS DOM types issue in React Native
+          headers: { ...this.getHeaders(token), ...(options.headers as Record<string, string> || {}) },
+        });
+        
+        clearTimeout(timeoutId);
+        console.log('[API] Response status:', res.status);
+        
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: 'Server error' }));
+          console.log('[API] Error response:', err);
+          throw new Error(err.detail || `Request failed with status ${res.status}`);
         }
-        throw new Error('Unable to connect to server. Please check your internet connection and try again.');
+        return await res.json();
+      } catch (error: any) {
+        clearTimeout(timeoutId);
+        console.log(`[API] Fetch error (attempt ${attempt + 1}/${maxRetries + 1}):`, error.message);
+        
+        const isTimeout = error.name === 'AbortError' || error.message?.includes('aborted') || error.message?.includes('Timeout');
+        const isNetworkErr = error.message === 'Network request failed' || error.message?.includes('fetch') || error.message?.includes('Failed to fetch');
+
+        if ((isTimeout || isNetworkErr) && attempt < maxRetries) {
+          attempt++;
+          console.log(`[API] Retrying request in 1.5s (${url})...`);
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          continue;
+        }
+
+        if (isTimeout) {
+          if (!silent) {
+            showConnectionAlert();
+          }
+          throw new Error('Network request failed - Timeout');
+        }
+        
+        if (isNetworkErr) {
+          if (!silent) {
+            showConnectionAlert();
+          }
+          throw new Error('Unable to connect to server. Please check your internet connection and try again.');
+        }
+        throw error;
       }
-      throw error;
     }
   }
 
