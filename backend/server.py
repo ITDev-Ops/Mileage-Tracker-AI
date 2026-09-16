@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Body
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Body, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
@@ -75,65 +75,60 @@ async def health_check():
 async def startup_db_client():
     global client, db
     
-    # Configure custom DNS resolver on Heroku to bypass internal DNS issues with MongoDB Atlas
-    if "DYNO" in os.environ:
-        try:
-            import dns.resolver
-            custom_resolver = dns.resolver.Resolver()
-            custom_resolver.nameservers = ['8.8.8.8', '1.1.1.1']
-            dns.resolver.default_resolver = custom_resolver
-            logger.info("Running on Heroku: Custom DNS resolver configured successfully (8.8.8.8, 1.1.1.1).")
-        except Exception as e:
-            logger.warning(f"Failed to configure custom DNS resolver: {e}")
+    # Configure custom DNS resolver to bypass DNS lookup issues with MongoDB Atlas
+    try:
+        import dns.resolver
+        custom_resolver = dns.resolver.Resolver()
+        custom_resolver.nameservers = ['8.8.8.8', '1.1.1.1']
+        dns.resolver.default_resolver = custom_resolver
+        logger.info("Custom DNS resolver configured successfully (8.8.8.8, 1.1.1.1).")
+    except Exception as e:
+        logger.warning(f"Failed to configure custom DNS resolver: {e}")
             
     logger.info("Connecting to MongoDB Atlas...")
     import certifi
     try:
-        client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
+        client = motor.motor_asyncio.AsyncIOMotorClient(
+            MONGO_URI, 
+            tlsCAFile=certifi.where(),
+            serverSelectionTimeoutMS=3000,
+            connectTimeoutMS=3000
+        )
         db = client[DB_NAME]
     except Exception as e:
         logger.error(f"MongoDB connection init error: {e}")
     
-    try:
-        logger.info("Initializing MongoDB Indexes...")
-        # Create indexes for trips tracking real-time
-        await db.trips.create_index([("trip_id", 1)], unique=True)
-        await db.trips.create_index([("user_id", 1), ("start_time", -1)])
-        await db.trips.create_index([("user_id", 1), ("is_active", 1), ("start_time", -1)])
-        
-        # Create indexes for user performance
-        await db.users.create_index([("user_id", 1)], unique=True)
-        await db.users.create_index([("email", 1)], unique=True)
-        await db.users.create_index([("api_key", 1)], sparse=True)
-        
-        # Create indexes for expenses
-        await db.expenses.create_index([("expense_id", 1)], unique=True)
-        await db.expenses.create_index([("user_id", 1), ("created_at", -1)])
-        
-        # Create indexes for system alerts
-        await db.alerts.create_index([("alert_id", 1)], unique=True)
-        await db.alerts.create_index([("owner_id", 1), ("created_at", -1)])
+    async def initialize_background_tasks():
+        try:
+            logger.info("Initializing MongoDB Indexes asynchronously...")
+            await db.trips.create_index([("trip_id", 1)], unique=True)
+            await db.trips.create_index([("user_id", 1), ("start_time", -1)])
+            await db.trips.create_index([("user_id", 1), ("is_active", 1), ("start_time", -1)])
+            await db.users.create_index([("user_id", 1)], unique=True)
+            await db.users.create_index([("email", 1)], unique=True)
+            await db.users.create_index([("api_key", 1)], sparse=True)
+            await db.expenses.create_index([("expense_id", 1)], unique=True)
+            await db.expenses.create_index([("user_id", 1), ("created_at", -1)])
+            await db.alerts.create_index([("alert_id", 1)], unique=True)
+            await db.alerts.create_index([("owner_id", 1), ("created_at", -1)])
+            await db.team_members.create_index([("member_id", 1)], unique=True)
+            await db.team_members.create_index([("email", 1)])
+            await db.team_members.create_index([("owner_id", 1)])
+            await db.invitations.create_index([("token", 1)], unique=True)
+            await db.invitations.create_index([("email", 1)])
+            await db.payment_transactions.create_index([("session_id", 1)], unique=True, partialFilterExpression={"session_id": {"$type": "string"}})
+            await db.payment_transactions.create_index([("user_id", 1)])
+            await db.users.create_index([("subscription_tier", 1), ("subscription_status", 1), ("next_billing_date", 1)])
+            logger.info("MongoDB Indexes built explicitly.")
+        except Exception as ie:
+            logger.error(f"Non-fatal error initializing MongoDB indexes in background: {ie}")
 
-        # Create indexes for team members, invitations, and payment transactions
-        await db.team_members.create_index([("member_id", 1)], unique=True)
-        await db.team_members.create_index([("email", 1)])
-        await db.team_members.create_index([("owner_id", 1)])
-        
-        await db.invitations.create_index([("token", 1)], unique=True)
-        await db.invitations.create_index([("email", 1)])
-        
-        await db.payment_transactions.create_index([("session_id", 1)], unique=True, partialFilterExpression={"session_id": {"$type": "string"}})
-        await db.payment_transactions.create_index([("user_id", 1)])
-        await db.users.create_index([("subscription_tier", 1), ("subscription_status", 1), ("next_billing_date", 1)])
-        logger.info("MongoDB Indexes built explicitly.")
-    except Exception as ie:
-        logger.error(f"Non-fatal error initializing MongoDB indexes on startup: {ie}")
+        try:
+            await start_recurring_subscription_worker()
+        except Exception as we:
+            logger.error(f"Error starting background worker: {we}")
 
-    # Start background recurring subscription worker safely
-    try:
-        asyncio.create_task(start_recurring_subscription_worker())
-    except Exception as we:
-        logger.error(f"Error starting background worker: {we}")
+    asyncio.create_task(initialize_background_tasks())
 
 # ============================================================
 # MODELS
@@ -756,35 +751,32 @@ def send_password_reset_email(to_email: str, code: str):
 @api_router.post("/auth/request-password-reset")
 @app.post("/api/auth/request-password-reset")
 @app.post("/auth/request-password-reset")
-async def request_password_reset(data: PasswordResetRequest):
+async def request_password_reset(data: PasswordResetRequest, background_tasks: BackgroundTasks):
     email_clean = data.email.strip().lower()
     if not email_clean:
         raise HTTPException(status_code=400, detail="Email address is required.")
     
     import random
     code = f"{random.randint(100000, 999999)}"
-    user = await db.users.find_one({"email": email_clean})
     
-    if user:
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
-        await db.password_resets.update_one(
-            {"email": email_clean},
-            {"$set": {
-                "email": email_clean,
-                "code": code,
-                "created_at": datetime.now(timezone.utc),
-                "expires_at": expires_at
-            }},
-            upsert=True
-        )
-        
-        try:
-            send_password_reset_email(email_clean, code)
-            logger.info(f"Password reset code successfully emailed to {email_clean}")
-        except Exception as e:
-            logger.error(f"Failed to send password reset email to {email_clean}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to send reset email: {str(e)}")
-            
+    try:
+        user = await asyncio.wait_for(db.users.find_one({"email": email_clean}), timeout=2.0)
+        if user:
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+            await asyncio.wait_for(db.password_resets.update_one(
+                {"email": email_clean},
+                {"$set": {
+                    "email": email_clean,
+                    "code": code,
+                    "created_at": datetime.now(timezone.utc),
+                    "expires_at": expires_at
+                }},
+                upsert=True
+            ), timeout=2.0)
+    except Exception as dbe:
+        logger.error(f"DB operation timed out or failed in password reset request: {dbe}")
+
+    background_tasks.add_task(send_password_reset_email, email_clean, code)
     return {"status": "success", "message": "If an account exists with this email address, a password reset code has been sent."}
 
 @api_router.post("/auth/reset-password")
