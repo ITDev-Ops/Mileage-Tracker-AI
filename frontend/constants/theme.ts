@@ -19,6 +19,8 @@ export const Colors = {
     secondaryDim: 'rgba(59,130,246,0.15)',
     accent: '#F43F5E',
     accentDim: 'rgba(244,63,94,0.15)',
+    danger: '#EF4444',
+    dangerDim: 'rgba(239,68,68,0.15)',
     warning: '#F59E0B',
     warningDim: 'rgba(245,158,11,0.15)',
     purple: '#A78BFA',

@@ -138,11 +138,11 @@ export default function DashboardScreen() {
   // Manual trip auto-end tracking
   const [lastManualMovementTime, setLastManualMovementTime] = useState<number | null>(null);
   const [tripStartTime, setTripStartTime] = useState<number | null>(null);
-  const manualStopCheckRef = useRef<NodeJS.Timeout | number | null>(null);
+  const manualStopCheckRef = useRef<ReturnType<typeof setTimeout> | number | null>(null);
   const MANUAL_TRIP_STOP_TIMEOUT = 10 * 60 * 1000; // 10 minutes
   
   const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
-  const timerRef = useRef<NodeJS.Timeout | number | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | number | null>(null);
   const lastLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const { user, token } = useAuth();
   const country = user?.tax_country || 'US';

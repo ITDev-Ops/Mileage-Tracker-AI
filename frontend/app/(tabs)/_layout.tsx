@@ -36,23 +36,23 @@ export default function TabsLayout() {
       >
         <Tabs.Screen
           name="dashboard"
-          options={{ title: 'Dashboard', tabBarIcon: ({ color, focused }) => <TabIcon name="home" color={color} focused={focused} /> }}
+          options={{ title: 'Dashboard', tabBarIcon: ({ color, focused }) => <TabIcon name="home" color={color as string} focused={focused} /> }}
         />
         <Tabs.Screen
           name="trips"
-          options={{ title: 'Trips', tabBarIcon: ({ color, focused }) => <TabIcon name="map" color={color} focused={focused} /> }}
+          options={{ title: 'Trips', tabBarIcon: ({ color, focused }) => <TabIcon name="map" color={color as string} focused={focused} /> }}
         />
         <Tabs.Screen
           name="expenses"
-          options={{ title: 'Expenses', tabBarIcon: ({ color, focused }) => <TabIcon name="credit-card" color={color} focused={focused} /> }}
+          options={{ title: 'Expenses', tabBarIcon: ({ color, focused }) => <TabIcon name="credit-card" color={color as string} focused={focused} /> }}
         />
         <Tabs.Screen
           name="reports"
-          options={{ title: 'Reports', tabBarIcon: ({ color, focused }) => <TabIcon name="bar-chart-2" color={color} focused={focused} /> }}
+          options={{ title: 'Reports', tabBarIcon: ({ color, focused }) => <TabIcon name="bar-chart-2" color={color as string} focused={focused} /> }}
         />
         <Tabs.Screen
           name="settings"
-          options={{ title: 'Settings', tabBarIcon: ({ color, focused }) => <TabIcon name="settings" color={color} focused={focused} /> }}
+          options={{ title: 'Settings', tabBarIcon: ({ color, focused }) => <TabIcon name="settings" color={color as string} focused={focused} /> }}
         />
       </Tabs>
     </>

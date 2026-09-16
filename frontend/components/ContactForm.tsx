@@ -150,7 +150,7 @@ export default function ContactForm({ onSuccess, mailerUrl }: ContactFormProps) 
         value={honeypot}
         onChangeText={setHoneypot}
         tabIndex={-1}
-        aria-hidden="true"
+        aria-hidden={true}
         autoCapitalize="none"
         autoComplete="off"
       />

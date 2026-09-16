@@ -396,7 +396,7 @@ export default function ExpensesScreen() {
           {/* Clickable background */}
           <TouchableOpacity 
             activeOpacity={1} 
-            style={StyleSheet.absoluteFillObject} 
+            style={StyleSheet.absoluteFill} 
             onPress={() => setZoomImage(false)} 
           />
           
