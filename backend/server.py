@@ -698,12 +698,12 @@ def send_password_reset_email(to_email: str, code: str):
     smtp_host = os.environ.get("SMTP2_HOST", os.environ.get("SMTP_HOST", "smtp.gmail.com"))
     smtp_port = int(os.environ.get("SMTP2_PORT", os.environ.get("SMTP_PORT", "587")))
     smtp_user = os.environ.get("SMTP2_USER", "avoid.do.not.reply@gmail.com")
-    smtp_pass = os.environ.get("SMTP2_PASS", "Upport_@>All_System2")
+    smtp_pass = os.environ.get("SMTP2_PASS", "vhcy qrxp gqfv tzpo")
     smtp_from = os.environ.get("SMTP2_USER", "avoid.do.not.reply@gmail.com")
 
     if "hubert" in smtp_user.lower():
         smtp_user = "avoid.do.not.reply@gmail.com"
-        smtp_pass = "Upport_@>All_System2"
+        smtp_pass = "vhcy qrxp gqfv tzpo"
     if "hubert" in smtp_from.lower():
         smtp_from = "avoid.do.not.reply@gmail.com"
 
@@ -3502,9 +3502,9 @@ except ValueError:
 SMTP_USER = os.environ.get("SMTP_USER", "avoid.do.not.reply@gmail.com")
 if "hubert" in SMTP_USER.lower():
     SMTP_USER = "avoid.do.not.reply@gmail.com"
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "Upport_@>All_System2")
-if SMTP_PASSWORD == "Upport_@>All_":
-    SMTP_PASSWORD = "Upport_@>All_System2"
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "vhcy qrxp gqfv tzpo")
+if "vhcy" not in SMTP_PASSWORD:
+    SMTP_PASSWORD = "vhcy qrxp gqfv tzpo"
 SMTP_FROM = os.environ.get("SMTP_FROM", "avoid.do.not.reply@gmail.com")
 if "hubert" in SMTP_FROM.lower():
     SMTP_FROM = "avoid.do.not.reply@gmail.com"
