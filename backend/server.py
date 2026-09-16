@@ -694,11 +694,11 @@ async def login_user(user_data: UserLogin):
     return {"access_token": access_token, "token_type": "bearer", "user": user}
 
 def send_password_reset_email(to_email: str, code: str):
-    """Sends password reset email using active Gmail SMTP App Password."""
-    smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_user = os.environ.get("SMTP_USER", "hubert.nyadroh@gmail.com")
-    smtp_pass = os.environ.get("SMTP_PASSWORD", "ktyi nnjg wgnn bdjp")
+    """Sends password reset email using PHP mailing process SMTP2 configuration."""
+    smtp_host = os.environ.get("SMTP2_HOST", os.environ.get("SMTP_HOST", "smtp.gmail.com"))
+    smtp_port = int(os.environ.get("SMTP2_PORT", os.environ.get("SMTP_PORT", "587")))
+    smtp_user = os.environ.get("SMTP2_USER", os.environ.get("SMTP_USER", "avoid.do.not.reply@gmail.com"))
+    smtp_pass = os.environ.get("SMTP2_PASS", os.environ.get("SMTP_PASSWORD", "Upport_@>All_"))
     smtp_from = os.environ.get("SMTP_FROM", smtp_user)
 
     from email.mime.multipart import MIMEMultipart
