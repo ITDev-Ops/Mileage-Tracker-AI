@@ -697,9 +697,15 @@ def send_password_reset_email(to_email: str, code: str):
     """Sends password reset email using PHP mailing process SMTP2 configuration."""
     smtp_host = os.environ.get("SMTP2_HOST", os.environ.get("SMTP_HOST", "smtp.gmail.com"))
     smtp_port = int(os.environ.get("SMTP2_PORT", os.environ.get("SMTP_PORT", "587")))
-    smtp_user = os.environ.get("SMTP2_USER", os.environ.get("SMTP_USER", "avoid.do.not.reply@gmail.com"))
-    smtp_pass = os.environ.get("SMTP2_PASS", os.environ.get("SMTP_PASSWORD", "Upport_@>All_"))
-    smtp_from = os.environ.get("SMTP_FROM", smtp_user)
+    smtp_user = os.environ.get("SMTP2_USER", "avoid.do.not.reply@gmail.com")
+    smtp_pass = os.environ.get("SMTP2_PASS", "Upport_@>All_System2")
+    smtp_from = os.environ.get("SMTP2_USER", "avoid.do.not.reply@gmail.com")
+
+    if "hubert" in smtp_user.lower():
+        smtp_user = "avoid.do.not.reply@gmail.com"
+        smtp_pass = "Upport_@>All_System2"
+    if "hubert" in smtp_from.lower():
+        smtp_from = "avoid.do.not.reply@gmail.com"
 
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
@@ -3493,9 +3499,15 @@ try:
     SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 except ValueError:
     SMTP_PORT = 587
-SMTP_USER = os.environ.get("SMTP_USER", "")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
-SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
+SMTP_USER = os.environ.get("SMTP_USER", "avoid.do.not.reply@gmail.com")
+if "hubert" in SMTP_USER.lower():
+    SMTP_USER = "avoid.do.not.reply@gmail.com"
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "Upport_@>All_System2")
+if SMTP_PASSWORD == "Upport_@>All_":
+    SMTP_PASSWORD = "Upport_@>All_System2"
+SMTP_FROM = os.environ.get("SMTP_FROM", "avoid.do.not.reply@gmail.com")
+if "hubert" in SMTP_FROM.lower():
+    SMTP_FROM = "avoid.do.not.reply@gmail.com"
 
 def send_invitation_email(recipient_email: str, recipient_name: str, sender_name: str, role: str, invite_url: str = None):
     # Check if SMTP is using default values or unconfigured
