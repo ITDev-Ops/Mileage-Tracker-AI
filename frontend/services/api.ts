@@ -19,30 +19,31 @@ function showConnectionAlert() {
 
 // Get backend URL from environment, with fallbacks for Expo Go
 const getBackendUrl = (): string => {
-  // Try EXPO_PUBLIC_ env variable first (required for deployment)
   const envUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
   if (envUrl && envUrl.length > 0) {
-    console.log('[API] Using env URL:', envUrl);
-    return envUrl;
+    let formatted = envUrl.trim();
+    if (!formatted.startsWith('http://') && !formatted.startsWith('https://')) {
+      formatted = `http://${formatted}`;
+    }
+    console.log('[API] Using env URL:', formatted);
+    return formatted;
   }
   
-  // Try expo-constants extra
   const extra = Constants.expoConfig?.extra;
   if (extra?.backendUrl) {
     console.log('[API] Using extra URL:', extra.backendUrl);
     return extra.backendUrl;
   }
   
-  // For development/preview, construct URL from hostname
   const hostname = process.env.EXPO_PACKAGER_HOSTNAME;
   if (hostname && hostname.length > 0) {
-    console.log('[API] Using hostname URL:', hostname);
-    return hostname;
+    const formattedHost = hostname.includes(':') ? hostname : `${hostname}:8000`;
+    const fullUrl = formattedHost.startsWith('http') ? formattedHost : `http://${formattedHost}`;
+    console.log('[API] Using hostname URL:', fullUrl);
+    return fullUrl;
   }
   
-  // Last resort - throw error in production, use empty string for dev
-  console.warn('[API] WARNING: No backend URL configured! Set EXPO_PUBLIC_BACKEND_URL');
-  return '';
+  return 'http://192.168.1.13:8000';
 };
 
 const BACKEND_URL = getBackendUrl();
