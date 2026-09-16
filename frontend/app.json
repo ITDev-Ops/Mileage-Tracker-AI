@@ -16,16 +16,10 @@
     "icon": "./assets/images/icon.png",
     "scheme": "mileagetracker",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
     "owner": "multisystems",
     "description": "The smartest mileage tracking app powered by AI. Automatically track your business drives, maximize IRS tax deductions, scan receipts with OCR, and generate compliant tax reports. Perfect for freelancers, real estate agents, sales professionals, rideshare drivers, and small business owners. Features include GPS auto-detection, AI trip classification, expense tracking, and CPA-ready PDF reports.",
     "githubUrl": "https://github.com/multisystems/mileage-tracker-ai",
     "primaryColor": "#10B981",
-    "splash": {
-      "image": "./assets/images/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#09090B"
-    },
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -54,7 +48,6 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#09090B"
       },
-      "edgeToEdgeEnabled": true,
       "permissions": [
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
@@ -93,7 +86,10 @@
       ],
       "expo-updates",
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-image",
+      "expo-sharing",
+      "expo-status-bar"
     ],
     "extra": {
       "eas": {
