@@ -19,6 +19,14 @@ function showConnectionAlert() {
 
 // Get backend URL from environment, with fallbacks for Expo Go
 const getBackendUrl = (): string => {
+  // In development mode (__DEV__), prefer local backend server (http://192.168.1.13:8000)
+  if (typeof __DEV__ !== 'undefined' && __DEV__) {
+    const hostname = process.env.EXPO_PACKAGER_HOSTNAME || '192.168.1.13';
+    const devUrl = `http://${hostname}:8000`;
+    console.log('[API] __DEV__ mode active. Connecting to local backend:', devUrl);
+    return devUrl;
+  }
+
   const envUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
   if (envUrl && envUrl.length > 0) {
     let formatted = envUrl.trim();
@@ -33,14 +41,6 @@ const getBackendUrl = (): string => {
   if (extra?.backendUrl) {
     console.log('[API] Using extra URL:', extra.backendUrl);
     return extra.backendUrl;
-  }
-  
-  const hostname = process.env.EXPO_PACKAGER_HOSTNAME;
-  if (hostname && hostname.length > 0) {
-    const formattedHost = hostname.includes(':') ? hostname : `${hostname}:8000`;
-    const fullUrl = formattedHost.startsWith('http') ? formattedHost : `http://${formattedHost}`;
-    console.log('[API] Using hostname URL:', fullUrl);
-    return fullUrl;
   }
   
   return 'http://192.168.1.13:8000';
