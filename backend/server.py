@@ -749,8 +749,11 @@ def send_password_reset_email(to_email: str, code: str):
     server.quit()
 
 @api_router.post("/auth/request-password-reset")
+@api_router.post("/request-password-reset")
 @app.post("/api/auth/request-password-reset")
 @app.post("/auth/request-password-reset")
+@app.post("/request-password-reset")
+@app.post("/api/request-password-reset")
 async def request_password_reset(data: PasswordResetRequest, background_tasks: BackgroundTasks):
     email_clean = data.email.strip().lower()
     if not email_clean:
@@ -760,28 +763,41 @@ async def request_password_reset(data: PasswordResetRequest, background_tasks: B
     code = f"{random.randint(100000, 999999)}"
     
     try:
-        user = await asyncio.wait_for(db.users.find_one({"email": email_clean}), timeout=2.0)
+        user = await asyncio.wait_for(
+            db.users.find_one({"email": {"$regex": f"^{re.escape(email_clean)}$", "$options": "i"}}),
+            timeout=2.0
+        )
+        if not user:
+            user = await asyncio.wait_for(db.users.find_one({"email": email_clean}), timeout=2.0)
+            
         if user:
+            target_email = user.get("email", email_clean).lower()
             expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
             await asyncio.wait_for(db.password_resets.update_one(
-                {"email": email_clean},
+                {"email": target_email},
                 {"$set": {
-                    "email": email_clean,
+                    "email": target_email,
                     "code": code,
                     "created_at": datetime.now(timezone.utc),
                     "expires_at": expires_at
                 }},
                 upsert=True
             ), timeout=2.0)
+            background_tasks.add_task(send_password_reset_email, target_email, code)
+            logger.info(f"[PasswordReset] Code {code} dispatched for {target_email}")
+            return {"status": "success", "message": f"A 6-digit password reset code has been sent to {target_email}."}
     except Exception as dbe:
-        logger.error(f"DB operation timed out or failed in password reset request: {dbe}")
+        logger.error(f"DB error in password reset request: {dbe}")
 
     background_tasks.add_task(send_password_reset_email, email_clean, code)
     return {"status": "success", "message": "If an account exists with this email address, a password reset code has been sent."}
 
 @api_router.post("/auth/reset-password")
+@api_router.post("/reset-password")
 @app.post("/api/auth/reset-password")
 @app.post("/auth/reset-password")
+@app.post("/reset-password")
+@app.post("/api/reset-password")
 async def reset_password_verify(data: PasswordResetVerify):
     email_clean = data.email.strip().lower()
     code_clean = data.code.strip()
@@ -793,7 +809,10 @@ async def reset_password_verify(data: PasswordResetVerify):
     if len(new_password) < 6:
         raise HTTPException(status_code=400, detail="New password must be at least 6 characters long.")
         
-    record = await db.password_resets.find_one({"email": email_clean})
+    record = await db.password_resets.find_one({"email": {"$regex": f"^{re.escape(email_clean)}$", "$options": "i"}})
+    if not record:
+        record = await db.password_resets.find_one({"email": email_clean})
+        
     if not record or record.get("code") != code_clean:
         raise HTTPException(status_code=400, detail="Invalid or expired password reset code.")
         
@@ -807,12 +826,17 @@ async def reset_password_verify(data: PasswordResetVerify):
             
     hashed_password = get_password_hash(new_password)
     result = await db.users.update_one(
-        {"email": email_clean},
+        {"email": {"$regex": f"^{re.escape(email_clean)}$", "$options": "i"}},
         {"$set": {"password_hash": hashed_password}}
     )
-    
     if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="User account not found.")
+        result = await db.users.update_one(
+            {"email": email_clean},
+            {"$set": {"password_hash": hashed_password}}
+        )
+        
+    if result.matched_count == 0:
+        raise HTTPException(status_code=400, detail="User account not found. Please check your email address.")
         
     await db.password_resets.delete_one({"email": email_clean})
     
