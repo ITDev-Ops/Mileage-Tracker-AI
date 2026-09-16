@@ -80,7 +80,7 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#000"
+          "backgroundColor": "#000000"
         }
       ],
       [
@@ -91,7 +91,9 @@
           "isAndroidForegroundServiceEnabled": true
         }
       ],
-      "expo-updates"
+      "expo-updates",
+      "expo-font",
+      "expo-web-browser"
     ],
     "extra": {
       "eas": {
