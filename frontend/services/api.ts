@@ -19,31 +19,32 @@ function showConnectionAlert() {
 
 // Get backend URL from environment, with fallbacks for Expo Go
 const getBackendUrl = (): string => {
-  // In development mode (__DEV__), prefer local backend server (http://192.168.1.13:8000)
-  if (typeof __DEV__ !== 'undefined' && __DEV__) {
-    const hostname = process.env.EXPO_PACKAGER_HOSTNAME || '192.168.1.13';
-    const devUrl = `http://${hostname}:8000`;
-    console.log('[API] __DEV__ mode active. Connecting to local backend:', devUrl);
-    return devUrl;
-  }
-
+  // If an explicit backend URL is provided via environment, always prioritize it!
   const envUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
   if (envUrl && envUrl.length > 0) {
     let formatted = envUrl.trim();
     if (!formatted.startsWith('http://') && !formatted.startsWith('https://')) {
       formatted = `http://${formatted}`;
     }
-    console.log('[API] Using env URL:', formatted);
+    console.log('[API] Using EXPO_PUBLIC_BACKEND_URL:', formatted);
     return formatted;
   }
-  
+
+  // In development mode (__DEV__), dynamically resolve host if possible
+  if (typeof __DEV__ !== 'undefined' && __DEV__) {
+    const hostname = process.env.EXPO_PACKAGER_HOSTNAME || (Platform.OS === 'android' ? '10.0.2.2' : 'localhost');
+    const devUrl = `http://${hostname}:8000`;
+    console.log('[API] __DEV__ mode active. Connecting to local backend:', devUrl);
+    return devUrl;
+  }
+
   const extra = Constants.expoConfig?.extra;
   if (extra?.backendUrl) {
     console.log('[API] Using extra URL:', extra.backendUrl);
     return extra.backendUrl;
   }
   
-  return 'http://192.168.1.13:8000';
+  return 'https://ai-mile-tracker-f2fed3697be0.herokuapp.com';
 };
 
 const BACKEND_URL = getBackendUrl();

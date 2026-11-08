@@ -47,9 +47,41 @@ IRS_MEDICAL_RATE = 0.22   # $/mile for medical
 IRS_CHARITY_RATE = 0.14   # $/mile for charity
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-3.8-flash')
+GEMINI_BASE_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_emergent')
+STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
+WEBHOOK_SIGNING_SECRET = os.environ.get('WEBHOOK_SIGNING_SECRET', '')
+import hmac
+import hashlib
 import openai
-openai_client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+openai_client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY or "dummy-key")
+
+# Reusable HTTP client pool for high-performance Gemini requests
+gemini_http_client: Optional[httpx.AsyncClient] = None
+
+# In-memory performance caches (reduces redundant LLM calls and latency)
+_inspiration_cache: Dict[str, dict] = {}
+_insights_cache: Dict[str, dict] = {}
+
+async def get_gemini_client() -> httpx.AsyncClient:
+    global gemini_http_client
+    if gemini_http_client is None or gemini_http_client.is_closed:
+        gemini_http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(35.0, connect=8.0),
+            limits=httpx.Limits(max_keepalive_connections=25, max_connections=50)
+        )
+    return gemini_http_client
+
+async def call_gemini_api(payload: dict) -> dict:
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY is not configured")
+    client = await get_gemini_client()
+    url = f"{GEMINI_BASE_URL}?key={GEMINI_API_KEY}"
+    response = await client.post(url, json=payload)
+    if response.status_code == 200:
+        return response.json()
+    raise Exception(f"Gemini API returned {response.status_code}: {response.text[:200]}")
 
 app = FastAPI(title="Mileage Tracker AI API")
 api_router = APIRouter(prefix="/api")
@@ -117,7 +149,10 @@ async def startup_db_client():
             await db.invitations.create_index([("token", 1)], unique=True)
             await db.invitations.create_index([("email", 1)])
             await db.payment_transactions.create_index([("session_id", 1)], unique=True, partialFilterExpression={"session_id": {"$type": "string"}})
+            await db.payment_transactions.create_index([("stripe_event_id", 1)], unique=True, partialFilterExpression={"stripe_event_id": {"$type": "string"}})
             await db.payment_transactions.create_index([("user_id", 1)])
+            await db.webhook_events.create_index([("event_id", 1)], unique=True)
+            await db.webhook_events.create_index([("provider", 1), ("created_at", -1)])
             await db.users.create_index([("subscription_tier", 1), ("subscription_status", 1), ("next_billing_date", 1)])
             logger.info("MongoDB Indexes built explicitly.")
         except Exception as ie:
@@ -658,9 +693,20 @@ async def register_user(user_data: UserCreate):
 
     return {"access_token": access_token, "token_type": "bearer", "user": user_doc}
 
+import certifi
+import pymongo.errors
+
 @api_router.post("/auth/login")
 async def login_user(user_data: UserLogin):
-    user = await db.users.find_one({"email": user_data.email.lower()})
+    try:
+        user = await db.users.find_one({"email": user_data.email.lower()})
+    except pymongo.errors.PyMongoError as dbe:
+        logger.error(f"Database error during login query: {dbe}")
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection error. If you are using MongoDB Atlas, please check network access or IP whitelist settings."
+        )
+
     if not user or "password_hash" not in user:
         raise HTTPException(status_code=401, detail="Incorrect email or password")
         
@@ -672,10 +718,13 @@ async def login_user(user_data: UserLogin):
         raise HTTPException(status_code=400, detail="Account is not active. Please complete registration via the invitation link.")
         
     # Update pending team member status to Active and set the user_id
-    await db.team_members.update_many(
-        {"email": user_data.email.lower(), "status": "Pending"},
-        {"$set": {"status": "Active", "user_id": user["user_id"]}}
-    )
+    try:
+        await db.team_members.update_many(
+            {"email": user_data.email.lower(), "status": "Pending"},
+            {"$set": {"status": "Active", "user_id": user["user_id"]}}
+        )
+    except Exception as tme:
+        logger.warning(f"Non-fatal error updating team member status: {tme}")
     
     access_token = create_access_token(data={"sub": user["user_id"]})
     
@@ -684,7 +733,12 @@ async def login_user(user_data: UserLogin):
     if "password_hash" in user:
         del user["password_hash"]
         
-    current_legal = await get_current_legal_versions()
+    try:
+        current_legal = await get_current_legal_versions()
+    except Exception as cle:
+        logger.warning(f"Non-fatal error fetching legal versions: {cle}")
+        current_legal = {}
+
     requires_consent, missing = check_user_legal_status(user, current_legal)
     user["legal_consent_required"] = requires_consent
     user["missing_consents"] = missing
@@ -792,8 +846,14 @@ async def request_password_reset(data: PasswordResetRequest, background_tasks: B
             background_tasks.add_task(send_password_reset_email, target_email, code)
             logger.info(f"[PasswordReset] Code {code} dispatched for {target_email}")
             return {"status": "success", "message": f"A 6-digit password reset code has been sent to {target_email}."}
+    except pymongo.errors.PyMongoError as dbe:
+        logger.error(f"Database error during password reset request: {dbe}")
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection error. If you are using MongoDB Atlas, please check network access or IP whitelist settings."
+        )
     except Exception as dbe:
-        logger.error(f"DB error in password reset request: {dbe}")
+        logger.error(f"Error in password reset request: {dbe}")
 
     background_tasks.add_task(send_password_reset_email, email_clean, code)
     return {"status": "success", "message": "If an account exists with this email address, a password reset code has been sent."}
@@ -815,9 +875,16 @@ async def reset_password_verify(data: PasswordResetVerify):
     if len(new_password) < 6:
         raise HTTPException(status_code=400, detail="New password must be at least 6 characters long.")
         
-    record = await db.password_resets.find_one({"email": {"$regex": f"^{re.escape(email_clean)}$", "$options": "i"}})
-    if not record:
-        record = await db.password_resets.find_one({"email": email_clean})
+    try:
+        record = await db.password_resets.find_one({"email": {"$regex": f"^{re.escape(email_clean)}$", "$options": "i"}})
+        if not record:
+            record = await db.password_resets.find_one({"email": email_clean})
+    except pymongo.errors.PyMongoError as dbe:
+        logger.error(f"Database error during password reset lookup: {dbe}")
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection error. If you are using MongoDB Atlas, please check network access or IP whitelist settings."
+        )
         
     if not record or record.get("code") != code_clean:
         raise HTTPException(status_code=400, detail="Invalid or expired password reset code.")
@@ -827,28 +894,40 @@ async def reset_password_verify(data: PasswordResetVerify):
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         if datetime.now(timezone.utc) > expires_at:
-            await db.password_resets.delete_one({"email": email_clean})
+            try:
+                await db.password_resets.delete_one({"email": email_clean})
+            except Exception:
+                pass
             raise HTTPException(status_code=400, detail="Password reset code has expired. Please request a new code.")
             
     hashed_password = get_password_hash(new_password)
-    result = await db.users.update_one(
-        {"email": {"$regex": f"^{re.escape(email_clean)}$", "$options": "i"}},
-        {"$set": {"password_hash": hashed_password}}
-    )
-    if result.matched_count == 0:
+    try:
         result = await db.users.update_one(
-            {"email": email_clean},
+            {"email": {"$regex": f"^{re.escape(email_clean)}$", "$options": "i"}},
             {"$set": {"password_hash": hashed_password}}
         )
+        if result.matched_count == 0:
+            result = await db.users.update_one(
+                {"email": email_clean},
+                {"$set": {"password_hash": hashed_password}}
+            )
+            
+        if result.matched_count == 0:
+            raise HTTPException(status_code=400, detail="User account not found. Please check your email address.")
+            
+        await db.password_resets.delete_one({"email": email_clean})
         
-    if result.matched_count == 0:
-        raise HTTPException(status_code=400, detail="User account not found. Please check your email address.")
-        
-    await db.password_resets.delete_one({"email": email_clean})
-    
-    user = await db.users.find_one({"email": email_clean})
-    if user and "user_id" in user:
-        auth_cache.invalidate_user(user["user_id"])
+        user = await db.users.find_one({"email": email_clean})
+        if user and "user_id" in user:
+            auth_cache.invalidate_user(user["user_id"])
+    except HTTPException:
+        raise
+    except pymongo.errors.PyMongoError as dbe:
+        logger.error(f"Database error during password reset execution: {dbe}")
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection error. If you are using MongoDB Atlas, please check network access or IP whitelist settings."
+        )
         
     return {"status": "success", "message": "Your password has been reset successfully. You can now log in with your new password."}
 
@@ -964,7 +1043,21 @@ async def accept_legal_terms(data: LegalTermsAccept, current_user: dict = Depend
 @api_router.post("/admin/legal-terms/update")
 @app.post("/api/admin/legal-terms/update")
 @app.post("/admin/legal-terms/update")
-async def update_legal_terms(data: LegalVersionsUpdate):
+async def update_legal_terms(data: LegalVersionsUpdate, request: Request):
+    # Verify webhook HMAC signature or Admin JWT before executing command
+    raw_body = await request.body()
+    sig_header = request.headers.get("X-Webhook-Signature") or request.headers.get("Stripe-Signature")
+    secret = os.environ.get("WEBHOOK_SIGNING_SECRET") or WEBHOOK_SIGNING_SECRET
+    auth_header = request.headers.get("Authorization")
+
+    if sig_header:
+        if not secret or not verify_hmac_webhook_signature(raw_body, sig_header, secret):
+            raise HTTPException(status_code=400, detail="Invalid webhook signature")
+    elif auth_header and auth_header.startswith("Bearer "):
+        await get_current_user(request)
+    elif secret:
+        raise HTTPException(status_code=401, detail="Missing webhook signature or authorization header")
+
     current = await get_current_legal_versions()
     new_tos_ver = data.tos_version or current["tos_version"]
     new_privacy_ver = data.privacy_policy_version or current["privacy_policy_version"]
@@ -1363,10 +1456,14 @@ def resize_and_compress(receipt_base64: str, max_size=(1024, 1024)) -> str:
 
 def clean_json_content(content: str) -> str:
     content = content.strip()
-    # Remove markdown code blocks if present
-    if content.startswith("```"):
-        content = re.sub(r'^```[a-zA-Z]*\n', '', content)
-        content = re.sub(r'\n```$', '', content)
+    if "```" in content:
+        match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', content)
+        if match:
+            return match.group(1).strip()
+    if not (content.startswith("{") or content.startswith("[")):
+        match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', content)
+        if match:
+            return match.group(1).strip()
     return content.strip()
 
 def parse_receipt_text(text: str) -> dict:
@@ -1514,10 +1611,6 @@ def parse_receipt_text(text: str) -> dict:
 
 
 async def scan_receipt_gemini(processed_base64: str) -> dict:
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY is not set")
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     prompt = (
         "Extract information from this receipt image. "
         "Examine characters extremely carefully, especially in bad lighting, shadows, low contrast, or blur. "
@@ -1543,19 +1636,10 @@ async def scan_receipt_gemini(processed_base64: str) -> dict:
             "responseMimeType": "application/json"
         }
     }
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(url, json=payload)
-        if response.status_code == 200:
-            res_data = response.json()
-            try:
-                content = res_data['candidates'][0]['content']['parts'][0]['text']
-                cleaned = clean_json_content(content)
-                return json.loads(cleaned)
-            except Exception as e:
-                logger.error(f"Failed to parse Gemini response: {e}. Raw: {res_data}")
-                raise e
-        else:
-            raise Exception(f"Gemini API returned status code {response.status_code}: {response.text}")
+    res_data = await call_gemini_api(payload)
+    content = res_data['candidates'][0]['content']['parts'][0]['text']
+    cleaned = clean_json_content(content)
+    return json.loads(cleaned)
 
 async def scan_receipt_ocr_space(receipt_base64: str) -> dict:
     url = "https://api.ocr.space/parse/image"
@@ -1594,7 +1678,17 @@ async def scan_receipt(data: dict = Body(...), current_user: dict = Depends(get_
         # Preprocess the base64 receipt image to handle poor/different lighting conditions
         processed_base64 = preprocess_receipt_image(receipt_base64)
         
-        # 1. Try OpenAI if key is present
+        # 1. Try Gemini 3.8 Flash first (Primary: Fast, dedicated multimodal vision, high efficiency)
+        if GEMINI_API_KEY:
+            try:
+                logger.info("Attempting receipt scan with Gemini 3.8 Flash...")
+                extracted = await scan_receipt_gemini(processed_base64)
+                logger.info("Successfully scanned receipt with Gemini 3.8 Flash")
+                return {"success": True, "extracted": extracted, "provider": "gemini"}
+            except Exception as ge:
+                logger.warning(f"Gemini receipt scan failed, falling back to OpenAI: {ge}")
+
+        # 2. Try OpenAI if key is present (Secondary fallback)
         if OPENAI_API_KEY:
             try:
                 logger.info("Attempting receipt scan with OpenAI...")
@@ -1622,19 +1716,9 @@ async def scan_receipt(data: dict = Body(...), current_user: dict = Depends(get_
                     cleaned_content = clean_json_content(content)
                     extracted = json.loads(cleaned_content)
                     logger.info("Successfully scanned receipt with OpenAI")
-                    return {"success": True, "extracted": extracted}
-            except Exception as e:
-                logger.warning(f"OpenAI receipt scan failed: {e}")
-                
-        # 2. Try Gemini if key is present
-        if GEMINI_API_KEY:
-            try:
-                logger.info("Attempting receipt scan with Gemini...")
-                extracted = await scan_receipt_gemini(processed_base64)
-                logger.info("Successfully scanned receipt with Gemini")
-                return {"success": True, "extracted": extracted}
-            except Exception as e:
-                logger.warning(f"Gemini receipt scan failed: {e}")
+                    return {"success": True, "extracted": extracted, "provider": "openai"}
+            except Exception as oe:
+                logger.warning(f"OpenAI receipt scan failed: {oe}")
                 
         # 3. Try OCR.space fallback
         try:
@@ -1649,15 +1733,14 @@ async def scan_receipt(data: dict = Body(...), current_user: dict = Depends(get_
                     extracted = extracted_retry
                     logger.info("Successfully scanned receipt on color resize retry")
             logger.info("Successfully scanned receipt with OCR.space and parsed text")
-            return {"success": True, "extracted": extracted}
-        except Exception as e:
-            logger.error(f"OCR.space receipt scan failed: {e}")
-            raise e  # Propagate to outer try block for final mock fallback
+            return {"success": True, "extracted": extracted, "provider": "ocr_space"}
+        except Exception as ocre:
+            logger.error(f"OCR.space receipt scan failed: {ocre}")
+            raise ocre  # Propagate to outer try block for final mock fallback
             
     except Exception as e:
         logger.error(f"All scanning methods failed: {e}")
         # Return a realistic, trip-related fallback expense to ensure the user is not blocked
-        # by OpenAI/Gemini quota limits or server issues. The form will pre-populate so they can edit manually.
         import random
         fallback_merchants = [
             {"merchant": "Chevron Gas Station", "amount": 42.50, "category": "fuel"},
@@ -1684,7 +1767,7 @@ async def scan_receipt(data: dict = Body(...), current_user: dict = Depends(get_
 
 
 # ============================================================
-# AI ROUTES
+# AI ROUTES (Gemini 3.8 Flash Primary + OpenAI Fallback)
 # ============================================================
 
 @api_router.post("/ai/chat")
@@ -1701,15 +1784,34 @@ User: {current_user.get('name', 'User')} | Occupation: {current_user.get('occupa
 Stats: {len(trips)} trips tracked, {total_miles:.1f} total miles, ${total_deductions:.2f} in deductions
 IRS 2026 rate: $0.70/mile (business), $0.22/mile (medical), $0.14/mile (charity)
 Help with: trip classification, tax deductions, mileage reports, expense advice. Be concise and helpful."""
-        messages = [
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": data.message}
-        ]
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages
-        )
-        return {"response": response.choices[0].message.content, "session_id": session_id}
+
+        # 1. Primary: Gemini 3.8 Flash
+        if GEMINI_API_KEY:
+            try:
+                payload = {
+                    "contents": [{
+                        "parts": [{"text": f"System Context:\n{system_message}\n\nUser Question:\n{data.message}"}]
+                    }]
+                }
+                res_data = await call_gemini_api(payload)
+                reply = res_data['candidates'][0]['content']['parts'][0]['text']
+                return {"response": reply.strip(), "session_id": session_id, "provider": "gemini"}
+            except Exception as ge:
+                logger.warning(f"Gemini chat failed, falling back to OpenAI: {ge}")
+
+        # 2. Fallback: OpenAI
+        if OPENAI_API_KEY:
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": data.message}
+            ]
+            response = await openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages
+            )
+            return {"response": response.choices[0].message.content, "session_id": session_id, "provider": "openai"}
+
+        return {"response": "I'm having trouble connecting right now. Please try again shortly.", "session_id": session_id}
     except Exception as e:
         logger.error(f"AI chat error: {e}")
         return {"response": "I'm having trouble connecting. Please try again shortly.", "session_id": data.session_id or ""}
@@ -1735,20 +1837,62 @@ Distance: {trip.get('distance',0):.1f} miles | Time: {trip.get('start_time')} | 
 User occupation: {current_user.get('occupation_type','self_employed')}
 Past trips: {history_text}
 Return ONLY JSON: {{"classification": "business|personal|medical|charity", "confidence": 0.85, "purpose": "brief reason", "client_name": null}}"""
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
-        )
-        content = response.choices[0].message.content
-        result = json.loads(content) if content else {"classification": "personal", "confidence": 0.5, "purpose": "Auto-classification", "client_name": None}
+
+        result = None
+
+        # 1. Primary: Gemini 3.8 Flash
+        if GEMINI_API_KEY:
+            try:
+                payload = {
+                    "contents": [{"parts": [{"text": f"{system_msg}\n{prompt}"}]}],
+                    "generationConfig": {"responseMimeType": "application/json"}
+                }
+                res_data = await call_gemini_api(payload)
+                raw_txt = res_data['candidates'][0]['content']['parts'][0]['text']
+                cleaned = clean_json_content(raw_txt)
+                result = json.loads(cleaned)
+            except Exception as ge:
+                logger.warning(f"Gemini classify trip failed, falling back to OpenAI: {ge}")
+
+        # 2. Fallback: OpenAI
+        if not result and OPENAI_API_KEY:
+            try:
+                response = await openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"}
+                )
+                content = response.choices[0].message.content
+                result = json.loads(content) if content else None
+            except Exception as oe:
+                logger.warning(f"OpenAI classify trip failed: {oe}")
+
+        if not result:
+            result = {"classification": "personal", "confidence": 0.5, "purpose": "Auto-classification", "client_name": None}
+
         dist = trip.get("distance", 0)
         cls = result.get("classification", "personal")
         await db.trips.update_one(
             {"trip_id": trip_id},
-            {"$set": {"classification": cls, "ai_confidence": result.get("confidence", 0.5), "purpose": result.get("purpose"), "client_name": result.get("client_name"), "deduction_value": calculate_deduction(dist, cls, current_user.get("tax_country", "US"))}}
+            {"$set": {
+                "classification": cls, 
+                "ai_confidence": result.get("confidence", 0.5), 
+                "purpose": result.get("purpose"), 
+                "client_name": result.get("client_name"), 
+                "deduction_value": calculate_deduction(dist, cls, current_user.get("tax_country", "US"))
+            }}
         )
-        await db.ai_logs.insert_one({"log_id": f"log_{uuid.uuid4().hex[:12]}", "trip_id": trip_id, "user_id": current_user["user_id"], "prediction": cls, "confidence": result.get("confidence", 0.5), "created_at": datetime.now(timezone.utc)})
+        # Invalidate cached insights for user
+        _insights_cache.pop(current_user["user_id"], None)
+
+        await db.ai_logs.insert_one({
+            "log_id": f"log_{uuid.uuid4().hex[:12]}", 
+            "trip_id": trip_id, 
+            "user_id": current_user["user_id"], 
+            "prediction": cls, 
+            "confidence": result.get("confidence", 0.5), 
+            "created_at": datetime.now(timezone.utc)
+        })
         return result
     except Exception as e:
         logger.error(f"Classify trip error: {e}")
@@ -1756,8 +1900,8 @@ Return ONLY JSON: {{"classification": "business|personal|medical|charity", "conf
 
 @api_router.post("/ai/classify-all")
 async def classify_all_trips(current_user: dict = Depends(get_current_user)):
-    """Bulk classify all unclassified trips using AI"""
-    import asyncio
+    """Bulk classify all unclassified trips using AI with high-efficiency batching"""
+    from pymongo import UpdateOne
     if current_user.get("subscription_tier", "free") == "free":
         raise HTTPException(status_code=403, detail="AI bulk trip classification requires a Pro or Business plan.")
     unclassified = await db.trips.find(
@@ -1775,54 +1919,136 @@ async def classify_all_trips(current_user: dict = Depends(get_current_user)):
             {"_id": 0}
         ).limit(20).to_list(20)
         history_text = "\n".join([f"- {t.get('start_address','?')} → {t.get('end_address','?')}: {t.get('classification')} ({t.get('purpose','N/A')})" for t in history[:10]])
-        system_msg = "You are a trip classification AI. Return ONLY valid JSON. No explanation."
         
-        sem = asyncio.Semaphore(5)  # Respect rate limits by allowing max 5 concurrent calls
-        
-        async def classify_trip(trip):
-            async with sem:
-                try:
-                    prompt = f"""Classify this trip:
+        results = []
+        bulk_operations = []
+        user_tax_country = current_user.get("tax_country", "US")
+
+        # 1. Primary: Ultra-efficient Gemini single-request batch classification
+        if GEMINI_API_KEY:
+            try:
+                logger.info(f"Bulk classifying {len(unclassified)} trips with Gemini 3.8 Flash in a single batch request...")
+                trips_payload = [
+                    {
+                        "trip_id": t["trip_id"],
+                        "start": t.get("start_address", "Unknown"),
+                        "end": t.get("end_address", "Unknown"),
+                        "distance": t.get("distance", 0),
+                        "notes": t.get("notes", "None")
+                    }
+                    for t in unclassified
+                ]
+                prompt = f"""You are a tax-compliant trip classification AI.
+Classify each of the following trips for tax deduction purposes.
+User occupation: {current_user.get('occupation_type', 'self_employed')}
+Recent past user trips:
+{history_text}
+
+Trips to classify:
+{json.dumps(trips_payload)}
+
+Return ONLY a JSON array with one object per trip matching:
+[
+  {{"trip_id": "string", "classification": "business|personal|medical|charity", "confidence": 0.85, "purpose": "brief reason"}}
+]"""
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"responseMimeType": "application/json"}
+                }
+                res_data = await call_gemini_api(payload)
+                raw_txt = res_data['candidates'][0]['content']['parts'][0]['text']
+                cleaned = clean_json_content(raw_txt)
+                gemini_classifications = json.loads(cleaned)
+
+                cls_map = {item["trip_id"]: item for item in gemini_classifications if "trip_id" in item}
+                for trip in unclassified:
+                    tid = trip["trip_id"]
+                    dist = trip.get("distance", 0)
+                    item = cls_map.get(tid, {"classification": "personal", "confidence": 0.6, "purpose": "Auto-classified"})
+                    cls = item.get("classification", "personal")
+                    conf = item.get("confidence", 0.6)
+                    purpose = item.get("purpose", "Auto-classified")
+                    deduction = calculate_deduction(dist, cls, user_tax_country)
+
+                    results.append({
+                        "trip_id": tid,
+                        "classification": cls,
+                        "confidence": conf,
+                        "deduction": deduction
+                    })
+                    bulk_operations.append(
+                        UpdateOne(
+                            {"trip_id": tid},
+                            {"$set": {
+                                "classification": cls,
+                                "ai_confidence": conf,
+                                "purpose": purpose,
+                                "deduction_value": deduction
+                            }}
+                        )
+                    )
+
+                if bulk_operations:
+                    await db.trips.bulk_write(bulk_operations)
+                    _insights_cache.pop(current_user["user_id"], None)
+                    logger.info(f"Successfully batch-classified {len(results)} trips with Gemini in single call!")
+
+            except Exception as ge:
+                logger.warning(f"Gemini bulk classify failed, falling back to concurrent OpenAI: {ge}")
+                results = []
+                bulk_operations = []
+
+        # 2. Fallback: Concurrent OpenAI calls if Gemini was not used or failed
+        if not results:
+            system_msg = "You are a trip classification AI. Return ONLY valid JSON. No explanation."
+            sem = asyncio.Semaphore(5)  # Respect rate limits
+            
+            async def classify_trip_openai(trip):
+                async with sem:
+                    try:
+                        prompt = f"""Classify this trip:
 Start: {trip.get('start_address','Unknown')} | End: {trip.get('end_address','Unknown')}
 Distance: {trip.get('distance',0):.1f} miles | Notes: {trip.get('notes','None')}
 User occupation: {current_user.get('occupation_type','self_employed')}
 Past trips: {history_text}
 Return ONLY JSON: {{"classification": "business|personal|medical|charity", "confidence": 0.85, "purpose": "brief reason"}}"""
-                    
-                    response = await openai_client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
-                        response_format={"type": "json_object"}
-                    )
-                    content = response.choices[0].message.content
-                    result = json.loads(content) if content else {"classification": "personal", "confidence": 0.5, "purpose": "Auto-classification"}
-                    
-                    dist = trip.get("distance", 0)
-                    cls = result.get("classification", "personal")
-                    
-                    await db.trips.update_one(
-                        {"trip_id": trip["trip_id"]},
-                        {"$set": {
-                            "classification": cls,
-                            "ai_confidence": result.get("confidence", 0.5),
-                            "purpose": result.get("purpose"),
-                            "deduction_value": calculate_deduction(dist, cls, current_user.get("tax_country", "US"))
-                        }}
-                    )
-                    
-                    return {
-                        "trip_id": trip["trip_id"],
-                        "classification": cls,
-                        "confidence": result.get("confidence", 0.5),
-                        "deduction": calculate_deduction(dist, cls, current_user.get("tax_country", "US"))
-                    }
-                except Exception as e:
-                    logger.error(f"Bulk classify error for {trip['trip_id']}: {e}")
-                    return {"trip_id": trip["trip_id"], "error": str(e)}
+                        
+                        response = await openai_client.chat.completions.create(
+                            model="gpt-4o",
+                            messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
+                            response_format={"type": "json_object"}
+                        )
+                        content = response.choices[0].message.content
+                        result = json.loads(content) if content else {"classification": "personal", "confidence": 0.5, "purpose": "Auto-classification"}
+                        
+                        dist = trip.get("distance", 0)
+                        cls = result.get("classification", "personal")
+                        deduction = calculate_deduction(dist, cls, user_tax_country)
 
-        tasks = [classify_trip(t) for t in unclassified]
-        results = await asyncio.gather(*tasks)
-                
+                        await db.trips.update_one(
+                            {"trip_id": trip["trip_id"]},
+                            {"$set": {
+                                "classification": cls,
+                                "ai_confidence": result.get("confidence", 0.5),
+                                "purpose": result.get("purpose"),
+                                "deduction_value": deduction
+                            }}
+                        )
+                        
+                        return {
+                            "trip_id": trip["trip_id"],
+                            "classification": cls,
+                            "confidence": result.get("confidence", 0.5),
+                            "deduction": deduction
+                        }
+                    except Exception as e:
+                        logger.error(f"Bulk classify error for {trip['trip_id']}: {e}")
+                        return {"trip_id": trip["trip_id"], "error": str(e)}
+
+            tasks = [classify_trip_openai(t) for t in unclassified]
+            results = await asyncio.gather(*tasks)
+            _insights_cache.pop(current_user["user_id"], None)
+                    
     except Exception as e:
         logger.error(f"Bulk classify setup error: {e}")
         return {"classified": 0, "results": [], "error": str(e)}
@@ -1849,22 +2075,61 @@ async def get_ai_insights(current_user: dict = Depends(get_current_user)):
         business_miles = sum(t.get("distance", 0) for t in trips if t.get("classification") == "business")
         total_deductions = sum(t.get("deduction_value", 0) for t in trips)
         unclassified = len([t for t in trips if t.get("classification") == "unclassified"])
+
+        # Check Cache: if user already fetched insights recently and trip stats haven't changed
+        cache_key = current_user["user_id"]
+        cached = _insights_cache.get(cache_key)
+        stats_fingerprint = f"{len(trips)}:{round(total_miles, 1)}:{round(total_deductions, 2)}:{unclassified}"
+        if cached and (now - cached["timestamp"]).total_seconds() < 600 and cached.get("stats_fingerprint") == stats_fingerprint:
+            logger.info("Serving AI insights from cache (instant load)")
+            return cached["data"]
+
         system_msg = "Tax and mileage insights AI. Return ONLY valid JSON."
         prompt = f"""Generate exactly 3 distinct, actionable insights:
 Monthly miles: {total_miles:.1f} | Business miles: {business_miles:.1f} | Deductions: ${total_deductions:.2f} | Unclassified: {unclassified}
 Occupation: {current_user.get('occupation_type')}
 You MUST return exactly 3 insights in the array. Return ONLY JSON exactly matching this format: {{"insights": [{{"title": "...", "description": "...", "action": "...", "type": "savings"}}, {{"title": "...", "description": "...", "action": "...", "type": "warning"}}, {{"title": "...", "description": "...", "action": "...", "type": "tip"}}]}}"""
         
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
-        )
-        content = response.choices[0].message.content
-        result = json.loads(content) if content else {}
-        if "insights" in result:
+        result = None
+
+        # 1. Primary: Gemini 3.8 Flash
+        if GEMINI_API_KEY:
+            try:
+                payload = {
+                    "contents": [{"parts": [{"text": f"{system_msg}\n{prompt}"}]}],
+                    "generationConfig": {"responseMimeType": "application/json"}
+                }
+                res_data = await call_gemini_api(payload)
+                raw_txt = res_data['candidates'][0]['content']['parts'][0]['text']
+                cleaned = clean_json_content(raw_txt)
+                result = json.loads(cleaned)
+            except Exception as ge:
+                logger.warning(f"Gemini insights generation failed, falling back to OpenAI: {ge}")
+
+        # 2. Fallback: OpenAI
+        if not result and OPENAI_API_KEY:
+            try:
+                response = await openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"}
+                )
+                content = response.choices[0].message.content
+                result = json.loads(content) if content else {}
+            except Exception as oe:
+                logger.warning(f"OpenAI insights generation failed: {oe}")
+
+        if result and "insights" in result:
+            _insights_cache[cache_key] = {
+                "timestamp": now,
+                "stats_fingerprint": stats_fingerprint,
+                "data": result
+            }
             return result
-        return {"insights": [{"title": "Track More Trips", "description": f"You've tracked {total_miles:.0f} miles this month.", "action": "Start Tracking", "type": "tip"}]}
+            
+        fallback = {"insights": [{"title": "Track More Trips", "description": f"You've tracked {total_miles:.0f} miles this month.", "action": "Start Tracking", "type": "tip"}]}
+        return fallback
+
     except Exception as e:
         logger.error(f"AI insights error: {e}")
         return {"insights": [{"title": "AI Insights Ready", "description": "Track more trips to unlock personalized AI insights.", "action": "Start Tracking", "type": "tip"}]}
@@ -1873,8 +2138,17 @@ You MUST return exactly 3 insights in the array. Return ONLY JSON exactly matchi
 async def get_ai_inspiration(category: str = "potential", current_user: dict = Depends(get_current_user)):
     """Generate AI-powered daily inspirational message based on user's category preference and driving data."""
     try:
-        # Get user's stats for personalized inspiration
         now = datetime.now(timezone.utc)
+        day_of_year = now.timetuple().tm_yday
+        today_str = now.strftime("%Y-%m-%d")
+
+        # Check Cache: 1 inspirational quote per user per category per calendar day
+        cache_key = f"{current_user['user_id']}:{category}:{today_str}"
+        if cache_key in _inspiration_cache:
+            logger.info("Serving daily inspiration from cache (instant load)")
+            return _inspiration_cache[cache_key]
+
+        # Get user's stats for personalized inspiration
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         trips = await db.trips.find(
             {"user_id": current_user["user_id"], "start_time": {"$gte": month_start}},
@@ -1896,7 +2170,6 @@ async def get_ai_inspiration(category: str = "potential", current_user: dict = D
         }
         
         theme = category_themes.get(category, category_themes["potential"])
-        day_of_year = now.timetuple().tm_yday
         system_msg = "You are an inspirational message generator. Generate unique, uplifting messages. Be concise (under 100 words). No generic quotes - make it fresh and memorable."
         prompt = f"""Generate a unique inspirational message for today (day {day_of_year} of the year).
 
@@ -1911,11 +2184,29 @@ Create a fresh, unique message (not a famous quote) that:
 
 Just return the inspirational message text, nothing else."""
 
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}]
-        )
-        content = response.choices[0].message.content or ""
+        content = ""
+
+        # 1. Primary: Gemini 3.8 Flash
+        if GEMINI_API_KEY:
+            try:
+                payload = {
+                    "contents": [{"parts": [{"text": f"{system_msg}\n{prompt}"}]}]
+                }
+                res_data = await call_gemini_api(payload)
+                content = res_data['candidates'][0]['content']['parts'][0]['text'] or ""
+            except Exception as ge:
+                logger.warning(f"Gemini inspiration failed, falling back to OpenAI: {ge}")
+
+        # 2. Fallback: OpenAI
+        if not content and OPENAI_API_KEY:
+            try:
+                response = await openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}]
+                )
+                content = response.choices[0].message.content or ""
+            except Exception as oe:
+                logger.warning(f"OpenAI inspiration failed: {oe}")
         
         # Determine color based on category
         category_colors = {
@@ -1926,16 +2217,27 @@ Just return the inspirational message text, nothing else."""
             "curiosity": "#32CD32",
             "custom": "#00CED1"
         }
+
+        if not content.strip():
+            fallbacks = [
+                "Every mile you drive is a step toward your dreams. Keep moving forward!",
+                "The road of life has many turns, but each one leads to new opportunities.",
+                "Your journey matters. Every trip you take builds your success story."
+            ]
+            import random
+            content = random.choice(fallbacks)
         
-        return {
-            "message": content.strip() if content else "",
+        result_data = {
+            "message": content.strip(),
             "color": category_colors.get(category, "#FFD700"),
             "category": category,
             "day": day_of_year
         }
+        _inspiration_cache[cache_key] = result_data
+        return result_data
+
     except Exception as e:
         logger.error(f"AI inspiration error: {e}")
-        # Fallback messages
         fallbacks = [
             "Every mile you drive is a step toward your dreams. Keep moving forward!",
             "The road of life has many turns, but each one leads to new opportunities.",
@@ -2565,10 +2867,173 @@ Mileage Tracker AI Team"""
         raise HTTPException(status_code=500, detail=f"Failed to email mileage report to CPA: {str(e)}")
 
 # ============================================================
-# PAYMENTS & RECURRING BILLING ENGINE
+# PAYMENTS, WEBHOOKS & RECURRING BILLING ENGINE
 # ============================================================
 
-async def activate_user_subscription(user_id: str, plan: str):
+# Retry & Grace Period Configuration (fights for the payment before cancellation)
+RETRY_SCHEDULE_DAYS = {
+    1: 3,  # After 1st failure: retry in 3 days (Email 1 of 3 sent)
+    2: 4,  # After 2nd failure: retry in 4 days (Day 7 total, Email 2 of 3 sent)
+}
+GRACE_PERIOD_TOTAL_DAYS = 14        # 7 to 14 days total buffer where account stays active before cancellation
+GRACE_PERIOD_FINAL_BUFFER_DAYS = 7  # After 3rd failure on Day 7: 7 more days buffer (until Day 14, Email 3 of 3 sent)
+UPDATE_CARD_URL = os.environ.get("UPDATE_CARD_URL", "https://globalsysnetcyber.com/apps/subscription")
+
+def send_failed_payment_email(
+    recipient_email: str,
+    recipient_name: str,
+    plan: str,
+    sequence_step: int,
+    retry_or_cancel_date_str: str,
+    update_card_url: str = None,
+    stripe_event_id: str = None
+) -> dict:
+    """
+    Sends the 3-step failed payment dunning email sequence explaining that payment failed
+    and step-by-step instructions on how to update their card to keep their account active.
+    """
+    card_url = update_card_url or UPDATE_CARD_URL
+    plan_display = (plan or "Pro").capitalize()
+    name_display = recipient_name or (recipient_email.split("@")[0] if recipient_email else "Valued Customer")
+
+    if sequence_step == 1:
+        subject = f"Action Required (1/3): Your {plan_display} Plan payment failed — Here is how to update your card"
+        headline = "We couldn't process your subscription payment"
+        badge_text = "EMAIL 1 OF 3 · ACCOUNT ACTIVE (14-DAY GRACE BUFFER)"
+        badge_color = "#F59E0B"
+        intro_text = (
+            f"We attempted to process your monthly renewal for the <strong>Mileage Tracker AI {plan_display} Plan</strong>, "
+            f"but your card was declined. Don't worry — <strong>your account remains 100% active</strong> during our "
+            f"14-day grace period while we fight to keep your subscription running."
+        )
+        schedule_note = f"We will automatically retry your payment on <strong>{retry_or_cancel_date_str}</strong> (in 3 days). To avoid any interruption, please update your card now."
+    elif sequence_step == 2:
+        subject = f"Urgent Reminder (2/3): 2nd payment attempt failed — How to update your card"
+        headline = "Second payment attempt failed — Please update your payment method"
+        badge_text = "EMAIL 2 OF 3 · FINAL RETRY SCHEDULED"
+        badge_color = "#F97316"
+        intro_text = (
+            f"Our second attempt to process your <strong>{plan_display} Plan</strong> subscription payment also failed. "
+            f"Your account is still active under your grace period buffer, and we will make one final automatic retry."
+        )
+        schedule_note = f"Our 3rd and final payment retry is scheduled for <strong>{retry_or_cancel_date_str}</strong> (in 4 days). Please update your card details today."
+    else:
+        subject = f"Final Notice (3/3): Payment failed — Update your card before {retry_or_cancel_date_str} to prevent cancellation"
+        headline = "Final Notice: Grace period ending soon"
+        badge_text = "EMAIL 3 OF 3 · FINAL GRACE PERIOD BUFFER"
+        badge_color = "#EF4444"
+        intro_text = (
+            f"All 3 automatic payment attempts for your <strong>{plan_display} Plan</strong> have failed. "
+            f"We've placed your account in a final grace period buffer so your mileage tracking and tax reports stay active while you update your billing details."
+        )
+        schedule_note = f"If your card is not updated by <strong>{retry_or_cancel_date_str}</strong>, your subscription will be cancelled and downgraded to the Free plan."
+
+    how_to_steps_text = (
+        "HOW TO UPDATE YOUR CARD:\n"
+        "1. Open Mileage Tracker AI and go to Settings > Subscription (or click the link below).\n"
+        "2. Tap 'Update Card / Initiate Payment Now' to open the secure Stripe billing checkout.\n"
+        "3. Enter your new credit or debit card details and confirm to immediately restore your billing status.\n"
+        f"Direct Link: {card_url}"
+    )
+
+    text_body = (
+        f"Hi {name_display},\n\n"
+        f"{headline}\n\n"
+        f"Your recent payment failed. Here is how to update your card so your account stays active.\n\n"
+        f"{schedule_note}\n\n"
+        f"{how_to_steps_text}\n\n"
+        f"Event Reference: {stripe_event_id or 'N/A'}\n"
+        f"Thank you,\nMileage Tracker AI Billing Team"
+    )
+
+    html_body = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>{subject}</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; background-color: #09090B; color: #FFFFFF; margin: 0; padding: 32px 16px;">
+      <div style="max-width: 520px; margin: 0 auto; background-color: #18181B; border: 1px solid #27272A; border-radius: 16px; padding: 32px;">
+        <div style="margin-bottom: 16px;">
+          <span style="background-color: {badge_color}20; color: {badge_color}; border: 1px solid {badge_color}60; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 999px; letter-spacing: 0.5px;">
+            {badge_text}
+          </span>
+        </div>
+        <h1 style="color: #FFFFFF; font-size: 22px; font-weight: 800; margin: 0 0 12px 0;">{headline}</h1>
+        <p style="color: #D4D4D8; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">Hi {name_display},</p>
+        <p style="color: #A1A1AA; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">{intro_text}</p>
+        <div style="background-color: #09090B; border-left: 4px solid {badge_color}; padding: 14px 16px; border-radius: 8px; margin-bottom: 24px;">
+          <p style="color: #E4E4E7; font-size: 13px; line-height: 1.5; margin: 0;">{schedule_note}</p>
+        </div>
+        <h3 style="color: #10B981; font-size: 15px; font-weight: 700; margin: 0 0 12px 0;">Here is how to update your card:</h3>
+        <ol style="color: #D4D4D8; font-size: 13px; line-height: 1.7; padding-left: 20px; margin: 0 0 24px 0;">
+          <li>Open <strong>Mileage Tracker AI</strong> and navigate to <strong>Settings &rarr; Subscription</strong>.</li>
+          <li>Tap <strong>Update Card / Initiate Payment</strong> to open the secure Stripe payment portal.</li>
+          <li>Enter your new credit or debit card details and submit — your subscription will immediately resume without losing any data.</li>
+        </ol>
+        <div style="text-align: center; margin: 28px 0;">
+          <a href="{card_url}" style="background-color: #10B981; color: #09090B; font-weight: 800; font-size: 14px; text-decoration: none; padding: 14px 28px; border-radius: 10px; display: inline-block;">
+            Update Your Card Now
+          </a>
+        </div>
+        <hr style="border: none; border-top: 1px solid #27272A; margin: 24px 0;" />
+        <p style="color: #52525B; font-size: 11px; text-align: center; margin: 0;">
+          &copy; 2026 Mileage Tracker AI &middot; Ref: {stripe_event_id or 'N/A'}
+        </p>
+      </div>
+    </body>
+    </html>
+    """
+
+    email_record = {
+        "sequence_step": sequence_step,
+        "total_steps": 3,
+        "recipient_email": recipient_email,
+        "subject": subject,
+        "update_card_url": card_url,
+        "stripe_event_id": stripe_event_id,
+        "sent_at": datetime.now(timezone.utc),
+        "delivered": False
+    }
+
+    is_unconfigured = (
+        not SMTP_USER or
+        SMTP_USER == "your_email@gmail.com" or
+        not SMTP_PASSWORD or
+        SMTP_PASSWORD == "your_app_password"
+    )
+
+    if is_unconfigured or not recipient_email or recipient_email.endswith("@example.com") or recipient_email.endswith("@test.com"):
+        logger.info(f"[Dunning Email {sequence_step}/3] Logged for {recipient_email}: {subject}")
+        email_record["delivered"] = True
+        email_record["simulated"] = True
+        return email_record
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"Mileage Tracker AI Billing <{SMTP_FROM}>"
+        msg["To"] = recipient_email
+        msg.attach(MIMEText(text_body, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        email_record["delivered"] = True
+        email_record["simulated"] = False
+        logger.info(f"[Dunning Email {sequence_step}/3] Sent to {recipient_email}")
+    except Exception as e:
+        logger.error(f"[Dunning Email {sequence_step}/3] SMTP error for {recipient_email}: {e}")
+        email_record["error"] = str(e)
+
+    return email_record
+
+async def activate_user_subscription(user_id: str, plan: str, stripe_event_id: Optional[str] = None):
+    database = ensure_db()
     now = datetime.now(timezone.utc)
     next_billing = now + timedelta(days=30)
     update_data = {
@@ -2577,13 +3042,245 @@ async def activate_user_subscription(user_id: str, plan: str):
         "last_billing_date": now,
         "next_billing_date": next_billing,
         "payment_failure_count": 0,
+        "dunning_emails_sent": 0,
+        "first_failure_at": None,
         "retry_at": None,
         "grace_period_ends_at": None,
         "payment_failure_reason": None,
         "updated_at": now
     }
-    await db.users.update_one({"user_id": user_id}, {"$set": update_data})
+    if stripe_event_id:
+        update_data["last_stripe_event_id"] = stripe_event_id
+    await database.users.update_one({"user_id": user_id}, {"$set": update_data})
     auth_cache.invalidate_user(user_id)
+
+async def handle_failed_payment_attempt(
+    database,
+    user_doc: dict,
+    failure_reason: str = "No funds available",
+    stripe_event_id: Optional[str] = None,
+    now: Optional[datetime] = None
+) -> dict:
+    """
+    Executes the smart retry schedule that fights for the payment before it dies,
+    triggers the 3-email dunning sequence with card-update instructions, and maintains
+    a 7 to 14 day grace period buffer where the account stays active before cancellation.
+    """
+    now = now or datetime.now(timezone.utc)
+    user_id = user_doc["user_id"]
+    email = user_doc.get("email", "")
+    name = user_doc.get("name", "")
+    plan = user_doc.get("subscription_tier", "pro")
+    current_failures = int(user_doc.get("payment_failure_count", 0) or 0)
+    attempt_num = current_failures + 1
+    evt_id = stripe_event_id or f"evt_dunning_{uuid.uuid4().hex[:16]}"
+
+    first_failure_at = user_doc.get("first_failure_at")
+    if isinstance(first_failure_at, str):
+        try:
+            first_failure_at = datetime.fromisoformat(first_failure_at.replace("Z", "+00:00"))
+        except Exception:
+            first_failure_at = None
+    if not first_failure_at or current_failures == 0:
+        first_failure_at = now
+
+    # Total grace period buffer is 14 days from the initial failure (within the 7-14 day buffer window)
+    grace_end = first_failure_at + timedelta(days=GRACE_PERIOD_TOTAL_DAYS)
+    if grace_end <= now + timedelta(days=2):
+        grace_end = now + timedelta(days=GRACE_PERIOD_FINAL_BUFFER_DAYS)
+
+    plan_info = SUBSCRIPTION_PLANS.get(plan, {"amount": 9.99, "currency": "usd"})
+
+    if attempt_num == 1:
+        # 1st failure: Retry in 3 days, send Email 1 of 3, keep account active in grace buffer
+        scheduled_retry = now + timedelta(days=RETRY_SCHEDULE_DAYS[1])
+        retry_date_str = scheduled_retry.strftime("%b %d, %Y")
+        email_rec = send_failed_payment_email(
+            recipient_email=email,
+            recipient_name=name,
+            plan=plan,
+            sequence_step=1,
+            retry_or_cancel_date_str=retry_date_str,
+            stripe_event_id=evt_id
+        )
+        update_fields = {
+            "subscription_status": "past_due_retry",
+            "payment_failure_count": 1,
+            "dunning_emails_sent": 1,
+            "first_failure_at": first_failure_at,
+            "retry_at": scheduled_retry,
+            "grace_period_ends_at": grace_end,
+            "payment_failure_reason": failure_reason,
+            "last_stripe_event_id": evt_id,
+            "updated_at": now
+        }
+        await database.users.update_one({"user_id": user_id}, {"$set": update_fields})
+        auth_cache.invalidate_user(user_id)
+
+        await database.payment_transactions.insert_one({
+            "transaction_id": f"txn_fail_{uuid.uuid4().hex[:12]}",
+            "stripe_event_id": evt_id,
+            "user_id": user_id,
+            "plan": plan,
+            "amount": float(plan_info["amount"]),
+            "currency": plan_info.get("currency", "usd"),
+            "payment_status": "failed",
+            "failure_reason": failure_reason,
+            "type": "recurring_attempt_1",
+            "dunning_email_step": 1,
+            "created_at": now
+        })
+
+        msg = (
+            f"Monthly payment returned as {failure_reason.lower()}. "
+            f"Email 1 of 3 sent with instructions on how to update your card. "
+            f"Your account stays active during our {GRACE_PERIOD_TOTAL_DAYS}-day grace period buffer; "
+            f"a second attempt will be made on {retry_date_str}."
+        )
+        await database.alerts.insert_one({
+            "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+            "stripe_event_id": evt_id,
+            "owner_id": user_id,
+            "type": "warning",
+            "msg": msg,
+            "dunning_email": email_rec,
+            "created_at": now
+        })
+        return {
+            "user_id": user_id,
+            "action": "failed_attempt_1",
+            "status": "past_due_retry",
+            "retry_at": scheduled_retry,
+            "grace_period_ends_at": grace_end,
+            "dunning_email_sent": 1,
+            "stripe_event_id": evt_id
+        }
+
+    elif attempt_num == 2:
+        # 2nd failure: Retry in 4 days (Day 7 total), send Email 2 of 3, keep account active in grace buffer
+        scheduled_retry = now + timedelta(days=RETRY_SCHEDULE_DAYS[2])
+        retry_date_str = scheduled_retry.strftime("%b %d, %Y")
+        email_rec = send_failed_payment_email(
+            recipient_email=email,
+            recipient_name=name,
+            plan=plan,
+            sequence_step=2,
+            retry_or_cancel_date_str=retry_date_str,
+            stripe_event_id=evt_id
+        )
+        update_fields = {
+            "subscription_status": "past_due_retry",
+            "payment_failure_count": 2,
+            "dunning_emails_sent": 2,
+            "first_failure_at": first_failure_at,
+            "retry_at": scheduled_retry,
+            "grace_period_ends_at": grace_end,
+            "payment_failure_reason": failure_reason,
+            "last_stripe_event_id": evt_id,
+            "updated_at": now
+        }
+        await database.users.update_one({"user_id": user_id}, {"$set": update_fields})
+        auth_cache.invalidate_user(user_id)
+
+        await database.payment_transactions.insert_one({
+            "transaction_id": f"txn_fail_{uuid.uuid4().hex[:12]}",
+            "stripe_event_id": evt_id,
+            "user_id": user_id,
+            "plan": plan,
+            "amount": float(plan_info["amount"]),
+            "currency": plan_info.get("currency", "usd"),
+            "payment_status": "failed",
+            "failure_reason": failure_reason,
+            "type": "recurring_attempt_2",
+            "dunning_email_step": 2,
+            "created_at": now
+        })
+
+        msg = (
+            f"Second payment attempt returned as {failure_reason.lower()}. "
+            f"Email 2 of 3 sent with instructions on how to update your card. "
+            f"A final automatic retry will be made on {retry_date_str} while your grace period keeps your account active."
+        )
+        await database.alerts.insert_one({
+            "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+            "stripe_event_id": evt_id,
+            "owner_id": user_id,
+            "type": "warning",
+            "msg": msg,
+            "dunning_email": email_rec,
+            "created_at": now
+        })
+        return {
+            "user_id": user_id,
+            "action": "failed_attempt_2",
+            "status": "past_due_retry",
+            "retry_at": scheduled_retry,
+            "grace_period_ends_at": grace_end,
+            "dunning_email_sent": 2,
+            "stripe_event_id": evt_id
+        }
+
+    else:
+        # 3rd failure: Enter final grace_period buffer (7 days remaining, 14 days total buffer), send Email 3 of 3
+        grace_date_str = grace_end.strftime("%b %d, %Y %H:%M UTC")
+        email_rec = send_failed_payment_email(
+            recipient_email=email,
+            recipient_name=name,
+            plan=plan,
+            sequence_step=3,
+            retry_or_cancel_date_str=grace_date_str,
+            stripe_event_id=evt_id
+        )
+        update_fields = {
+            "subscription_status": "grace_period",
+            "payment_failure_count": attempt_num,
+            "dunning_emails_sent": 3,
+            "first_failure_at": first_failure_at,
+            "retry_at": None,
+            "grace_period_ends_at": grace_end,
+            "payment_failure_reason": failure_reason,
+            "last_stripe_event_id": evt_id,
+            "updated_at": now
+        }
+        await database.users.update_one({"user_id": user_id}, {"$set": update_fields})
+        auth_cache.invalidate_user(user_id)
+
+        await database.payment_transactions.insert_one({
+            "transaction_id": f"txn_fail_{uuid.uuid4().hex[:12]}",
+            "stripe_event_id": evt_id,
+            "user_id": user_id,
+            "plan": plan,
+            "amount": float(plan_info["amount"]),
+            "currency": plan_info.get("currency", "usd"),
+            "payment_status": "failed",
+            "failure_reason": failure_reason,
+            "type": f"recurring_attempt_{attempt_num}",
+            "dunning_email_step": 3,
+            "created_at": now
+        })
+
+        msg = (
+            f"Final payment retry returned as {failure_reason.lower()}. "
+            f"Email 3 of 3 sent with instructions on how to update your card. "
+            f"Your account remains active in our grace period buffer until {grace_date_str}, after which you will be moved to the Free plan if payment is not received. Please update your card or secure/download your data."
+        )
+        await database.alerts.insert_one({
+            "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+            "stripe_event_id": evt_id,
+            "owner_id": user_id,
+            "type": "danger",
+            "msg": msg,
+            "dunning_email": email_rec,
+            "created_at": now
+        })
+        return {
+            "user_id": user_id,
+            "action": f"failed_attempt_{attempt_num}",
+            "status": "grace_period",
+            "grace_period_ends_at": grace_end,
+            "dunning_email_sent": 3,
+            "stripe_event_id": evt_id
+        }
 
 async def process_recurring_subscriptions(
     database, 
@@ -2623,6 +3320,7 @@ async def process_recurring_subscriptions(
         if status == "active":
             if not next_billing or now >= next_billing or force_user_id:
                 is_success = (simulate_outcome == "success") if simulate_outcome else (simulate_outcome != "no_funds_available")
+                evt_id = f"evt_rec_{uuid.uuid4().hex[:16]}"
                 if is_success:
                     new_next = now + timedelta(days=30)
                     await database.users.update_one(
@@ -2632,15 +3330,19 @@ async def process_recurring_subscriptions(
                             "last_billing_date": now,
                             "next_billing_date": new_next,
                             "payment_failure_count": 0,
+                            "dunning_emails_sent": 0,
+                            "first_failure_at": None,
                             "retry_at": None,
                             "grace_period_ends_at": None,
-                            "payment_failure_reason": None
+                            "payment_failure_reason": None,
+                            "last_stripe_event_id": evt_id
                         }}
                     )
                     auth_cache.invalidate_user(user_id)
                     plan_info = SUBSCRIPTION_PLANS.get(plan, {"amount": 9.99, "currency": "usd"})
                     await database.payment_transactions.insert_one({
                         "transaction_id": f"txn_rec_{uuid.uuid4().hex[:12]}",
+                        "stripe_event_id": evt_id,
                         "user_id": user_id,
                         "plan": plan,
                         "amount": float(plan_info["amount"]),
@@ -2651,53 +3353,24 @@ async def process_recurring_subscriptions(
                     })
                     await database.alerts.insert_one({
                         "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                        "stripe_event_id": evt_id,
                         "owner_id": user_id,
                         "type": "info",
                         "msg": f"Your monthly subscription to the {plan.capitalize()} Plan was successfully renewed.",
                         "created_at": now
                     })
-                    results.append({"user_id": user_id, "action": "renewed", "status": "active"})
+                    results.append({"user_id": user_id, "action": "renewed", "status": "active", "stripe_event_id": evt_id})
                 else:
-                    scheduled_retry = now + timedelta(days=7)
-                    await database.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {
-                            "subscription_status": "past_due_retry",
-                            "payment_failure_count": 1,
-                            "retry_at": scheduled_retry,
-                            "payment_failure_reason": "No funds available",
-                            "updated_at": now
-                        }}
+                    res = await handle_failed_payment_attempt(
+                        database, u, failure_reason="No funds available", stripe_event_id=evt_id, now=now
                     )
-                    auth_cache.invalidate_user(user_id)
-                    plan_info = SUBSCRIPTION_PLANS.get(plan, {"amount": 9.99, "currency": "usd"})
-                    await database.payment_transactions.insert_one({
-                        "transaction_id": f"txn_fail_{uuid.uuid4().hex[:12]}",
-                        "user_id": user_id,
-                        "plan": plan,
-                        "amount": float(plan_info["amount"]),
-                        "currency": plan_info.get("currency", "usd"),
-                        "payment_status": "failed",
-                        "failure_reason": "No funds available",
-                        "type": "recurring_attempt_1",
-                        "created_at": now
-                    })
-                    retry_date_str = scheduled_retry.strftime("%b %d, %Y")
-                    msg = f"Monthly payment returned as no funds available. A second attempt will be made in 1 week's time on {retry_date_str}."
-                    await database.alerts.insert_one({
-                        "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
-                        "owner_id": user_id,
-                        "type": "warning",
-                        "msg": msg,
-                        "created_at": now
-                    })
-                    logger.warning(f"Payment failed for user {email}: {msg}")
-                    results.append({"user_id": user_id, "action": "failed_attempt_1", "status": "past_due_retry", "retry_at": scheduled_retry})
+                    results.append(res)
 
-        # Case 2: Past Due Retry attempt (1 week later)
+        # Case 2: Past Due Retry attempts (Retry 1 at +3 days, Retry 2 at +4 days)
         elif status == "past_due_retry":
             if not retry_at or now >= retry_at or force_user_id:
                 is_success = (simulate_outcome == "success") if simulate_outcome else (simulate_outcome != "no_funds_available")
+                evt_id = f"evt_retry_{uuid.uuid4().hex[:16]}"
                 if is_success:
                     new_next = now + timedelta(days=30)
                     await database.users.update_one(
@@ -2707,57 +3380,58 @@ async def process_recurring_subscriptions(
                             "last_billing_date": now,
                             "next_billing_date": new_next,
                             "payment_failure_count": 0,
+                            "dunning_emails_sent": 0,
+                            "first_failure_at": None,
                             "retry_at": None,
                             "grace_period_ends_at": None,
-                            "payment_failure_reason": None
+                            "payment_failure_reason": None,
+                            "last_stripe_event_id": evt_id
                         }}
                     )
                     auth_cache.invalidate_user(user_id)
+                    plan_info = SUBSCRIPTION_PLANS.get(plan, {"amount": 9.99, "currency": "usd"})
+                    await database.payment_transactions.insert_one({
+                        "transaction_id": f"txn_retry_{uuid.uuid4().hex[:12]}",
+                        "stripe_event_id": evt_id,
+                        "user_id": user_id,
+                        "plan": plan,
+                        "amount": float(plan_info["amount"]),
+                        "currency": plan_info.get("currency", "usd"),
+                        "payment_status": "paid",
+                        "type": "recurring_retry_recovery",
+                        "created_at": now
+                    })
                     await database.alerts.insert_one({
                         "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                        "stripe_event_id": evt_id,
                         "owner_id": user_id,
                         "type": "info",
-                        "msg": f"Second payment attempt successful! Your {plan.capitalize()} Plan subscription is now fully active.",
+                        "msg": f"Payment retry successful! Your {plan.capitalize()} Plan subscription is now fully active.",
                         "created_at": now
                     })
-                    results.append({"user_id": user_id, "action": "retry_success", "status": "active"})
+                    results.append({"user_id": user_id, "action": "retry_success", "status": "active", "stripe_event_id": evt_id})
                 else:
-                    grace_end = now + timedelta(days=2)
-                    await database.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {
-                            "subscription_status": "grace_period",
-                            "payment_failure_count": 2,
-                            "grace_period_ends_at": grace_end,
-                            "payment_failure_reason": "No funds available",
-                            "updated_at": now
-                        }}
+                    res = await handle_failed_payment_attempt(
+                        database, u, failure_reason="No funds available", stripe_event_id=evt_id, now=now
                     )
-                    auth_cache.invalidate_user(user_id)
-                    grace_date_str = grace_end.strftime("%b %d, %Y %H:%M UTC")
-                    msg = f"Second payment attempt returned as no funds available. You will be moved to the Free plan on {grace_date_str} if payment is not received. Please initiate payment or secure/download your data."
-                    await database.alerts.insert_one({
-                        "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
-                        "owner_id": user_id,
-                        "type": "danger",
-                        "msg": msg,
-                        "created_at": now
-                    })
-                    logger.warning(f"Second payment attempt failed for user {email}: {msg}")
-                    results.append({"user_id": user_id, "action": "failed_attempt_2", "status": "grace_period", "grace_period_ends_at": grace_end})
+                    results.append(res)
 
-        # Case 3: Grace Period expiration (2 days after 2nd failure)
+        # Case 3: Grace Period expiration (after the 7-14 day total buffer expires)
         elif status == "grace_period":
-            if not grace_ends or now >= grace_ends or force_user_id:
+            if not grace_ends or now >= grace_ends or (force_user_id and advance_days >= GRACE_PERIOD_TOTAL_DAYS):
+                evt_id = f"evt_cancel_{uuid.uuid4().hex[:16]}"
                 await database.users.update_one(
                     {"user_id": user_id},
                     {"$set": {
                         "subscription_tier": "free",
                         "subscription_status": "cancelled",
                         "payment_failure_count": 0,
+                        "dunning_emails_sent": 3,
+                        "first_failure_at": None,
                         "retry_at": None,
                         "grace_period_ends_at": None,
                         "payment_failure_reason": None,
+                        "last_stripe_event_id": evt_id,
                         "updated_at": now
                     }}
                 )
@@ -2765,13 +3439,14 @@ async def process_recurring_subscriptions(
                 msg = "Grace period has expired and subscription payment was not received. Your account has been moved to the Free plan."
                 await database.alerts.insert_one({
                     "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                    "stripe_event_id": evt_id,
                     "owner_id": user_id,
                     "type": "warning",
                     "msg": msg,
                     "created_at": now
                 })
                 logger.info(f"User {email} downgraded to Free plan due to expired grace period.")
-                results.append({"user_id": user_id, "action": "downgraded_to_free", "status": "cancelled", "tier": "free"})
+                results.append({"user_id": user_id, "action": "downgraded_to_free", "status": "cancelled", "tier": "free", "stripe_event_id": evt_id})
 
     return results
 
@@ -3323,53 +3998,335 @@ async def get_payment_status(session_id: str, request: Request, current_user: di
         logger.error(f"Stripe status check error: {e}")
         return {"status": "error", "payment_status": "unknown", "plan": None}
  
+# ============================================================
+# WEBHOOK SECURITY, SIGNATURE VERIFICATION & IDEMPOTENCY
+# ============================================================
+
+# The webhook endpoint is not a notification — it is a command.
+# Always verify who sent it before executing it, and store processed event IDs to reject duplicates.
+WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = 300
+
+def verify_hmac_webhook_signature(raw_body: bytes, signature_header: str, endpoint_secret: str, tolerance: int = WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS) -> bool:
+    """
+    Universal HMAC-SHA256 webhook signature verifier (supports Stripe-style `t=...,v1=...`
+    as well as standard `sha256=<hex>` or raw `<hex>` headers).
+    Uses constant-time comparison (`hmac.compare_digest`) to prevent timing attacks.
+    """
+    if not endpoint_secret or not signature_header:
+        return False
+
+    sig_header = signature_header.strip()
+
+    # Format 1: Stripe-style or timestamped header `t=123456789,v1=abcdef...`
+    if "t=" in sig_header and "v1=" in sig_header:
+        timestamp_str = None
+        signatures = []
+        for part in sig_header.split(","):
+            part = part.strip()
+            if part.startswith("t="):
+                timestamp_str = part[2:]
+            elif part.startswith("v1="):
+                signatures.append(part[3:])
+        if not timestamp_str or not signatures:
+            return False
+        try:
+            ts = int(timestamp_str)
+        except ValueError:
+            return False
+        if tolerance and abs(int(time.time()) - ts) > tolerance:
+            return False
+        signed_payload = f"{timestamp_str}.".encode("utf-8") + raw_body
+        expected_sig = hmac.new(endpoint_secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+        return any(hmac.compare_digest(expected_sig, s) for s in signatures)
+
+    # Format 2: `sha256=<hex>` or raw hex digest
+    provided_sig = sig_header[7:] if sig_header.startswith("sha256=") else sig_header
+    expected_sig = hmac.new(endpoint_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected_sig, provided_sig)
+
+async def is_webhook_event_duplicate(database, event_id: str, provider: str = "stripe") -> bool:
+    """Checks if a webhook event_id has already been processed."""
+    if not event_id:
+        return False
+    existing = await database.webhook_events.find_one({"event_id": event_id})
+    return existing is not None
+
+async def record_processed_webhook_event(
+    database,
+    event_id: str,
+    provider: str,
+    event_type: str,
+    summary: Optional[dict] = None
+) -> bool:
+    """
+    Atomically stores a processed webhook event ID.
+    Returns True if newly recorded, or False if it was already recorded (duplicate).
+    """
+    try:
+        existing = await database.webhook_events.find_one({"event_id": event_id})
+        if existing:
+            return False
+        await database.webhook_events.insert_one({
+            "event_id": event_id,
+            "provider": provider,
+            "event_type": event_type,
+            "summary": summary or {},
+            "processed_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(timezone.utc)
+        })
+        return True
+    except Exception as e:
+        if "duplicate key" in str(e).lower() or "e11000" in str(e).lower():
+            return False
+        raise
+
 @api_router.post("/webhook/stripe")
+@app.post("/webhook/stripe")
 async def stripe_webhook(request: Request):
+    """
+    Stripe Webhook Command Endpoint:
+    1. Verifies Stripe signature using STRIPE_WEBHOOK_SECRET before parsing or processing any event.
+    2. Requires unique Stripe event ID (`evt_...`) and rejects all duplicate events.
+    3. Propagates `stripe_event_id` across all database writes (users, payment_transactions, alerts, webhook_events).
+    4. Handles checkout completion, invoice/payment renewals, and failed payments (triggering the 3-email dunning sequence & retry schedule).
+    """
     import stripe
+    database = ensure_db()
     stripe.api_key = STRIPE_API_KEY
     body = await request.body()
-    sig_header = request.headers.get("Stripe-Signature", "")
-    WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
-    
+    sig_header = request.headers.get("Stripe-Signature")
+    endpoint_secret = os.environ.get("STRIPE_WEBHOOK_SECRET") or STRIPE_WEBHOOK_SECRET
+
+    # 1. Always verify who sent the command BEFORE parsing JSON or executing any logic
+    if not endpoint_secret:
+        logger.error("Stripe webhook rejected: STRIPE_WEBHOOK_SECRET is not configured")
+        raise HTTPException(status_code=500, detail="Webhook endpoint secret is not configured")
+
+    if not sig_header:
+        logger.warning("Stripe webhook rejected: Missing Stripe-Signature header")
+        raise HTTPException(status_code=400, detail="Missing Stripe-Signature header")
+
     try:
-        event = stripe.Webhook.construct_event(body, sig_header, WEBHOOK_SECRET)
-        if event.type == "checkout.session.completed":
-            session = event.data.object
-            metadata_dict = extract_metadata(session)
-                    
-            if session.payment_status == "paid":
-                user_id = metadata_dict.get("user_id")
-                plan = metadata_dict.get("plan", "pro")
-                invitee_email = metadata_dict.get("invitee_email") or None
-                
-                if invitee_email:
-                    invitee_user = await db.users.find_one({"email": invitee_email})
-                    if invitee_user:
-                        await activate_user_subscription(invitee_user["user_id"], plan)
-                    await db.team_members.update_many(
-                        {"email": invitee_email},
-                        {"$set": {"subscription_tier": plan}}
-                    )
-                else:
-                    if user_id:
-                        await activate_user_subscription(user_id, plan)
-                card_brand, card_last4 = await extract_stripe_card_details(session.id)
-                await db.payment_transactions.update_one(
-                    {"session_id": session.id},
+        event = stripe.Webhook.construct_event(body, sig_header, endpoint_secret)
+    except ValueError as e:
+        logger.error(f"Invalid Stripe webhook payload: {e}")
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    except stripe.error.SignatureVerificationError as e:
+        logger.error(f"Invalid Stripe webhook signature: {e}")
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    # Extract event ID, type, and data object safely (supports both StripeObject and dict)
+    event_id = getattr(event, "id", None) or (event.get("id") if isinstance(event, dict) else None)
+    event_type = getattr(event, "type", None) or (event.get("type") if isinstance(event, dict) else None)
+
+    if not event_id:
+        raise HTTPException(status_code=400, detail="Missing Stripe event ID")
+
+    # 2. Idempotency Guard: Reject all duplicate events immediately
+    if await is_webhook_event_duplicate(database, event_id, provider="stripe"):
+        logger.info(f"Duplicate Stripe webhook event rejected: {event_id}")
+        raise HTTPException(status_code=409, detail=f"Duplicate event {event_id} already processed")
+
+    data_wrapper = getattr(event, "data", None) or (event.get("data") if isinstance(event, dict) else {})
+    data_obj = getattr(data_wrapper, "object", None) or (data_wrapper.get("object") if isinstance(data_wrapper, dict) else {})
+
+    def _get_field(obj, key, default=None):
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    # 3. Execute verified command based on event_type
+    action_taken = "acknowledged"
+
+    if event_type == "checkout.session.completed":
+        session = data_obj
+        session_id = _get_field(session, "id")
+        payment_status = _get_field(session, "payment_status")
+        metadata_dict = extract_metadata(session)
+
+        if payment_status == "paid":
+            user_id = metadata_dict.get("user_id")
+            plan = metadata_dict.get("plan", "pro")
+            invitee_email = metadata_dict.get("invitee_email") or None
+
+            if invitee_email:
+                invitee_user = await database.users.find_one({"email": invitee_email})
+                if invitee_user:
+                    await activate_user_subscription(invitee_user["user_id"], plan, stripe_event_id=event_id)
+                await database.team_members.update_many(
+                    {"email": invitee_email},
+                    {"$set": {"subscription_tier": plan, "last_stripe_event_id": event_id}}
+                )
+            else:
+                if user_id:
+                    await activate_user_subscription(user_id, plan, stripe_event_id=event_id)
+
+            card_brand, card_last4 = await extract_stripe_card_details(session_id) if session_id else (None, None)
+            if session_id:
+                await database.payment_transactions.update_one(
+                    {"session_id": session_id},
                     {"$set": {
-                        "payment_status": "paid", 
+                        "stripe_event_id": event_id,
+                        "payment_status": "paid",
                         "invitee_email": invitee_email,
                         "card_brand": card_brand,
-                        "card_last4": card_last4
-                    }}
+                        "card_last4": card_last4,
+                        "updated_at": datetime.now(timezone.utc)
+                    }},
+                    upsert=False
                 )
-    except stripe.error.SignatureVerificationError as e:
-        logger.error(f"Invalid Webhook signature: {e}")
+            action_taken = "subscription_activated"
+
+    elif event_type in ("invoice.payment_succeeded", "payment_intent.succeeded"):
+        metadata_dict = extract_metadata(data_obj)
+        user_id = metadata_dict.get("user_id")
+        customer_email = (_get_field(data_obj, "customer_email") or metadata_dict.get("email") or "").strip().lower()
+        plan = metadata_dict.get("plan")
+
+        user_doc = None
+        if user_id:
+            user_doc = await database.users.find_one({"user_id": user_id})
+        elif customer_email:
+            user_doc = await database.users.find_one({"email": customer_email})
+
+        if user_doc:
+            resolved_plan = plan or user_doc.get("subscription_tier", "pro")
+            if resolved_plan == "free":
+                resolved_plan = "pro"
+            await activate_user_subscription(user_doc["user_id"], resolved_plan, stripe_event_id=event_id)
+            plan_info = SUBSCRIPTION_PLANS.get(resolved_plan, {"amount": 9.99, "currency": "usd"})
+            await database.payment_transactions.insert_one({
+                "transaction_id": f"txn_wh_{uuid.uuid4().hex[:12]}",
+                "stripe_event_id": event_id,
+                "user_id": user_doc["user_id"],
+                "plan": resolved_plan,
+                "amount": float(plan_info["amount"]),
+                "currency": plan_info.get("currency", "usd"),
+                "payment_status": "paid",
+                "type": event_type,
+                "created_at": datetime.now(timezone.utc)
+            })
+            action_taken = "renewal_succeeded"
+
+    elif event_type in ("invoice.payment_failed", "payment_intent.payment_failed"):
+        metadata_dict = extract_metadata(data_obj)
+        user_id = metadata_dict.get("user_id")
+        customer_email = (_get_field(data_obj, "customer_email") or metadata_dict.get("email") or "").strip().lower()
+        failure_reason = _get_field(data_obj, "failure_message") or metadata_dict.get("failure_reason") or "Card declined / insufficient funds"
+
+        user_doc = None
+        if user_id:
+            user_doc = await database.users.find_one({"user_id": user_id})
+        elif customer_email:
+            user_doc = await database.users.find_one({"email": customer_email})
+
+        if user_doc:
+            dunning_res = await handle_failed_payment_attempt(
+                database,
+                user_doc,
+                failure_reason=failure_reason,
+                stripe_event_id=event_id
+            )
+            action_taken = dunning_res["action"]
+
+    elif event_type == "customer.subscription.deleted":
+        metadata_dict = extract_metadata(data_obj)
+        user_id = metadata_dict.get("user_id")
+        customer_email = (_get_field(data_obj, "customer_email") or metadata_dict.get("email") or "").strip().lower()
+        user_doc = None
+        if user_id:
+            user_doc = await database.users.find_one({"user_id": user_id})
+        elif customer_email:
+            user_doc = await database.users.find_one({"email": customer_email})
+        if user_doc:
+            await database.users.update_one(
+                {"user_id": user_doc["user_id"]},
+                {"$set": {
+                    "subscription_tier": "free",
+                    "subscription_status": "cancelled",
+                    "payment_failure_count": 0,
+                    "retry_at": None,
+                    "grace_period_ends_at": None,
+                    "last_stripe_event_id": event_id,
+                    "updated_at": datetime.now(timezone.utc)
+                }}
+            )
+            auth_cache.invalidate_user(user_doc["user_id"])
+            action_taken = "subscription_cancelled"
+
+    # 4. Store processed event ID to reject any future duplicate delivery
+    newly_recorded = await record_processed_webhook_event(
+        database,
+        event_id=event_id,
+        provider="stripe",
+        event_type=event_type,
+        summary={"action": action_taken}
+    )
+    if not newly_recorded:
+        raise HTTPException(status_code=409, detail=f"Duplicate event {event_id} already processed")
+
+    return {"status": "ok", "event_id": event_id, "event_type": event_type, "action": action_taken}
+
+
+@api_router.post("/webhook/{provider}")
+@app.post("/webhook/{provider}")
+async def provider_webhook(provider: str, request: Request):
+    """
+    Universal Multi-Provider Webhook Command Endpoint (e.g., Auth0, internal legal-terms sync, custom providers).
+    Enforces cryptographic HMAC-SHA256 signature verification BEFORE parsing or executing any command,
+    and stores unique event IDs in `db.webhook_events` to reject all duplicates.
+    """
+    provider_clean = provider.strip().lower()
+    if provider_clean == "stripe":
+        return await stripe_webhook(request)
+
+    database = ensure_db()
+    raw_body = await request.body()
+
+    # Resolve provider-specific secret or fallback to universal WEBHOOK_SIGNING_SECRET
+    env_key = f"{provider_clean.upper().replace('-', '_')}_WEBHOOK_SECRET"
+    secret = os.environ.get(env_key) or os.environ.get("WEBHOOK_SIGNING_SECRET") or WEBHOOK_SIGNING_SECRET
+    if not secret:
+        logger.error(f"Webhook rejected for provider '{provider_clean}': No signing secret configured")
+        raise HTTPException(status_code=500, detail=f"Webhook signing secret not configured for provider '{provider_clean}'")
+
+    sig_header = (
+        request.headers.get("X-Webhook-Signature")
+        or request.headers.get(f"X-{provider_clean.capitalize()}-Signature")
+        or request.headers.get("Stripe-Signature")
+        or ""
+    )
+    if not sig_header:
+        raise HTTPException(status_code=400, detail="Missing webhook signature header")
+
+    if not verify_hmac_webhook_signature(raw_body, sig_header, secret):
+        logger.warning(f"Invalid webhook signature for provider '{provider_clean}'")
         raise HTTPException(status_code=400, detail="Invalid signature")
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        raise HTTPException(status_code=400, detail="Webhook error")
-    return {"status": "ok"}
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    event_id = payload.get("event_id") or payload.get("id") or request.headers.get("X-Webhook-Event-Id")
+    event_type = payload.get("type") or payload.get("event_type") or "command"
+    if not event_id:
+        raise HTTPException(status_code=400, detail="Missing unique event_id")
+
+    if await is_webhook_event_duplicate(database, event_id, provider=provider_clean):
+        raise HTTPException(status_code=409, detail=f"Duplicate event {event_id} already processed")
+
+    newly_recorded = await record_processed_webhook_event(
+        database,
+        event_id=event_id,
+        provider=provider_clean,
+        event_type=event_type,
+        summary={"provider": provider_clean}
+    )
+    if not newly_recorded:
+        raise HTTPException(status_code=409, detail=f"Duplicate event {event_id} already processed")
+
+    return {"status": "ok", "provider": provider_clean, "event_id": event_id, "event_type": event_type}
 
 @api_router.get("/payments/subscription")
 async def get_subscription(current_user: dict = Depends(get_current_user)):
@@ -3395,7 +4352,11 @@ async def get_subscription(current_user: dict = Depends(get_current_user)):
         "next_billing_date": current_user.get("next_billing_date"),
         "retry_at": current_user.get("retry_at"),
         "grace_period_ends_at": current_user.get("grace_period_ends_at"),
+        "payment_failure_count": current_user.get("payment_failure_count", 0),
+        "dunning_emails_sent": current_user.get("dunning_emails_sent", 0),
         "payment_failure_reason": current_user.get("payment_failure_reason"),
+        "last_stripe_event_id": current_user.get("last_stripe_event_id"),
+        "update_card_url": UPDATE_CARD_URL,
         "plans": SUBSCRIPTION_PLANS,
         "card_brand": card_brand,
         "card_last4": card_last4
@@ -4050,7 +5011,11 @@ app.include_router(api_router)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    client.close()
+    global client, gemini_http_client
+    if client:
+        client.close()
+    if gemini_http_client and not gemini_http_client.is_closed:
+        await gemini_http_client.aclose()
 
 if __name__ == "__main__":
     import uvicorn

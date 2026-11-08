@@ -265,10 +265,12 @@ export default function SubscriptionScreen() {
           <View style={styles.pastDueBanner} testID="past-due-retry-banner">
             <View style={styles.bannerHeader}>
               <Feather name="alert-triangle" size={20} color={Colors.brand.warning} />
-              <Text style={styles.pastDueTitle}>Payment Failed: Insufficient Funds</Text>
+              <Text style={styles.pastDueTitle}>
+                Payment Failed: Retry Scheduled ({subDetails?.dunning_emails_sent || 1}/3 Notice)
+              </Text>
             </View>
             <Text style={styles.pastDueText}>
-              Your recent monthly payment attempt returned as no funds available. A second payment attempt will be made in 1 week's time{subDetails?.retry_at ? ` on ${new Date(subDetails.retry_at).toLocaleDateString()}` : ''}. You can also initiate payment now to keep your subscription active without interruption.
+              Your recent monthly payment failed ({subDetails?.payment_failure_reason || 'No funds available'}). Your account stays 100% active during our 14-day grace period buffer while we fight to keep your subscription running. Our next automatic retry is scheduled{subDetails?.retry_at ? ` for ${new Date(subDetails.retry_at).toLocaleDateString()}` : ' soon'}. We also sent instructions to your email on how to update your card.
             </Text>
             <TouchableOpacity
               testID="initiate-payment-past-due-btn"
@@ -279,7 +281,7 @@ export default function SubscriptionScreen() {
               {retryingPayment ? (
                 <ActivityIndicator color={Colors.text.inverse} size="small" />
               ) : (
-                <Text style={styles.retryPaymentBtnText}>Initiate Payment Now</Text>
+                <Text style={styles.retryPaymentBtnText}>Update Card / Initiate Payment Now</Text>
               )}
             </TouchableOpacity>
           </View>
@@ -289,10 +291,10 @@ export default function SubscriptionScreen() {
           <View style={styles.gracePeriodBanner} testID="grace-period-banner">
             <View style={styles.bannerHeader}>
               <Feather name="alert-circle" size={22} color={Colors.brand.danger} />
-              <Text style={styles.gracePeriodTitle}>Grace Period Active (2 Days Remaining)</Text>
+              <Text style={styles.gracePeriodTitle}>Grace Period Buffer Active (Notice 3/3)</Text>
             </View>
             <Text style={styles.gracePeriodText}>
-              Your second payment attempt also returned as no funds available. You will be moved to the Free plan if payment is not received{subDetails?.grace_period_ends_at ? ` by ${new Date(subDetails.grace_period_ends_at).toLocaleString()}` : ''}. Please initiate payment to continue using your subscription, or download and secure your data now.
+              All 3 automatic payment retries failed ({subDetails?.payment_failure_reason || 'No funds available'}). Your account remains active during our 7–14 day grace period buffer{subDetails?.grace_period_ends_at ? ` until ${new Date(subDetails.grace_period_ends_at).toLocaleString()}` : ''}, after which your account will be downgraded to the Free plan. Please update your card to continue your subscription, or download and secure your data now.
             </Text>
             <View style={styles.graceActionRow}>
               <TouchableOpacity
@@ -304,7 +306,7 @@ export default function SubscriptionScreen() {
                 {retryingPayment ? (
                   <ActivityIndicator color={Colors.text.inverse} size="small" />
                 ) : (
-                  <Text style={styles.gracePayBtnText}>Initiate Payment to Continue</Text>
+                  <Text style={styles.gracePayBtnText}>Update Card / Pay Now</Text>
                 )}
               </TouchableOpacity>
               <TouchableOpacity
