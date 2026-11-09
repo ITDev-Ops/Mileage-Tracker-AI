@@ -88,7 +88,7 @@ function isSpam(string $email, string $message): bool {
     // 1. Primary: Google Gemini API
     try {
         if (!empty($geminiKey)) {
-            $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" . urlencode($geminiKey);
+            $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=" . urlencode($geminiKey);
             $payload = [
                 "contents" => [["parts" => [["text" => "Sender: {$email}\nMessage: {$message}"]]]],
                 "systemInstruction" => ["parts" => [["text" => $systemInstructionText]]],
