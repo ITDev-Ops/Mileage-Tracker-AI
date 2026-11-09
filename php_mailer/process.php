@@ -85,83 +85,110 @@ function isSpam(string $email, string $message): bool {
     Return EXACTLY this JSON structure: {\"is_spam\": true} or {\"is_spam\": false}. 
     Do not include conversational filler, markdown formatting, or backticks.";
 
-    // 1. Primary: Google Gemini API
-    try {
-        if (!empty($geminiKey)) {
-            $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=" . urlencode($geminiKey);
-            $payload = [
-                "contents" => [["parts" => [["text" => "Sender: {$email}\nMessage: {$message}"]]]],
-                "systemInstruction" => ["parts" => [["text" => $systemInstructionText]]],
-                "generationConfig" => ["responseMimeType" => "application/json"]
-            ];
+    // 1. Primary: Dynamic Google Gemini API (Cycles candidates if a model is deprecated or busy)
+    if (!empty($geminiKey)) {
+        $geminiCandidates = [
+            'gemini-3-flash-preview',
+            'gemini-3.1-flash-lite-preview',
+            'gemini-3.8-flash',
+            'gemini-flash-latest',
+            'gemini-flash-lite-latest',
+            'gemini-1.5-flash'
+        ];
 
-            $ch = curl_init($url);
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_POST           => true,
-                CURLOPT_POSTFIELDS     => json_encode($payload),
-                CURLOPT_HTTPHEADER     => ["Content-Type: application/json"],
-                CURLOPT_CONNECTTIMEOUT => 3,
-                CURLOPT_TIMEOUT        => 4
-            ]);
-            
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+        foreach ($geminiCandidates as $gModel) {
+            try {
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/{$gModel}:generateContent?key=" . urlencode($geminiKey);
+                $payload = [
+                    "contents" => [["parts" => [["text" => "Sender: {$email}\nMessage: {$message}"]]]],
+                    "systemInstruction" => ["parts" => [["text" => $systemInstructionText]]],
+                    "generationConfig" => ["responseMimeType" => "application/json"]
+                ];
 
-            if ($httpCode === 200 && $response) {
-                $result = json_decode($response, true);
-                $rawText = $result['candidates'][0]['content']['parts'][0]['text'] ?? '{}';
-                $assessment = json_decode($rawText, true);
-                if (isset($assessment['is_spam'])) {
-                    return (bool)$assessment['is_spam'];
+                $ch = curl_init($url);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_POST           => true,
+                    CURLOPT_POSTFIELDS     => json_encode($payload),
+                    CURLOPT_HTTPHEADER     => ["Content-Type: application/json"],
+                    CURLOPT_CONNECTTIMEOUT => 3,
+                    CURLOPT_TIMEOUT        => 4
+                ]);
+                
+                $response = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+
+                if ($httpCode === 200 && $response) {
+                    $result = json_decode($response, true);
+                    $rawText = $result['candidates'][0]['content']['parts'][0]['text'] ?? '{}';
+                    $assessment = json_decode($rawText, true);
+                    if (isset($assessment['is_spam'])) {
+                        return (bool)$assessment['is_spam'];
+                    }
+                } elseif (in_array($httpCode, [404, 410, 429, 503])) {
+                    error_log("Gemini model {$gModel} returned HTTP {$httpCode}. Dynamically adapting to next candidate...");
+                    continue;
                 }
+            } catch (Exception $e) {
+                error_log("Gemini model {$gModel} error: " . $e->getMessage());
+                continue;
             }
         }
-    } catch (Exception $e) {
-        error_log("Gemini Outage or Fail: " . $e->getMessage() . ". Falling back to OpenAI.");
     }
 
-    // 2. Fallback: OpenAI API
-    try {
-        if (!empty($openAiKey)) {
-            $ch = curl_init('https://api.openai.com/v1/chat/completions');
-            $payload = [
-                "model" => "gpt-4o-mini",
-                "messages" => [
-                    ["role" => "system", "content" => $systemInstructionText],
-                    ["role" => "user", "content" => "Sender: {$email}\nMessage: {$message}"]
-                ],
-                "response_format" => ["type" => "json_object"]
-            ];
+    // 2. Fallback: Dynamic OpenAI API (Cycles candidates if a model is deprecated or rate limited)
+    if (!empty($openAiKey)) {
+        $openAiCandidates = [
+            'gpt-4o-mini',
+            'gpt-4o',
+            'o1-mini'
+        ];
 
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_POST           => true,
-                CURLOPT_POSTFIELDS     => json_encode($payload),
-                CURLOPT_HTTPHEADER     => [
-                    "Content-Type: application/json",
-                    "Authorization: Bearer {$openAiKey}"
-                ],
-                CURLOPT_CONNECTTIMEOUT => 3,
-                CURLOPT_TIMEOUT        => 4
-            ]);
+        foreach ($openAiCandidates as $oModel) {
+            try {
+                $ch = curl_init('https://api.openai.com/v1/chat/completions');
+                $payload = [
+                    "model" => $oModel,
+                    "messages" => [
+                        ["role" => "system", "content" => $systemInstructionText],
+                        ["role" => "user", "content" => "Sender: {$email}\nMessage: {$message}"]
+                    ],
+                    "response_format" => ["type" => "json_object"]
+                ];
 
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_POST           => true,
+                    CURLOPT_POSTFIELDS     => json_encode($payload),
+                    CURLOPT_HTTPHEADER     => [
+                        "Content-Type: application/json",
+                        "Authorization: Bearer {$openAiKey}"
+                    ],
+                    CURLOPT_CONNECTTIMEOUT => 3,
+                    CURLOPT_TIMEOUT        => 4
+                ]);
 
-            if ($httpCode === 200 && $response) {
-                $result = json_decode($response, true);
-                $content = $result['choices'][0]['message']['content'] ?? '{}';
-                $assessment = json_decode($content, true);
-                if (isset($assessment['is_spam'])) {
-                    return (bool)$assessment['is_spam'];
+                $response = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+
+                if ($httpCode === 200 && $response) {
+                    $result = json_decode($response, true);
+                    $content = $result['choices'][0]['message']['content'] ?? '{}';
+                    $assessment = json_decode($content, true);
+                    if (isset($assessment['is_spam'])) {
+                        return (bool)$assessment['is_spam'];
+                    }
+                } elseif (in_array($httpCode, [404, 410, 429, 503])) {
+                    error_log("OpenAI model {$oModel} returned HTTP {$httpCode}. Dynamically adapting to next candidate...");
+                    continue;
                 }
+            } catch (Exception $oe) {
+                error_log("OpenAI model {$oModel} error: " . $oe->getMessage());
+                continue;
             }
         }
-    } catch (Exception $oe) {
-        error_log("OpenAI Fallback Error: " . $oe->getMessage());
     }
 
     return false; // Fail open so legitimate users are not blocked

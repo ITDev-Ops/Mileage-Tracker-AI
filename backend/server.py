@@ -57,6 +57,24 @@ import hashlib
 import openai
 openai_client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY or "dummy-key")
 
+# Dynamic Model Engine (Automatic model failover, deprecation immunity, and auto-adaptation)
+try:
+    from backend.dynamic_models import (
+        model_registry,
+        call_gemini_dynamic,
+        call_openai_dynamic,
+        fallback_classify_trip,
+        clean_json_text,
+    )
+except ImportError:
+    from dynamic_models import (
+        model_registry,
+        call_gemini_dynamic,
+        call_openai_dynamic,
+        fallback_classify_trip,
+        clean_json_text,
+    )
+
 # Reusable HTTP client pool for high-performance Gemini requests
 gemini_http_client: Optional[httpx.AsyncClient] = None
 
@@ -74,14 +92,11 @@ async def get_gemini_client() -> httpx.AsyncClient:
     return gemini_http_client
 
 async def call_gemini_api(payload: dict) -> dict:
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY is not configured")
-    client = await get_gemini_client()
-    url = f"{GEMINI_BASE_URL}?key={GEMINI_API_KEY}"
-    response = await client.post(url, json=payload)
-    if response.status_code == 200:
-        return response.json()
-    raise Exception(f"Gemini API returned {response.status_code}: {response.text[:200]}")
+    """
+    Dynamic model execution: automatically adapts across candidate models,
+    bypassing deprecated/sunset models and handling transient load spikes.
+    """
+    return await call_gemini_dynamic(payload)
 
 app = FastAPI(title="Mileage Tracker AI API")
 api_router = APIRouter(prefix="/api")
@@ -1678,20 +1693,21 @@ async def scan_receipt(data: dict = Body(...), current_user: dict = Depends(get_
         # Preprocess the base64 receipt image to handle poor/different lighting conditions
         processed_base64 = preprocess_receipt_image(receipt_base64)
         
-        # 1. Try Gemini 3.8 Flash first (Primary: Fast, dedicated multimodal vision, high efficiency)
+        # 1. Try Gemini Dynamic first (Primary: Fast, dedicated multimodal vision, high efficiency)
         if GEMINI_API_KEY:
             try:
-                logger.info("Attempting receipt scan with Gemini 3.8 Flash...")
+                logger.info("Attempting receipt scan with dynamic Gemini...")
                 extracted = await scan_receipt_gemini(processed_base64)
-                logger.info("Successfully scanned receipt with Gemini 3.8 Flash")
-                return {"success": True, "extracted": extracted, "provider": "gemini"}
+                active_m = model_registry._preferred_gemini or "gemini"
+                logger.info(f"Successfully scanned receipt with Gemini ({active_m})")
+                return {"success": True, "extracted": extracted, "provider": f"gemini:{active_m}"}
             except Exception as ge:
                 logger.warning(f"Gemini receipt scan failed, falling back to OpenAI: {ge}")
 
-        # 2. Try OpenAI if key is present (Secondary fallback)
+        # 2. Try OpenAI Dynamic if key is present (Secondary fallback)
         if OPENAI_API_KEY:
             try:
-                logger.info("Attempting receipt scan with OpenAI...")
+                logger.info("Attempting receipt scan with dynamic OpenAI...")
                 prompt = (
                     "Extract information from this receipt image. "
                     "Examine characters extremely carefully, especially in bad lighting, shadows, low contrast, or blur. "
@@ -1706,17 +1722,15 @@ async def scan_receipt(data: dict = Body(...), current_user: dict = Depends(get_
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{processed_base64}"}}
                     ]}
                 ]
-                response = await openai_client.chat.completions.create(
-                    model="gpt-4o",
+                content, used_model = await call_openai_dynamic(
                     messages=messages,
                     response_format={"type": "json_object"}
                 )
-                content = response.choices[0].message.content
                 if content:
                     cleaned_content = clean_json_content(content)
                     extracted = json.loads(cleaned_content)
-                    logger.info("Successfully scanned receipt with OpenAI")
-                    return {"success": True, "extracted": extracted, "provider": "openai"}
+                    logger.info(f"Successfully scanned receipt with OpenAI ({used_model})")
+                    return {"success": True, "extracted": extracted, "provider": f"openai:{used_model}"}
             except Exception as oe:
                 logger.warning(f"OpenAI receipt scan failed: {oe}")
                 
@@ -1785,7 +1799,7 @@ Stats: {len(trips)} trips tracked, {total_miles:.1f} total miles, ${total_deduct
 IRS 2026 rate: $0.70/mile (business), $0.22/mile (medical), $0.14/mile (charity)
 Help with: trip classification, tax deductions, mileage reports, expense advice. Be concise and helpful."""
 
-        # 1. Primary: Gemini 3.8 Flash
+        # 1. Primary: Gemini Dynamic
         if GEMINI_API_KEY:
             try:
                 payload = {
@@ -1795,23 +1809,34 @@ Help with: trip classification, tax deductions, mileage reports, expense advice.
                 }
                 res_data = await call_gemini_api(payload)
                 reply = res_data['candidates'][0]['content']['parts'][0]['text']
-                return {"response": reply.strip(), "session_id": session_id, "provider": "gemini"}
+                active_m = model_registry._preferred_gemini or "gemini"
+                return {"response": reply.strip(), "session_id": session_id, "provider": f"gemini:{active_m}"}
             except Exception as ge:
                 logger.warning(f"Gemini chat failed, falling back to OpenAI: {ge}")
 
-        # 2. Fallback: OpenAI
+        # 2. Fallback: OpenAI Dynamic
         if OPENAI_API_KEY:
-            messages = [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": data.message}
-            ]
-            response = await openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=messages
-            )
-            return {"response": response.choices[0].message.content, "session_id": session_id, "provider": "openai"}
+            try:
+                messages = [
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": data.message}
+                ]
+                content, used_model = await call_openai_dynamic(messages=messages)
+                return {"response": content.strip(), "session_id": session_id, "provider": f"openai:{used_model}"}
+            except Exception as oe:
+                logger.warning(f"OpenAI chat fallback failed: {oe}")
 
-        return {"response": "I'm having trouble connecting right now. Please try again shortly.", "session_id": session_id}
+        # 3. Offline Tax Assistant Guidance (Zero-crash reliability)
+        return {
+            "response": (
+                f"I'm operating in offline guidance mode. Under 2026 IRS regulations, business travel is deductible "
+                f"at $0.70/mile, medical at $0.22/mile, and charity at $0.14/mile. You currently have {len(trips)} trips "
+                f"logged ({total_miles:.1f} miles, ~${total_deductions:.2f} deduction). Remember to maintain adequate records "
+                f"of destination and business purpose for full compliance."
+            ),
+            "session_id": session_id,
+            "provider": "offline_guidance"
+        }
     except Exception as e:
         logger.error(f"AI chat error: {e}")
         return {"response": "I'm having trouble connecting. Please try again shortly.", "session_id": data.session_id or ""}
@@ -1840,7 +1865,7 @@ Return ONLY JSON: {{"classification": "business|personal|medical|charity", "conf
 
         result = None
 
-        # 1. Primary: Gemini 3.8 Flash
+        # 1. Primary: Gemini Dynamic
         if GEMINI_API_KEY:
             try:
                 payload = {
@@ -1854,21 +1879,24 @@ Return ONLY JSON: {{"classification": "business|personal|medical|charity", "conf
             except Exception as ge:
                 logger.warning(f"Gemini classify trip failed, falling back to OpenAI: {ge}")
 
-        # 2. Fallback: OpenAI
+        # 2. Fallback: OpenAI Dynamic
         if not result and OPENAI_API_KEY:
             try:
-                response = await openai_client.chat.completions.create(
-                    model="gpt-4o",
+                content, used_model = await call_openai_dynamic(
                     messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
                     response_format={"type": "json_object"}
                 )
-                content = response.choices[0].message.content
                 result = json.loads(content) if content else None
             except Exception as oe:
                 logger.warning(f"OpenAI classify trip failed: {oe}")
 
         if not result:
-            result = {"classification": "personal", "confidence": 0.5, "purpose": "Auto-classification", "client_name": None}
+            result = fallback_classify_trip(
+                start_address=trip.get("start_address", "Unknown"),
+                end_address=trip.get("end_address", "Unknown"),
+                distance=trip.get("distance", 0.0),
+                notes=trip.get("notes", "")
+            )
 
         dist = trip.get("distance", 0)
         cls = result.get("classification", "personal")
@@ -1927,7 +1955,7 @@ async def classify_all_trips(current_user: dict = Depends(get_current_user)):
         # 1. Primary: Ultra-efficient Gemini single-request batch classification
         if GEMINI_API_KEY:
             try:
-                logger.info(f"Bulk classifying {len(unclassified)} trips with Gemini 3.8 Flash in a single batch request...")
+                logger.info(f"Bulk classifying {len(unclassified)} trips with dynamic Gemini in a single batch request...")
                 trips_payload = [
                     {
                         "trip_id": t["trip_id"],
@@ -1994,11 +2022,11 @@ Return ONLY a JSON array with one object per trip matching:
                     logger.info(f"Successfully batch-classified {len(results)} trips with Gemini in single call!")
 
             except Exception as ge:
-                logger.warning(f"Gemini bulk classify failed, falling back to concurrent OpenAI: {ge}")
+                logger.warning(f"Gemini bulk classify failed, falling back to dynamic OpenAI / heuristics: {ge}")
                 results = []
                 bulk_operations = []
 
-        # 2. Fallback: Concurrent OpenAI calls if Gemini was not used or failed
+        # 2. Fallback: Concurrent OpenAI Dynamic calls or rule-based heuristics
         if not results:
             system_msg = "You are a trip classification AI. Return ONLY valid JSON. No explanation."
             sem = asyncio.Semaphore(5)  # Respect rate limits
@@ -2006,20 +2034,31 @@ Return ONLY a JSON array with one object per trip matching:
             async def classify_trip_openai(trip):
                 async with sem:
                     try:
-                        prompt = f"""Classify this trip:
+                        result = None
+                        if OPENAI_API_KEY:
+                            prompt = f"""Classify this trip:
 Start: {trip.get('start_address','Unknown')} | End: {trip.get('end_address','Unknown')}
 Distance: {trip.get('distance',0):.1f} miles | Notes: {trip.get('notes','None')}
 User occupation: {current_user.get('occupation_type','self_employed')}
 Past trips: {history_text}
 Return ONLY JSON: {{"classification": "business|personal|medical|charity", "confidence": 0.85, "purpose": "brief reason"}}"""
-                        
-                        response = await openai_client.chat.completions.create(
-                            model="gpt-4o",
-                            messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
-                            response_format={"type": "json_object"}
-                        )
-                        content = response.choices[0].message.content
-                        result = json.loads(content) if content else {"classification": "personal", "confidence": 0.5, "purpose": "Auto-classification"}
+                            
+                            try:
+                                content, _ = await call_openai_dynamic(
+                                    messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
+                                    response_format={"type": "json_object"}
+                                )
+                                result = json.loads(content) if content else None
+                            except Exception as oe:
+                                logger.warning(f"OpenAI trip classify failed for {trip.get('trip_id')}: {oe}")
+
+                        if not result:
+                            result = fallback_classify_trip(
+                                start_address=trip.get("start_address", "Unknown"),
+                                end_address=trip.get("end_address", "Unknown"),
+                                distance=trip.get("distance", 0.0),
+                                notes=trip.get("notes", "")
+                            )
                         
                         dist = trip.get("distance", 0)
                         cls = result.get("classification", "personal")
@@ -2043,7 +2082,10 @@ Return ONLY JSON: {{"classification": "business|personal|medical|charity", "conf
                         }
                     except Exception as e:
                         logger.error(f"Bulk classify error for {trip['trip_id']}: {e}")
-                        return {"trip_id": trip["trip_id"], "error": str(e)}
+                        # Fallback heuristic even in inner exception
+                        rule_res = fallback_classify_trip(trip.get("start_address", ""), trip.get("end_address", ""), trip.get("distance", 0.0))
+                        cls = rule_res.get("classification", "personal")
+                        return {"trip_id": trip["trip_id"], "classification": cls, "confidence": 0.5, "deduction": calculate_deduction(trip.get("distance", 0), cls, user_tax_country)}
 
             tasks = [classify_trip_openai(t) for t in unclassified]
             results = await asyncio.gather(*tasks)
@@ -2092,7 +2134,7 @@ You MUST return exactly 3 insights in the array. Return ONLY JSON exactly matchi
         
         result = None
 
-        # 1. Primary: Gemini 3.8 Flash
+        # 1. Primary: Gemini Dynamic
         if GEMINI_API_KEY:
             try:
                 payload = {
@@ -2106,15 +2148,13 @@ You MUST return exactly 3 insights in the array. Return ONLY JSON exactly matchi
             except Exception as ge:
                 logger.warning(f"Gemini insights generation failed, falling back to OpenAI: {ge}")
 
-        # 2. Fallback: OpenAI
+        # 2. Fallback: OpenAI Dynamic
         if not result and OPENAI_API_KEY:
             try:
-                response = await openai_client.chat.completions.create(
-                    model="gpt-4o",
+                content, used_model = await call_openai_dynamic(
                     messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}],
                     response_format={"type": "json_object"}
                 )
-                content = response.choices[0].message.content
                 result = json.loads(content) if content else {}
             except Exception as oe:
                 logger.warning(f"OpenAI insights generation failed: {oe}")
@@ -2186,7 +2226,7 @@ Just return the inspirational message text, nothing else."""
 
         content = ""
 
-        # 1. Primary: Gemini 3.8 Flash
+        # 1. Primary: Gemini Dynamic
         if GEMINI_API_KEY:
             try:
                 payload = {
@@ -2197,14 +2237,12 @@ Just return the inspirational message text, nothing else."""
             except Exception as ge:
                 logger.warning(f"Gemini inspiration failed, falling back to OpenAI: {ge}")
 
-        # 2. Fallback: OpenAI
+        # 2. Fallback: OpenAI Dynamic
         if not content and OPENAI_API_KEY:
             try:
-                response = await openai_client.chat.completions.create(
-                    model="gpt-4o",
+                content, used_model = await call_openai_dynamic(
                     messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}]
                 )
-                content = response.choices[0].message.content or ""
             except Exception as oe:
                 logger.warning(f"OpenAI inspiration failed: {oe}")
         
@@ -2250,6 +2288,29 @@ Just return the inspirational message text, nothing else."""
             "category": category,
             "day": now.timetuple().tm_yday
         }
+
+@api_router.get("/ai/models/status")
+async def get_ai_models_status():
+    """Returns dynamic model adaptation health, active models, and candidate tiers."""
+    return {
+        "status": "healthy",
+        "dynamic_engine": "active",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "models": model_registry.get_status()
+    }
+
+@api_router.post("/ai/models/discover")
+async def trigger_model_discovery():
+    """Forces dynamic discovery of active models directly from Google Gemini API."""
+    if not GEMINI_API_KEY:
+        raise HTTPException(400, "GEMINI_API_KEY not configured")
+    discovered = await model_registry.discover_gemini_models(GEMINI_API_KEY)
+    return {
+        "status": "success",
+        "count": len(discovered),
+        "discovered_models": discovered,
+        "active_gemini_candidate_queue": model_registry.get_gemini_candidate_queue()
+    }
 
 # ============================================================
 # DASHBOARD
@@ -5016,6 +5077,7 @@ async def shutdown_db_client():
         client.close()
     if gemini_http_client and not gemini_http_client.is_closed:
         await gemini_http_client.aclose()
+    await model_registry.close()
 
 if __name__ == "__main__":
     import uvicorn
