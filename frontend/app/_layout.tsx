@@ -3,6 +3,8 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Platform, Alert } from 'react-native';
 import { AuthProvider, useAuth } from '../context/AuthContext';
+import { AccessibilityProvider } from '../context/AccessibilityContext';
+import { AccessibilityWrapper } from '../components/AccessibilityWrapper';
 import { Colors } from '../constants/theme';
 import { initializeAutoTracking, startBackgroundTracking, requestTrackingPermissions, setAutoTrackingEnabled } from '../services/backgroundTracking';
 import { initializeOfflineService } from '../services/offlineService';
@@ -93,20 +95,24 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <AuthProvider>
-      <NavigationGuard />
-      <LegalConsentModal />
-      <StatusBar style="light" />
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.bg.primary } }}>
-        <Stack.Screen name="index" />
-        <Stack.Screen name="(auth)" />
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="trip/[id]" options={{ presentation: 'modal' }} />
-        <Stack.Screen name="ai/assistant" options={{ presentation: 'modal' }} />
-        <Stack.Screen name="subscription/index" options={{ presentation: 'modal' }} />
-        <Stack.Screen name="reports/tax-insights" />
-        <Stack.Screen name="auth-callback" />
-      </Stack>
-    </AuthProvider>
+    <AccessibilityProvider>
+      <AuthProvider>
+        <AccessibilityWrapper>
+          <NavigationGuard />
+          <LegalConsentModal />
+          <StatusBar style="light" />
+          <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.bg.primary } }}>
+            <Stack.Screen name="index" />
+            <Stack.Screen name="(auth)" />
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="trip/[id]" options={{ presentation: 'modal' }} />
+            <Stack.Screen name="ai/assistant" options={{ presentation: 'modal' }} />
+            <Stack.Screen name="subscription/index" options={{ presentation: 'modal' }} />
+            <Stack.Screen name="reports/tax-insights" />
+            <Stack.Screen name="auth-callback" />
+          </Stack>
+        </AccessibilityWrapper>
+      </AuthProvider>
+    </AccessibilityProvider>
   );
 }

@@ -5,9 +5,10 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import { Feather } from '@expo/vector-icons';
+import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
+import { useAccessibility } from '../../context/AccessibilityContext';
 import { API } from '../../services/api';
 import { Colors, FontSize, Spacing, Radius } from '../../constants/theme';
 import {
@@ -55,6 +56,7 @@ export default function SettingsScreen() {
   const [showCustomInput, setShowCustomInput] = useState(false);
   
   const { user, token, logout, refreshUser } = useAuth();
+  const { openMenu: openAccessibilityMenu, hasActiveSettings } = useAccessibility();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   
@@ -465,6 +467,26 @@ export default function SettingsScreen() {
                 </View>
               </>
             )}
+          </View>
+        </View>
+
+        {/* Accessibility Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Accessibility</Text>
+          <View style={styles.card}>
+            <TouchableOpacity testID="accessibility-menu-btn" style={styles.listRow} onPress={openAccessibilityMenu}>
+              <MaterialCommunityIcons name="human" size={20} color={Colors.brand.primary} />
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={styles.listRowText}>Accessibility Menu</Text>
+                <Text style={{ fontSize: 12, color: Colors.text.tertiary, marginTop: 2 }}>
+                  {hasActiveSettings ? 'Custom accessibility options active' : 'Profiles, screen reader, text size, and contrast'}
+                </Text>
+              </View>
+              {hasActiveSettings && (
+                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.brand.primary, marginRight: 8 }} />
+              )}
+              <Feather name="chevron-right" size={16} color={Colors.text.tertiary} />
+            </TouchableOpacity>
           </View>
         </View>
 
