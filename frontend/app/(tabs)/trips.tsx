@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
-  TextInput, RefreshControl, Alert, ActivityIndicator
+  TextInput, RefreshControl, Alert, ActivityIndicator, ScrollView
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
@@ -17,6 +17,7 @@ const FILTERS = [
   { key: 'business', label: 'Business' },
   { key: 'personal', label: 'Personal' },
   { key: 'medical', label: 'Medical' },
+  { key: 'charity', label: 'Charity' },
   { key: 'unclassified', label: 'Unclassified' },
 ];
 
@@ -256,18 +257,24 @@ export default function TripsScreen() {
         )}
       </View>
 
-      {/* Filters */}
-      <View testID="trip-filters" style={styles.filtersRow}>
-        {FILTERS.map(f => (
-          <TouchableOpacity
-            key={f.key}
-            testID={`filter-${f.key}`}
-            style={[styles.filterBtn, activeFilter === f.key && styles.filterBtnActive]}
-            onPress={() => setActiveFilter(f.key)}
-          >
-            <Text style={[styles.filterText, activeFilter === f.key && styles.filterTextActive]}>{f.label}</Text>
-          </TouchableOpacity>
-        ))}
+      {/* Filters (Horizontally scrollable so items never overflow or get cut off) */}
+      <View testID="trip-filters" style={styles.filtersWrapper}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filtersScrollContent}
+        >
+          {FILTERS.map(f => (
+            <TouchableOpacity
+              key={f.key}
+              testID={`filter-${f.key}`}
+              style={[styles.filterBtn, activeFilter === f.key && styles.filterBtnActive]}
+              onPress={() => setActiveFilter(f.key)}
+            >
+              <Text style={[styles.filterText, activeFilter === f.key && styles.filterTextActive]}>{f.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       </View>
 
       {/* Summary Row */}
@@ -307,11 +314,12 @@ const styles = StyleSheet.create({
   searchWrap: { flexDirection: 'row', alignItems: 'center', marginHorizontal: Spacing.screen, backgroundColor: Colors.bg.secondary, borderRadius: Radius.md, paddingHorizontal: 12, height: 44, borderWidth: 1, borderColor: Colors.border, marginBottom: 12 },
   searchIcon: { marginRight: 8 },
   searchInput: { flex: 1, color: Colors.text.primary, fontSize: FontSize.sm },
-  filtersRow: { flexDirection: 'row', paddingHorizontal: Spacing.screen, gap: 8, marginBottom: 10 },
-  filterBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: Radius.full, backgroundColor: Colors.bg.secondary, borderWidth: 1, borderColor: Colors.border },
+  filtersWrapper: { marginBottom: 12 },
+  filtersScrollContent: { paddingHorizontal: Spacing.screen, gap: 8, alignItems: 'center', paddingVertical: 2 },
+  filterBtn: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: Radius.full, backgroundColor: Colors.bg.secondary, borderWidth: 1.2, borderColor: Colors.border },
   filterBtnActive: { backgroundColor: Colors.brand.primaryDim, borderColor: Colors.brand.primary },
-  filterText: { color: Colors.text.tertiary, fontSize: FontSize.xs, fontWeight: '600' },
-  filterTextActive: { color: Colors.brand.primary },
+  filterText: { color: Colors.text.secondary, fontSize: FontSize.sm, fontWeight: '600' },
+  filterTextActive: { color: Colors.brand.primary, fontWeight: '700' },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: Spacing.screen, marginBottom: 8 },
   summaryText: { color: Colors.text.secondary, fontSize: FontSize.xs },
   summaryDeduction: { color: Colors.brand.primary, fontSize: FontSize.xs, fontWeight: '700' },

@@ -13,13 +13,20 @@ import { useAuth } from '../../context/AuthContext';
 import { API } from '../../services/api';
 import { Colors, FontSize, Spacing, Radius } from '../../constants/theme';
 
-const CATEGORIES = [
-  { key: 'fuel', label: 'Fuel', icon: 'droplet', color: Colors.brand.warning },
-  { key: 'parking', label: 'Parking', icon: 'map-pin', color: Colors.brand.secondary },
-  { key: 'maintenance', label: 'Maintenance', icon: 'tool', color: Colors.brand.accent },
-  { key: 'meals', label: 'Meals', icon: 'coffee', color: Colors.brand.purple },
-  { key: 'other', label: 'Other', icon: 'tag', color: Colors.text.tertiary },
+const EXPENSE_CATEGORIES = [
+  { key: 'fuel', label: 'Fuel', icon: 'droplet', color: '#F59E0B' },
+  { key: 'parking', label: 'Parking', icon: 'map-pin', color: '#38BDF8' },
+  { key: 'maintenance', label: 'Maintenance', icon: 'tool', color: '#F43F5E' },
+  { key: 'meals', label: 'Meals', icon: 'coffee', color: '#A78BFA' },
+  { key: 'other', label: 'Other', icon: 'tag', color: '#94A3B8' },
 ];
+
+const FILTER_CATEGORIES = [
+  { key: 'all', label: 'All', icon: 'layers', color: Colors.brand.primary },
+  ...EXPENSE_CATEGORIES,
+];
+
+const CATEGORIES = EXPENSE_CATEGORIES;
 
 const ExpenseItem = memo(({ item, onPress, onDelete }: { item: any, onPress: (item: any) => void, onDelete: (id: string) => void }) => {
   const catColor = (cat: string) => CATEGORIES.find(c => c.key === cat)?.color || Colors.text.tertiary;
@@ -46,6 +53,7 @@ const ExpenseItem = memo(({ item, onPress, onDelete }: { item: any, onPress: (it
 
 export default function ExpensesScreen() {
   const [expenses, setExpenses] = useState<any[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
@@ -247,15 +255,24 @@ export default function ExpensesScreen() {
   const total = useMemo(() => expenses.reduce((sum, e) => sum + (e.amount || 0), 0), [expenses]);
   
   const categoryTotals = useMemo(() => {
-    const totals: Record<string, number> = {};
-    CATEGORIES.forEach(c => totals[c.key] = 0);
+    const totals: Record<string, number> = { all: 0 };
+    EXPENSE_CATEGORIES.forEach(c => (totals[c.key] = 0));
     expenses.forEach(e => {
-      if (totals[e.category] !== undefined) {
-        totals[e.category] += e.amount || 0;
+      totals.all = (totals.all || 0) + (e.amount || 0);
+      const cat = (e.category || 'other').toLowerCase();
+      if (totals[cat] !== undefined) {
+        totals[cat] += e.amount || 0;
+      } else {
+        totals.other = (totals.other || 0) + (e.amount || 0);
       }
     });
     return totals;
   }, [expenses]);
+
+  const filteredExpenses = useMemo(() => {
+    if (selectedCategory === 'all') return expenses;
+    return expenses.filter(e => (e.category || '').toLowerCase() === selectedCategory);
+  }, [expenses, selectedCategory]);
 
   const renderExpenseItem = useCallback(({ item }: { item: any }) => (
     <ExpenseItem item={item} onPress={handleEditExpense} onDelete={handleDelete} />
@@ -264,10 +281,16 @@ export default function ExpensesScreen() {
   const ListEmpty = useCallback(() => (
     <View style={styles.empty}>
       <Feather name="credit-card" size={48} color={Colors.text.tertiary} />
-      <Text style={styles.emptyTitle}>No expenses yet</Text>
-      <Text style={styles.emptyText}>Tap "Scan" to scan a receipt or "+" to add manually</Text>
+      <Text style={styles.emptyTitle}>
+        {selectedCategory === 'all' ? 'No expenses yet' : `No ${selectedCategory} expenses`}
+      </Text>
+      <Text style={styles.emptyText}>
+        {selectedCategory === 'all'
+          ? 'Tap "Scan" to scan a receipt or "+" to add manually'
+          : `Switch category filter or add a new ${selectedCategory} expense`}
+      </Text>
     </View>
-  ), []);
+  ), [selectedCategory]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -288,25 +311,69 @@ export default function ExpensesScreen() {
         </View>
       </View>
 
-      {/* Category Summary */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.catScroll} contentContainerStyle={{ paddingHorizontal: Spacing.screen, gap: 8 }}>
-        {CATEGORIES.map(cat => {
-          const catTotal = categoryTotals[cat.key] || 0;
-          return (
-            <View key={cat.key} style={[styles.catChip, { borderColor: cat.color + '40' }]}>
-              <Feather name={cat.icon as any} size={14} color={cat.color} />
-              <Text style={[styles.catChipText, { color: cat.color }]}>{cat.label}</Text>
-              <Text style={styles.catChipAmount}>${catTotal.toFixed(0)}</Text>
-            </View>
-          );
-        })}
-      </ScrollView>
+      {/* Category Summary / Filter Bar with well-defined pill cards */}
+      <View style={styles.catScrollWrap}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.catScroll}
+          contentContainerStyle={styles.catScrollContent}
+        >
+          {FILTER_CATEGORIES.map(cat => {
+            const catTotal = categoryTotals[cat.key] || 0;
+            const isActive = selectedCategory === cat.key;
+            return (
+              <TouchableOpacity
+                key={cat.key}
+                testID={`expense-filter-${cat.key}`}
+                activeOpacity={0.75}
+                onPress={() => setSelectedCategory(isActive && cat.key !== 'all' ? 'all' : cat.key)}
+                style={[
+                  styles.catChip,
+                  isActive
+                    ? { borderColor: cat.color, backgroundColor: cat.color + '22' }
+                    : { borderColor: '#2E323B', backgroundColor: '#18181B' },
+                ]}
+              >
+                <View style={[styles.catIconWrap, { backgroundColor: cat.color + '28' }]}>
+                  <Feather name={cat.icon as any} size={13} color={cat.color} />
+                </View>
+                <Text
+                  style={[
+                    styles.catChipText,
+                    isActive ? { color: '#FFFFFF', fontWeight: '700' } : { color: '#F1F5F9' },
+                  ]}
+                >
+                  {cat.label}
+                </Text>
+                <View
+                  style={[
+                    styles.catAmountBadge,
+                    isActive
+                      ? { backgroundColor: cat.color + '38' }
+                      : { backgroundColor: 'rgba(255, 255, 255, 0.08)' },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.catAmountBadgeText,
+                      isActive ? { color: '#FFFFFF' } : { color: '#E2E8F0' },
+                    ]}
+                  >
+                    ${catTotal.toFixed(0)}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
 
       {loading ? (
         <ActivityIndicator size="large" color={Colors.brand.primary} style={{ marginTop: 40 }} />
       ) : (
         <FlatList
-          data={expenses}
+          data={filteredExpenses}
           keyExtractor={item => item.expense_id}
           initialNumToRender={10}
           maxToRenderPerBatch={10}
@@ -445,10 +512,46 @@ const styles = StyleSheet.create({
   scanBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: Colors.brand.primary + '40', borderRadius: Radius.full, paddingHorizontal: 12, paddingVertical: 7, backgroundColor: Colors.brand.primaryDim },
   scanBtnText: { color: Colors.brand.primary, fontSize: FontSize.xs, fontWeight: '700' },
   addBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: Colors.brand.primary, alignItems: 'center', justifyContent: 'center' },
-  catScroll: { maxHeight: 60, marginBottom: 8 },
-  catChip: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: Colors.bg.secondary, borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1 },
-  catChipText: { fontSize: FontSize.xs, fontWeight: '600' },
-  catChipAmount: { color: Colors.text.secondary, fontSize: FontSize.xs },
+  catScrollWrap: { marginBottom: 12 },
+  catScroll: {},
+  catScrollContent: { paddingHorizontal: Spacing.screen, gap: 10, paddingVertical: 4, alignItems: 'center' },
+  catChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: Radius.full,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderWidth: 1.5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  catIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  catChipText: {
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  catAmountBadge: {
+    borderRadius: Radius.full,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  catAmountBadgeText: {
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+  },
   expenseRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.border },
   expenseIcon: { width: 42, height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   expenseInfo: { flex: 1 },
