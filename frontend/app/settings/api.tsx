@@ -27,8 +27,8 @@ export default function ApiAccessScreen() {
     const fetchApiKey = async () => {
       if (!token) return;
       const tier = user?.subscription_tier || 'free';
-      if (tier !== 'pro' && tier !== 'business') {
-        setError('Premium Plan Required. Developer API access requires a Pro or Business plan.');
+      if (tier !== 'business') {
+        setError('Business Plan Required. Developer API access is available exclusively on the Business plan.');
         setLoading(false);
         return;
       }
@@ -109,22 +109,22 @@ export default function ApiAccessScreen() {
   }
 
   if (error) {
-    const isPremiumError = error.toLowerCase().includes('requires a pro') || error.toLowerCase().includes('premium plan required');
+    const isBusinessError = error.toLowerCase().includes('business') || error.toLowerCase().includes('plan required');
     return (
       <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center', paddingHorizontal: Spacing.screen }]}>
-        <Feather name={isPremiumError ? "lock" : "alert-circle"} size={48} color={isPremiumError ? Colors.brand.primary : Colors.brand.accent} style={{ marginBottom: 16 }} />
+        <Feather name={isBusinessError ? "lock" : "alert-circle"} size={48} color={isBusinessError ? Colors.brand.warning : Colors.brand.accent} style={{ marginBottom: 16 }} />
         <Text style={{ color: Colors.text.primary, fontSize: FontSize.md, fontWeight: '700', textAlign: 'center' }}>
-          {isPremiumError ? 'Premium Plan Required' : 'Failed to Load'}
+          {isBusinessError ? 'Business Plan Required' : 'Failed to Load'}
         </Text>
         <Text style={{ marginTop: 8, color: Colors.text.secondary, fontSize: FontSize.sm, textAlign: 'center', marginBottom: 24, lineHeight: 20 }}>
           {error}
         </Text>
-        {isPremiumError ? (
+        {isBusinessError ? (
           <TouchableOpacity 
-            style={{ backgroundColor: Colors.brand.primary, paddingHorizontal: 20, paddingVertical: 12, borderRadius: Radius.md }}
+            style={{ backgroundColor: Colors.brand.warning, paddingHorizontal: 20, paddingVertical: 12, borderRadius: Radius.md }}
             onPress={() => router.push('/subscription')}
           >
-            <Text style={{ color: Colors.text.inverse, fontWeight: '700' }}>Upgrade to Pro</Text>
+            <Text style={{ color: Colors.text.inverse, fontWeight: '700' }}>Upgrade to Business</Text>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity 

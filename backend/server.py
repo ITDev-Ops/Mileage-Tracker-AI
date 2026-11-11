@@ -306,27 +306,27 @@ DEFAULT_PRODUCTS = {
     "pro": {
         "product_id": "pro",
         "name": "Mileage Tracker AI - Pro Plan",
-        "description": "Monthly subscription to Pro features: Unlimited trips, AI auto-tagging, PDF reports, Receipt scanning",
+        "description": "Monthly subscription to Pro features: Unlimited trips, AI auto-classification, PDF + CSV tax reports, Receipt OCR scanning, AI Tax Optimizer",
         "amount": 9.99,
         "amount_cents": 999,
         "currency": "usd",
         "interval": "month",
         "mode": "subscription",
         "stripe_price_id": os.environ.get("STRIPE_PRICE_PRO", "price_pro_monthly"),
-        "features": ["Unlimited trips", "AI auto-tagging", "PDF reports", "Receipt scanning"],
+        "features": ["Unlimited trips", "AI auto-classification", "Receipt OCR scanning", "PDF + CSV tax reports", "AI Tax Optimizer"],
         "is_active": True
     },
     "business": {
         "product_id": "business",
         "name": "Mileage Tracker AI - Business Plan",
-        "description": "Monthly subscription to Business features: Everything in Pro, Team management, Admin dashboard, API access",
+        "description": "Monthly subscription to Business features: Everything in Pro, Priority Support, Team Management, Admin Dashboard, API Access, Fleet Tracking, Custom Reports",
         "amount": 19.99,
         "amount_cents": 1999,
         "currency": "usd",
         "interval": "month",
         "mode": "subscription",
         "stripe_price_id": os.environ.get("STRIPE_PRICE_BUSINESS", "price_business_monthly"),
-        "features": ["Everything in Pro", "Team management", "Admin dashboard", "API access"],
+        "features": ["Everything in Pro", "Priority Support", "Team Management", "Admin Dashboard", "API Access", "Fleet Tracking", "Custom Reports"],
         "is_active": True
     }
 }
@@ -363,6 +363,20 @@ async def get_product_from_db(database, product_id: str) -> Optional[dict]:
     if doc:
         if "amount_cents" not in doc and "amount" in doc:
             doc["amount_cents"] = int(round(float(doc["amount"]) * 100))
+        if pid in DEFAULT_PRODUCTS:
+            doc["features"] = DEFAULT_PRODUCTS[pid]["features"]
+            doc["description"] = DEFAULT_PRODUCTS[pid]["description"]
+            if hasattr(database, "products"):
+                try:
+                    await database.products.update_one(
+                        {"product_id": pid},
+                        {"$set": {
+                            "features": DEFAULT_PRODUCTS[pid]["features"],
+                            "description": DEFAULT_PRODUCTS[pid]["description"]
+                        }}
+                    )
+                except Exception:
+                    pass
         return doc
         
     # 2. Seed from default catalog if known
@@ -502,8 +516,8 @@ async def get_current_user(request: Request) -> dict:
         user = await db.users.find_one({"api_key": token}, {"_id": 0, "password_hash": 0})
         if not user:
             raise HTTPException(status_code=401, detail="Invalid API key")
-        if user.get("subscription_tier", "free") not in ["pro", "business"]:
-            raise HTTPException(status_code=403, detail="Developer API access requires a Pro or Business plan.")
+        if user.get("subscription_tier", "free") != "business":
+            raise HTTPException(status_code=403, detail="Developer API access is available exclusively on the Business plan.")
         auth_cache.set(token, user)
         return user
 
@@ -1241,16 +1255,16 @@ async def update_profile(data: dict = Body(...), current_user: dict = Depends(ge
 @api_router.get("/auth/api-key")
 async def get_api_key(current_user: dict = Depends(get_current_user)):
     tier = current_user.get("subscription_tier", "free")
-    if tier not in ["pro", "business"]:
-        raise HTTPException(status_code=403, detail="Developer API access requires a Pro or Business plan.")
+    if tier != "business":
+        raise HTTPException(status_code=403, detail="Developer API access is available exclusively on the Business plan.")
     user = await db.users.find_one({"user_id": current_user["user_id"]})
     return {"api_key": user.get("api_key") if user else None}
 
 @api_router.post("/auth/api-key")
 async def generate_api_key(current_user: dict = Depends(get_current_user)):
     tier = current_user.get("subscription_tier", "free")
-    if tier not in ["pro", "business"]:
-        raise HTTPException(status_code=403, detail="Developer API access requires a Pro or Business plan.")
+    if tier != "business":
+        raise HTTPException(status_code=403, detail="Developer API access is available exclusively on the Business plan.")
     new_key = f"mm_live_{uuid.uuid4().hex}{uuid.uuid4().hex}"
     await db.users.update_one({"user_id": current_user["user_id"]}, {"$set": {"api_key": new_key}})
     auth_cache.invalidate_user(current_user["user_id"])
@@ -4761,8 +4775,8 @@ def format_relative_time(dt: datetime) -> str:
 @api_router.get("/team/stats")
 async def get_team_stats(current_user: dict = Depends(get_current_user)):
     tier = current_user.get("subscription_tier", "free")
-    if tier not in ["pro", "business"]:
-        raise HTTPException(status_code=403, detail="Access denied. Premium subscription required.")
+    if tier != "business":
+        raise HTTPException(status_code=403, detail="Team telemetry and admin dashboard are available exclusively on the Business plan.")
         
     members = await db.team_members.find({"owner_id": current_user["user_id"]}).limit(100).to_list(100)
     
@@ -4856,6 +4870,9 @@ async def get_team_stats(current_user: dict = Depends(get_current_user)):
 
 @api_router.get("/team/members")
 async def get_team_members(current_user: dict = Depends(get_current_user)):
+    tier = current_user.get("subscription_tier", "free")
+    if tier != "business":
+        raise HTTPException(status_code=403, detail="Team management is available exclusively on the Business plan.")
     members = await db.team_members.find(
         {"owner_id": current_user["user_id"]},
         {"_id": 0}
@@ -4898,6 +4915,9 @@ async def get_team_members(current_user: dict = Depends(get_current_user)):
 
 @api_router.post("/team/invite")
 async def invite_team_member(data: TeamMemberCreate, request: Request, current_user: dict = Depends(get_current_user)):
+    tier = current_user.get("subscription_tier", "free")
+    if tier != "business":
+        raise HTTPException(status_code=403, detail="Team management and member invitations are available exclusively on the Business plan.")
     member_email = data.email.strip().lower()
     member_name = data.name.strip()
     

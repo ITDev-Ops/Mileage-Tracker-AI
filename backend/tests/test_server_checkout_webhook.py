@@ -21,7 +21,7 @@ class MockCollection:
     def __init__(self):
         self.docs = []
 
-    async def find_one(self, filter_dict, projection=None):
+    async def find_one(self, filter_dict, projection=None, *args, **kwargs):
         for d in reversed(self.docs):
             match = True
             for k, v in filter_dict.items():
@@ -39,6 +39,9 @@ class MockCollection:
                     res.pop("_id", None)
                 return res
         return None
+
+    async def count_documents(self, *args, **kwargs):
+        return 0
 
     def find(self, filter_dict=None):
         matched = []
@@ -59,6 +62,10 @@ class MockCollection:
         class Cursor:
             def __init__(self, data):
                 self.data = data
+            def sort(self, *args, **kwargs):
+                return self
+            def limit(self, *args, **kwargs):
+                return self
             async def to_list(self, length=100):
                 return self.data[:length]
         return Cursor(matched)
@@ -167,6 +174,59 @@ def test_products_catalog_endpoint(test_setup):
     assert products_map["pro"]["amount_cents"] == 999
     assert products_map["pro"]["currency"] == "usd"
     assert "stripe_price_id" in products_map["pro"]
+
+    # Pro plan must NOT have Priority Support, Team Management, Admin Dashboard, API Access
+    pro_features_lower = [f.lower() for f in products_map["pro"]["features"]]
+    assert not any("priority support" in f for f in pro_features_lower)
+    assert not any("team management" in f for f in pro_features_lower)
+    assert not any("admin dashboard" in f for f in pro_features_lower)
+    assert not any("api access" in f for f in pro_features_lower)
+
+    # Business plan MUST have them
+    assert "business" in products_map
+    biz_features_lower = [f.lower() for f in products_map["business"]["features"]]
+    assert any("priority support" in f for f in biz_features_lower)
+    assert any("team management" in f for f in biz_features_lower)
+    assert any("admin dashboard" in f for f in biz_features_lower)
+    assert any("api access" in f for f in biz_features_lower)
+
+
+def test_business_features_restricted_to_business_tier(test_setup):
+    """Pro users are barred from Team Management and API access; Business users are allowed."""
+    client = test_setup["client"]
+    mock_db = test_setup["db"]
+
+    # Create a Pro user
+    pro_user_id = f"usr_pro_{uuid.uuid4().hex[:6]}"
+    pro_token = server.create_access_token({"sub": pro_user_id})
+    pro_user = {"user_id": pro_user_id, "email": "pro@test.com", "subscription_tier": "pro"}
+    mock_db.users.docs.append(pro_user)
+    server.auth_cache.set(pro_token, pro_user)
+    pro_headers = {"Authorization": f"Bearer {pro_token}"}
+
+    # Pro user blocked from /team/stats and /auth/api-key with 403 Forbidden
+    resp_team = client.get("/api/team/stats", headers=pro_headers)
+    assert resp_team.status_code == 403
+    assert "business" in resp_team.text.lower()
+
+    resp_api = client.get("/api/auth/api-key", headers=pro_headers)
+    assert resp_api.status_code == 403
+    assert "business" in resp_api.text.lower()
+
+    # Create a Business user
+    biz_user_id = f"usr_biz_{uuid.uuid4().hex[:6]}"
+    biz_token = server.create_access_token({"sub": biz_user_id})
+    biz_user = {"user_id": biz_user_id, "email": "biz@test.com", "subscription_tier": "business"}
+    mock_db.users.docs.append(biz_user)
+    server.auth_cache.set(biz_token, biz_user)
+    biz_headers = {"Authorization": f"Bearer {biz_token}"}
+
+    # Business user allowed
+    resp_biz_team = client.get("/api/team/stats", headers=biz_headers)
+    assert resp_biz_team.status_code == 200
+
+    resp_biz_api = client.get("/api/auth/api-key", headers=biz_headers)
+    assert resp_biz_api.status_code == 200
 
 
 def test_create_checkout_locks_database_price_and_ignores_client_tampering(test_setup):

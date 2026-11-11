@@ -13,7 +13,7 @@ import { API } from '../../services/api';
 export default function AdminDashboardScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { token } = useAuth();
+  const { token, user } = useAuth();
 
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -58,21 +58,31 @@ export default function AdminDashboardScreen() {
   }
 
   if (error || !stats) {
+    const isBusinessError = (error && (error.toLowerCase().includes('business') || error.toLowerCase().includes('access denied'))) || user?.subscription_tier !== 'business';
     return (
       <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center', paddingHorizontal: Spacing.screen }]}>
-        <Feather name="alert-circle" size={48} color={Colors.brand.accent} style={{ marginBottom: 16 }} />
+        <Feather name={isBusinessError ? "lock" : "alert-circle"} size={48} color={isBusinessError ? Colors.brand.warning : Colors.brand.accent} style={{ marginBottom: 16 }} />
         <Text style={{ color: Colors.text.primary, fontSize: FontSize.md, fontWeight: '700', textAlign: 'center' }}>
-          Failed to Load Telemetry
+          {isBusinessError ? 'Business Plan Required' : 'Failed to Load Telemetry'}
         </Text>
-        <Text style={{ marginTop: 8, color: Colors.text.secondary, fontSize: FontSize.sm, textAlign: 'center', marginBottom: 24 }}>
-          {error || 'An unexpected error occurred.'}
+        <Text style={{ marginTop: 8, color: Colors.text.secondary, fontSize: FontSize.sm, textAlign: 'center', marginBottom: 24, lineHeight: 20 }}>
+          {isBusinessError ? 'The Admin Dashboard is available exclusively on the Business plan.' : (error || 'An unexpected error occurred.')}
         </Text>
-        <TouchableOpacity 
-          style={{ backgroundColor: Colors.brand.primary, paddingHorizontal: 20, paddingVertical: 10, borderRadius: Radius.md }}
-          onPress={fetchStats}
-        >
-          <Text style={{ color: Colors.text.inverse, fontWeight: '700' }}>Retry</Text>
-        </TouchableOpacity>
+        {isBusinessError ? (
+          <TouchableOpacity 
+            style={{ backgroundColor: Colors.brand.warning, paddingHorizontal: 20, paddingVertical: 12, borderRadius: Radius.md }}
+            onPress={() => router.push('/subscription')}
+          >
+            <Text style={{ color: Colors.text.inverse, fontWeight: '700' }}>Upgrade to Business</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity 
+            style={{ backgroundColor: Colors.brand.primary, paddingHorizontal: 20, paddingVertical: 10, borderRadius: Radius.md }}
+            onPress={fetchStats}
+          >
+            <Text style={{ color: Colors.text.inverse, fontWeight: '700' }}>Retry</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   }

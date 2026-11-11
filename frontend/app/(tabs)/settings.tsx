@@ -343,10 +343,10 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Premium Features */}
-        {tier !== 'free' && (
+        {/* Business Features */}
+        {tier === 'business' ? (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Premium Features</Text>
+            <Text style={styles.sectionTitle}>Business Features</Text>
             <View style={styles.card}>
               <TouchableOpacity testID="team-management-settings" style={styles.listRow} onPress={() => router.push('/settings/team')}>
                 <Feather name="users" size={18} color={Colors.brand.primary} />
@@ -364,6 +364,38 @@ export default function SettingsScreen() {
                 <Feather name="key" size={18} color={Colors.brand.secondary} />
                 <Text style={styles.listRowText}>Developer API Access</Text>
                 <Feather name="chevron-right" size={16} color={Colors.text.tertiary} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Business Features</Text>
+            <View style={styles.card}>
+              <TouchableOpacity testID="team-management-settings" style={styles.listRow} onPress={() => router.push('/subscription')}>
+                <Feather name="users" size={18} color={Colors.text.tertiary} />
+                <View style={{ flex: 1, marginLeft: 10 }}>
+                  <Text style={[styles.listRowText, { color: Colors.text.secondary }]}>Team Management</Text>
+                  <Text style={{ fontSize: 11, color: Colors.brand.warning, marginTop: 2 }}>Available on Business Plan</Text>
+                </View>
+                <Feather name="lock" size={16} color={Colors.brand.warning} />
+              </TouchableOpacity>
+              <View style={styles.divider} />
+              <TouchableOpacity testID="admin-dashboard-settings" style={styles.listRow} onPress={() => router.push('/subscription')}>
+                <Feather name="cpu" size={18} color={Colors.text.tertiary} />
+                <View style={{ flex: 1, marginLeft: 10 }}>
+                  <Text style={[styles.listRowText, { color: Colors.text.secondary }]}>Admin Dashboard</Text>
+                  <Text style={{ fontSize: 11, color: Colors.brand.warning, marginTop: 2 }}>Available on Business Plan</Text>
+                </View>
+                <Feather name="lock" size={16} color={Colors.brand.warning} />
+              </TouchableOpacity>
+              <View style={styles.divider} />
+              <TouchableOpacity testID="api-access-settings" style={styles.listRow} onPress={() => router.push('/subscription')}>
+                <Feather name="key" size={18} color={Colors.text.tertiary} />
+                <View style={{ flex: 1, marginLeft: 10 }}>
+                  <Text style={[styles.listRowText, { color: Colors.text.secondary }]}>Developer API Access</Text>
+                  <Text style={{ fontSize: 11, color: Colors.brand.warning, marginTop: 2 }}>Available on Business Plan</Text>
+                </View>
+                <Feather name="lock" size={16} color={Colors.brand.warning} />
               </TouchableOpacity>
             </View>
           </View>

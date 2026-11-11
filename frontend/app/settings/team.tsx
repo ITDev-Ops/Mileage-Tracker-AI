@@ -72,9 +72,9 @@ export default function TeamManagementScreen() {
     }
 
     const tier = user?.subscription_tier || 'free';
-    if (tier === 'pro' || tier === 'business') {
-      const price = tier === 'pro' ? '$9.99' : '$19.99';
-      const planName = tier === 'pro' ? 'Pro' : 'Business';
+    if (tier === 'business') {
+      const price = '$19.99';
+      const planName = 'Business';
 
       const proceedWithPayment = async () => {
         setInviting(true);
@@ -272,6 +272,26 @@ export default function TeamManagementScreen() {
 
   const totalTeamMiles = members.reduce((acc, m) => acc + (m.monthly_miles || m.monthlyMiles || 0), 0);
   const activeCount = members.filter(m => m.status === 'Active').length;
+
+  if (user?.subscription_tier !== 'business') {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center', paddingHorizontal: Spacing.screen }]}>
+        <Feather name="lock" size={48} color={Colors.brand.warning} style={{ marginBottom: 16 }} />
+        <Text style={{ color: Colors.text.primary, fontSize: FontSize.md, fontWeight: '700', textAlign: 'center' }}>
+          Business Plan Required
+        </Text>
+        <Text style={{ marginTop: 8, color: Colors.text.secondary, fontSize: FontSize.sm, textAlign: 'center', marginBottom: 24, lineHeight: 20 }}>
+          Team Management is available exclusively on the Business plan. Upgrade to invite drivers, manage roles, and review corporate fleet miles.
+        </Text>
+        <TouchableOpacity 
+          style={{ backgroundColor: Colors.brand.warning, paddingHorizontal: 20, paddingVertical: 12, borderRadius: Radius.md }}
+          onPress={() => router.push('/subscription')}
+        >
+          <Text style={{ color: Colors.text.inverse, fontWeight: '700' }}>Upgrade to Business</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
