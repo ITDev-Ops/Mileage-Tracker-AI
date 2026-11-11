@@ -238,8 +238,15 @@ class APIService {
   }
 
   // Payments
-  async createCheckout(token: string, plan: string, origin_url: string, invitee_email?: string) {
-    return this.request('/payments/create-checkout', { method: 'POST', body: JSON.stringify({ plan, origin_url, invitee_email }) }, token);
+  async getProducts() {
+    return this.request('/products', {});
+  }
+  async createCheckout(token: string, product_id: string, origin_url: string, invitee_email?: string) {
+    // Client sends ONLY the product identifier; the server resolves locked prices from the database
+    return this.request('/payments/create-checkout', { 
+      method: 'POST', 
+      body: JSON.stringify({ product_id, plan: product_id, origin_url, invitee_email }) 
+    }, token);
   }
   async getPaymentStatus(token: string, sessionId: string) {
     return this.request(`/payments/status/${sessionId}`, {}, token);

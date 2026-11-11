@@ -169,6 +169,7 @@ async def startup_db_client():
             await db.webhook_events.create_index([("event_id", 1)], unique=True)
             await db.webhook_events.create_index([("provider", 1), ("created_at", -1)])
             await db.users.create_index([("subscription_tier", 1), ("subscription_status", 1), ("next_billing_date", 1)])
+            await db.products.create_index([("product_id", 1)], unique=True, partialFilterExpression={"product_id": {"$type": "string"}})
             logger.info("MongoDB Indexes built explicitly.")
         except Exception as ie:
             logger.error(f"Non-fatal error initializing MongoDB indexes in background: {ie}")
@@ -284,9 +285,14 @@ class ChatMessage(BaseModel):
     session_id: Optional[str] = None
 
 class PaymentCheckout(BaseModel):
-    plan: str
+    product_id: Optional[str] = None
+    plan: Optional[str] = None
     origin_url: str
     invitee_email: Optional[str] = None
+    # Any client-sent prices/amounts are strictly ignored by the server
+    amount: Optional[Any] = None
+    price: Optional[Any] = None
+    currency: Optional[Any] = None
 
 class TeamMemberCreate(BaseModel):
     name: str
@@ -295,10 +301,132 @@ class TeamMemberCreate(BaseModel):
     subscription_tier: Optional[str] = None
 
 
-SUBSCRIPTION_PLANS = {
-    "pro": {"amount": 9.99, "name": "Pro Plan", "currency": "usd", "features": ["Unlimited trips", "AI auto-tagging", "PDF reports", "Receipt scanning"]},
-    "business": {"amount": 19.99, "name": "Business Plan", "currency": "usd", "features": ["Everything in Pro", "Team management", "Admin dashboard", "API access"]},
+# Default authoritative products & services catalog (persisted & looked up in db.products)
+DEFAULT_PRODUCTS = {
+    "pro": {
+        "product_id": "pro",
+        "name": "Mileage Tracker AI - Pro Plan",
+        "description": "Monthly subscription to Pro features: Unlimited trips, AI auto-tagging, PDF reports, Receipt scanning",
+        "amount": 9.99,
+        "amount_cents": 999,
+        "currency": "usd",
+        "interval": "month",
+        "mode": "subscription",
+        "stripe_price_id": os.environ.get("STRIPE_PRICE_PRO", "price_pro_monthly"),
+        "features": ["Unlimited trips", "AI auto-tagging", "PDF reports", "Receipt scanning"],
+        "is_active": True
+    },
+    "business": {
+        "product_id": "business",
+        "name": "Mileage Tracker AI - Business Plan",
+        "description": "Monthly subscription to Business features: Everything in Pro, Team management, Admin dashboard, API access",
+        "amount": 19.99,
+        "amount_cents": 1999,
+        "currency": "usd",
+        "interval": "month",
+        "mode": "subscription",
+        "stripe_price_id": os.environ.get("STRIPE_PRICE_BUSINESS", "price_business_monthly"),
+        "features": ["Everything in Pro", "Team management", "Admin dashboard", "API access"],
+        "is_active": True
+    }
 }
+
+SUBSCRIPTION_PLANS = {
+    k: {
+        "amount": v["amount"],
+        "name": v["name"],
+        "currency": v["currency"],
+        "features": v["features"],
+        "stripe_price_id": v["stripe_price_id"]
+    }
+    for k, v in DEFAULT_PRODUCTS.items()
+}
+
+async def get_product_from_db(database, product_id: str) -> Optional[dict]:
+    """
+    Fetches the authoritative product and locked pricing information from MongoDB.
+    If the product does not yet exist in the database, seeds it from the verified default catalog.
+    Guarantees that the client CANNOT tamper with or override pricing.
+    """
+    if not product_id:
+        return None
+    pid = product_id.strip().lower()
+    
+    # 1. Check database products collection
+    doc = None
+    if hasattr(database, "products"):
+        doc = await database.products.find_one({"product_id": pid})
+    if not doc and hasattr(database, "subscription_plans"):
+        # Also check subscription_plans collection for backward compatibility
+        doc = await database.subscription_plans.find_one({"product_id": pid})
+    
+    if doc:
+        if "amount_cents" not in doc and "amount" in doc:
+            doc["amount_cents"] = int(round(float(doc["amount"]) * 100))
+        return doc
+        
+    # 2. Seed from default catalog if known
+    if pid in DEFAULT_PRODUCTS:
+        seed_doc = dict(DEFAULT_PRODUCTS[pid])
+        seed_doc["created_at"] = datetime.now(timezone.utc)
+        if hasattr(database, "products"):
+            try:
+                await database.products.insert_one(seed_doc)
+            except Exception:
+                pass
+        return seed_doc
+        
+    return None
+
+async def ensure_stripe_price_id(stripe_module, product: dict, is_mock: bool = False) -> str:
+    """
+    Ensures that a locked Stripe Price ID exists for this product.
+    When a Stripe Price ID is referenced in checkout sessions, Stripe locks the charge amount
+    inside Stripe's system so client code cannot override it.
+    """
+    if is_mock or STRIPE_API_KEY == 'sk_test_emergent' or not STRIPE_API_KEY or os.environ.get("TESTING") == "true":
+        mock_id = f"price_mock_{product['product_id']}_{product['amount_cents']}"
+        return mock_id
+
+    price_id = product.get("stripe_price_id")
+    # If a real Stripe price ID is saved (and not a dummy placeholder), verify it exists on Stripe
+    if price_id and price_id.startswith("price_") and price_id not in ("price_pro_monthly", "price_business_monthly"):
+        try:
+            stripe_module.Price.retrieve(price_id)
+            return price_id
+        except Exception:
+            logger.info(f"Stripe price ID '{price_id}' not found on active Stripe account. Will auto-create.")
+
+    # If live/test Stripe and no price_id is saved yet, dynamically create Product and Price in Stripe
+    try:
+        stripe_prod = stripe_module.Product.create(
+            name=product["name"],
+            description=product.get("description", ""),
+            metadata={"product_id": product["product_id"]}
+        )
+        recurring = {"interval": product.get("interval", "month")} if product.get("mode") == "subscription" else None
+        stripe_price = stripe_module.Price.create(
+            product=stripe_prod.id,
+            unit_amount=product["amount_cents"],
+            currency=product.get("currency", "usd").lower(),
+            recurring=recurring,
+            metadata={"product_id": product["product_id"]}
+        )
+        database = ensure_db()
+        await database.products.update_one(
+            {"product_id": product["product_id"]},
+            {"$set": {
+                "stripe_product_id": stripe_prod.id,
+                "stripe_price_id": stripe_price.id,
+                "updated_at": datetime.now(timezone.utc)
+            }}
+        )
+        product["stripe_product_id"] = stripe_prod.id
+        product["stripe_price_id"] = stripe_price.id
+        return stripe_price.id
+    except Exception as e:
+        logger.warning(f"Could not auto-create Stripe price object: {e}. Falling back to configured price ID.")
+        return product.get("stripe_price_id") or f"price_{product['product_id']}"
 
 # ============================================================
 # AUTH UTILITIES
@@ -3520,60 +3648,112 @@ async def start_recurring_subscription_worker():
             logger.error(f"Error in recurring subscription worker: {e}")
         await asyncio.sleep(3600)
 
+@api_router.get("/products")
+async def list_products():
+    """
+    Returns active products, items, and services with server-verified prices and Stripe Price IDs.
+    Client uses the product_id from this catalog to initiate checkout.
+    """
+    database = ensure_db()
+    for pid in DEFAULT_PRODUCTS:
+        await get_product_from_db(database, pid)
+    
+    cursor = database.products.find({"is_active": {"$ne": False}})
+    products = await cursor.to_list(100)
+    
+    clean_products = []
+    for p in products:
+        clean_products.append({
+            "product_id": p.get("product_id"),
+            "name": p.get("name"),
+            "description": p.get("description"),
+            "amount": float(p.get("amount", 0.0)),
+            "amount_cents": int(p.get("amount_cents", int(float(p.get("amount", 0.0)) * 100))),
+            "currency": p.get("currency", "usd"),
+            "interval": p.get("interval", "month"),
+            "mode": p.get("mode", "subscription"),
+            "stripe_price_id": p.get("stripe_price_id"),
+            "features": p.get("features", [])
+        })
+    return {"products": clean_products}
+
 @api_router.post("/payments/create-checkout")
 async def create_checkout(data: PaymentCheckout, request: Request, current_user: dict = Depends(get_current_user)):
+    """
+    Creates a Stripe Checkout Session using verified server-side database prices and locked Stripe Price IDs.
+    Any price, amount, or currency submitted by the frontend is strictly ignored.
+    """
     import stripe
     import urllib.parse
+    database = ensure_db()
     stripe.api_key = STRIPE_API_KEY
     
-    plan = data.plan.lower()
-    if plan not in SUBSCRIPTION_PLANS:
-        raise HTTPException(400, "Invalid plan")
-    plan_info = SUBSCRIPTION_PLANS[plan]
-    
+    # 1. Resolve product_id: client sends product_id or plan identifier - NEVER a dollar amount
+    resolved_id = (data.product_id or data.plan or "").strip().lower()
+    if not resolved_id:
+        raise HTTPException(status_code=400, detail="Missing product_id")
+
+    # 2. Strict Security: Look up the verified price from database. IGNORE any client-supplied amount!
+    if data.amount is not None or data.price is not None:
+        logger.warning(
+            f"Client attempted to supply custom amount/price ({data.amount or data.price}) for product '{resolved_id}'. "
+            f"Ignored: using verified server DB price."
+        )
+
+    product = await get_product_from_db(database, resolved_id)
+    if not product or not product.get("is_active", True):
+        raise HTTPException(status_code=404, detail=f"Product or service '{resolved_id}' not found in database or is inactive")
+
+    verified_amount_cents = int(product["amount_cents"])
+    verified_amount_dollars = float(product["amount"])
+    verified_currency = product.get("currency", "usd").lower()
     invitee_email = data.invitee_email.strip().lower() if data.invitee_email else None
-    
+
     # Construct urls pointing to the backend's redirect proxy to support custom schemes (like exp://) on mobile safely
     base_backend_url = str(request.base_url).rstrip('/')
     encoded_origin = urllib.parse.quote(data.origin_url)
-    
-    success_url = f"{base_backend_url}/api/payments/redirect?session_id={{CHECKOUT_SESSION_ID}}&redirect_url={encoded_origin}&status=success&plan={plan}"
+
+    success_url = f"{base_backend_url}/api/payments/redirect?session_id={{CHECKOUT_SESSION_ID}}&redirect_url={encoded_origin}&status=success&product_id={resolved_id}"
     cancel_url = f"{base_backend_url}/api/payments/redirect?redirect_url={encoded_origin}&status=cancel"
-    
-    # Intercept for local mock testing
-    is_mock = STRIPE_API_KEY == 'sk_test_emergent' or not STRIPE_API_KEY
+
+    # Intercept for local mock testing or unit test environment
+    is_mock = STRIPE_API_KEY == 'sk_test_emergent' or not STRIPE_API_KEY or os.environ.get("TESTING") == "true"
+    stripe_price_id = await ensure_stripe_price_id(stripe, product, is_mock=is_mock)
+
     if is_mock:
         mock_session_id = f"cs_test_mock_{uuid.uuid4().hex[:16]}"
-        # For mock, replace the {CHECKOUT_SESSION_ID} placeholder manually
         mock_success_url = success_url.replace("{CHECKOUT_SESSION_ID}", mock_session_id)
-        
-        await db.payment_transactions.insert_one({
+
+        await database.payment_transactions.insert_one({
             "transaction_id": f"txn_{uuid.uuid4().hex[:12]}",
             "user_id": current_user["user_id"],
             "session_id": mock_session_id,
-            "plan": plan, 
-            "amount": float(plan_info["amount"]), 
-            "currency": plan_info["currency"],
-            "payment_status": "pending", 
+            "product_id": resolved_id,
+            "plan": resolved_id,
+            "stripe_price_id": stripe_price_id,
+            "amount": verified_amount_dollars,
+            "expected_amount_cents": verified_amount_cents,
+            "currency": verified_currency,
+            "payment_status": "pending",
+            "provisioned": False,
             "invitee_email": invitee_email,
             "created_at": datetime.now(timezone.utc)
         })
-        return {"url": mock_success_url, "session_id": mock_session_id}
-        
+        return {
+            "url": mock_success_url,
+            "session_id": mock_session_id,
+            "product_id": resolved_id,
+            "price_id": stripe_price_id
+        }
+
     try:
-        # Create Stripe Checkout Session with proper configuration
+        # Create Stripe Checkout Session referencing ONLY the locked Stripe Price ID
+        # No raw amounts or currency can be overridden by client
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
-            mode='payment',  # Use 'subscription' for recurring
+            mode=product.get('mode', 'subscription' if product.get('interval') in ('month', 'year') else 'payment'),
             line_items=[{
-                'price_data': {
-                    'currency': plan_info["currency"],
-                    'unit_amount': int(float(plan_info["amount"]) * 100),  # Stripe uses cents
-                    'product_data': {
-                        'name': f'Mileage Tracker AI - {plan.capitalize()} Plan Seat' if invitee_email else f'Mileage Tracker AI - {plan.capitalize()} Plan',
-                        'description': f'Seat for team member: {invitee_email}' if invitee_email else f'Monthly subscription to {plan.capitalize()} features',
-                    },
-                },
+                'price': stripe_price_id,  # Locked inside Stripe's system
                 'quantity': 1,
             }],
             customer_email=current_user.get("email"),
@@ -3581,28 +3761,41 @@ async def create_checkout(data: PaymentCheckout, request: Request, current_user:
             cancel_url=cancel_url,
             metadata={
                 "user_id": current_user["user_id"],
-                "plan": plan,
-                "email": current_user["email"],
+                "product_id": resolved_id,
+                "plan": resolved_id,
+                "stripe_price_id": stripe_price_id,
+                "expected_amount_cents": str(verified_amount_cents),
+                "currency": verified_currency,
+                "email": current_user.get("email", ""),
                 "invitee_email": invitee_email or ""
             }
         )
-        
-        await db.payment_transactions.insert_one({
+
+        await database.payment_transactions.insert_one({
             "transaction_id": f"txn_{uuid.uuid4().hex[:12]}",
             "user_id": current_user["user_id"],
             "session_id": session.id,
-            "plan": plan, 
-            "amount": float(plan_info["amount"]), 
-            "currency": plan_info["currency"],
-            "payment_status": "pending", 
+            "product_id": resolved_id,
+            "plan": resolved_id,
+            "stripe_price_id": stripe_price_id,
+            "amount": verified_amount_dollars,
+            "expected_amount_cents": verified_amount_cents,
+            "currency": verified_currency,
+            "payment_status": "pending",
+            "provisioned": False,
             "invitee_email": invitee_email,
             "created_at": datetime.now(timezone.utc)
         })
-        
-        return {"url": session.url, "session_id": session.id}
+
+        return {
+            "url": session.url,
+            "session_id": session.id,
+            "product_id": resolved_id,
+            "price_id": stripe_price_id
+        }
     except stripe.error.StripeError as e:
-        logger.error(f"Stripe error: {e}")
-        raise HTTPException(400, f"Payment error: {str(e)}")
+        logger.error(f"Stripe error creating session: {e}")
+        raise HTTPException(status_code=400, detail=f"Payment error: {str(e)}")
 
 async def extract_stripe_card_details(session_id: str):
     card_brand = None
@@ -3677,101 +3870,40 @@ async def payments_redirect(
     redirect_url: str,
     status: str,
     session_id: Optional[str] = None,
+    product_id: Optional[str] = None,
     plan: Optional[str] = "pro"
 ):
     from fastapi.responses import HTMLResponse
-    import stripe
-    stripe.api_key = STRIPE_API_KEY
+    database = ensure_db()
+    resolved_product = product_id or plan or "pro"
     
     message = "Processing your payment..."
-    subtitle = "Please wait while we activate your subscription."
+    subtitle = "Please wait while our secure webhook confirms your payment."
     is_success = False
     
     if status == "success" and session_id:
         try:
-            if session_id.startswith("cs_test_mock_"):
-                txn = await db.payment_transactions.find_one({"session_id": session_id})
-                if txn:
-                    user_id = txn["user_id"]
-                    plan = txn.get("plan", "pro")
-                    invitee_email = txn.get("invitee_email")
-                    
-                    if invitee_email:
-                        invitee_user = await db.users.find_one({"email": invitee_email})
-                        if invitee_user:
-                            await activate_user_subscription(invitee_user["user_id"], plan)
-                        await db.team_members.update_many(
-                            {"email": invitee_email},
-                            {"$set": {"subscription_tier": plan}}
-                        )
-                    else:
-                        if user_id:
-                            await activate_user_subscription(user_id, plan)
-                    card_brand, card_last4 = await extract_stripe_card_details(session_id)
-                    await db.payment_transactions.update_one(
-                        {"session_id": session_id}, 
-                        {"$set": {
-                            "payment_status": "paid", 
-                            "card_brand": card_brand,
-                            "card_last4": card_last4,
-                            "updated_at": datetime.now(timezone.utc)
-                        }}
-                    )
-                    is_success = True
-                    message = "Payment Successful!"
-                    subtitle = f"Your {plan.capitalize()} Plan is now active. Returning you to the app..."
+            txn = await database.payment_transactions.find_one({"session_id": session_id}) if database is not None else None
+            is_provisioned = txn.get("provisioned", False) if txn else False
+            resolved_product = (txn.get("product_id") or txn.get("plan") or resolved_product) if txn else resolved_product
+
+            # Strict Security: The checkout redirect URL is NOT proof of payment.
+            # Direct navigation to this URL does not grant access.
+            # Access is strictly provisioned by the Stripe Webhook listener after amount validation.
+            if is_provisioned:
+                is_success = True
+                message = "Payment Confirmed!"
+                subtitle = f"Your {resolved_product.capitalize()} Plan is active. Returning you to the app..."
             else:
-                session = stripe.checkout.Session.retrieve(session_id)
-                metadata_dict = extract_metadata(session)
-                
-                if session.payment_status == "paid":
-                    plan = metadata_dict.get("plan", "pro")
-                    user_id = metadata_dict.get("user_id")
-                    invitee_email = metadata_dict.get("invitee_email") or None
-                    
-                    # Try to recover invitee_email or user_id from txn if missing
-                    txn = await db.payment_transactions.find_one({"session_id": session_id})
-                    if txn:
-                        if not invitee_email:
-                            invitee_email = txn.get("invitee_email")
-                        if not user_id:
-                            user_id = txn.get("user_id")
-                            
-                    if invitee_email:
-                        invitee_user = await db.users.find_one({"email": invitee_email})
-                        if invitee_user:
-                            await activate_user_subscription(invitee_user["user_id"], plan)
-                        await db.team_members.update_many(
-                            {"email": invitee_email},
-                            {"$set": {"subscription_tier": plan}}
-                        )
-                    else:
-                        if user_id:
-                            await activate_user_subscription(user_id, plan)
-                    
-                    card_brand, card_last4 = await extract_stripe_card_details(session_id)
-                    await db.payment_transactions.update_one(
-                        {"session_id": session_id}, 
-                        {"$set": {
-                            "payment_status": "paid", 
-                            "invitee_email": invitee_email, 
-                            "card_brand": card_brand,
-                            "card_last4": card_last4,
-                            "updated_at": datetime.now(timezone.utc)
-                        }}
-                    )
-                    is_success = True
-                    message = "Payment Successful!"
-                    subtitle = f"Your {plan.capitalize()} Plan is now active. Returning you to the app..."
-                else:
-                    message = "Payment Pending"
-                    subtitle = "Your payment is currently being processed by Stripe."
+                is_success = True
+                message = "Payment Submitted"
+                subtitle = "Your checkout was received. Our secure webhook is confirming the payment and activating your features..."
         except Exception as e:
-            logger.error(f"Error processing redirect payment status: {e}")
-            message = "Payment Status Verification Error"
-            subtitle = "We had an issue verifying your payment, but our webhook will process it shortly."
+            logger.error(f"Error checking redirect payment status: {e}")
+            message = "Payment Processing"
+            subtitle = "Your payment is being confirmed by Stripe. Our webhook will activate your features shortly."
             
-        target_url = construct_target_url(redirect_url, "/subscription", {"session_id": session_id, "plan": plan})
+        target_url = construct_target_url(redirect_url, "/subscription", {"session_id": session_id, "plan": resolved_product})
     else:
         message = "Subscription Cancelled"
         subtitle = "You cancelled the payment process. Returning you to subscription plans..."
@@ -3963,101 +4095,43 @@ async def payments_redirect(
 
 @api_router.get("/payments/status/{session_id}")
 async def get_payment_status(session_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+    """
+    Returns the verification and provisioning status of a checkout session.
+    Security Notice: The checkout page/URL is NOT proof of payment; this endpoint
+    reports status only and NEVER provisions access. Access is provisioned exclusively
+    by the cryptographically-verified Stripe webhook listener.
+    """
     import stripe
     stripe.api_key = STRIPE_API_KEY
     
     txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
-    if txn and txn.get("payment_status") == "paid":
-        return txn
+    provisioned = bool(txn.get("provisioned", False)) if txn else False
+    payment_status = txn.get("payment_status", "pending") if txn else "pending"
+    plan = (txn.get("plan") if txn else None) or "pro"
+    product_id = (txn.get("product_id") if txn else None) or plan
     
+    status = "pending"
     try:
-        if session_id.startswith("cs_test_mock_"):
-            # Auto-fulfill mock session from local testing
-            plan = txn.get("plan", "pro") if txn else "pro"
-            invitee_email = txn.get("invitee_email") if txn else None
-            
-            if invitee_email:
-                invitee_user = await db.users.find_one({"email": invitee_email})
-                if invitee_user:
-                    await db.users.update_one(
-                        {"user_id": invitee_user["user_id"]}, 
-                        {"$set": {"subscription_tier": plan}}
-                    )
-                    auth_cache.invalidate_user(invitee_user["user_id"])
-                await db.team_members.update_many(
-                    {"email": invitee_email},
-                    {"$set": {"subscription_tier": plan}}
-                )
-            else:
-                await db.users.update_one(
-                    {"user_id": current_user["user_id"]}, 
-                    {"$set": {"subscription_tier": plan}}
-                )
-                auth_cache.invalidate_user(current_user["user_id"])
-            card_brand, card_last4 = await extract_stripe_card_details(session_id)
-            await db.payment_transactions.update_one(
-                {"session_id": session_id}, 
-                {"$set": {
-                    "payment_status": "paid", 
-                    "card_brand": card_brand,
-                    "card_last4": card_last4,
-                    "updated_at": datetime.now(timezone.utc)
-                }}
-            )
-            return {
-                "status": "complete", 
-                "payment_status": "paid", 
-                "plan": plan
-            }
-            
-        session = stripe.checkout.Session.retrieve(session_id)
-        metadata_dict = extract_metadata(session)
-                
-        if session.payment_status == "paid":
-            plan = metadata_dict.get("plan", "pro")
-            invitee_email = metadata_dict.get("invitee_email") or None
-            user_id = metadata_dict.get("user_id") or current_user["user_id"]
-            
-            if not invitee_email and txn:
-                invitee_email = txn.get("invitee_email")
-                
-            if invitee_email:
-                invitee_user = await db.users.find_one({"email": invitee_email})
-                if invitee_user:
-                    await db.users.update_one(
-                        {"user_id": invitee_user["user_id"]}, 
-                        {"$set": {"subscription_tier": plan}}
-                    )
-                    auth_cache.invalidate_user(invitee_user["user_id"])
-                await db.team_members.update_many(
-                    {"email": invitee_email},
-                    {"$set": {"subscription_tier": plan}}
-                )
-            else:
-                await db.users.update_one(
-                    {"user_id": user_id}, 
-                    {"$set": {"subscription_tier": plan}}
-                )
-                auth_cache.invalidate_user(user_id)
-            card_brand, card_last4 = await extract_stripe_card_details(session_id)
-            await db.payment_transactions.update_one(
-                {"session_id": session_id}, 
-                {"$set": {
-                    "payment_status": "paid", 
-                    "invitee_email": invitee_email, 
-                    "card_brand": card_brand,
-                    "card_last4": card_last4,
-                    "updated_at": datetime.now(timezone.utc)
-                }}
-            )
-        return {
-            "status": session.status, 
-            "payment_status": session.payment_status, 
-            "plan": metadata_dict.get("plan", "pro")
-        }
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe status check error: {e}")
-        return {"status": "error", "payment_status": "unknown", "plan": None}
+        if not session_id.startswith("cs_test_mock_") and STRIPE_API_KEY and STRIPE_API_KEY != 'sk_test_emergent':
+            session = stripe.checkout.Session.retrieve(session_id)
+            status = getattr(session, "status", "complete")
+            stripe_payment_status = getattr(session, "payment_status", "unpaid")
+            if not txn or not txn.get("payment_status") or txn.get("payment_status") == "pending":
+                payment_status = stripe_payment_status
+        else:
+            status = "complete" if payment_status == "paid" else "open"
+    except Exception as e:
+        logger.warning(f"Stripe status check: {e}")
+        status = "unknown"
+
+    return {
+        "session_id": session_id,
+        "status": status,
+        "payment_status": payment_status,
+        "provisioned": provisioned,
+        "plan": plan,
+        "product_id": product_id
+    }
  
 # ============================================================
 # WEBHOOK SECURITY, SIGNATURE VERIFICATION & IDEMPOTENCY
@@ -4205,38 +4279,110 @@ async def stripe_webhook(request: Request):
         payment_status = _get_field(session, "payment_status")
         metadata_dict = extract_metadata(session)
 
-        if payment_status == "paid":
+        # Confirm payment event status
+        if payment_status in ("paid", "no_payment_required"):
             user_id = metadata_dict.get("user_id")
-            plan = metadata_dict.get("plan", "pro")
+            product_id = metadata_dict.get("product_id") or metadata_dict.get("plan") or "pro"
             invitee_email = metadata_dict.get("invitee_email") or None
 
-            if invitee_email:
-                invitee_user = await database.users.find_one({"email": invitee_email})
-                if invitee_user:
-                    await activate_user_subscription(invitee_user["user_id"], plan, stripe_event_id=event_id)
-                await database.team_members.update_many(
-                    {"email": invitee_email},
-                    {"$set": {"subscription_tier": plan, "last_stripe_event_id": event_id}}
-                )
-            else:
-                if user_id:
-                    await activate_user_subscription(user_id, plan, stripe_event_id=event_id)
-
-            card_brand, card_last4 = await extract_stripe_card_details(session_id) if session_id else (None, None)
+            txn = None
             if session_id:
-                await database.payment_transactions.update_one(
-                    {"session_id": session_id},
-                    {"$set": {
-                        "stripe_event_id": event_id,
-                        "payment_status": "paid",
-                        "invitee_email": invitee_email,
-                        "card_brand": card_brand,
-                        "card_last4": card_last4,
-                        "updated_at": datetime.now(timezone.utc)
-                    }},
-                    upsert=False
+                txn = await database.payment_transactions.find_one({"session_id": session_id})
+                if txn:
+                    product_id = txn.get("product_id") or txn.get("plan") or product_id
+                    if not user_id:
+                        user_id = txn.get("user_id")
+                    if not invitee_email:
+                        invitee_email = txn.get("invitee_email")
+
+            # Look up authoritative product from database
+            product = await get_product_from_db(database, product_id)
+            if not product:
+                logger.error(f"Stripe webhook: Unknown product_id '{product_id}' for session {session_id}")
+                product = {"amount_cents": 999, "currency": "usd", "name": "Pro Plan", "product_id": "pro", "amount": 9.99}
+
+            expected_cents = int(product.get("amount_cents", int(float(product.get("amount", 9.99)) * 100)))
+            expected_currency = (product.get("currency") or "usd").lower()
+
+            amount_total = _get_field(session, "amount_total")
+            currency = (_get_field(session, "currency") or expected_currency).lower()
+
+            # Strict validation: Paid amount must match the authoritative database price
+            if amount_total is not None and amount_total != expected_cents:
+                logger.critical(
+                    f"FRAUD DETECTED / AMOUNT MISMATCH: Stripe session {session_id} amount_total={amount_total} cents "
+                    f"does not match authoritative database price={expected_cents} cents. Access REJECTED."
                 )
-            action_taken = "subscription_activated"
+                if session_id:
+                    await database.payment_transactions.update_one(
+                        {"session_id": session_id},
+                        {"$set": {
+                            "payment_status": "fraud_amount_mismatch",
+                            "stripe_event_id": event_id,
+                            "provisioned": False,
+                            "tamper_details": {
+                                "expected_cents": expected_cents,
+                                "received_cents": amount_total,
+                                "currency": currency
+                            },
+                            "updated_at": datetime.now(timezone.utc)
+                        }},
+                        upsert=True
+                    )
+                action_taken = "fraud_amount_mismatch_rejected"
+            elif currency != expected_currency:
+                logger.critical(
+                    f"FRAUD DETECTED / CURRENCY MISMATCH: Stripe session {session_id} currency={currency} "
+                    f"does not match expected={expected_currency}. Access REJECTED."
+                )
+                if session_id:
+                    await database.payment_transactions.update_one(
+                        {"session_id": session_id},
+                        {"$set": {
+                            "payment_status": "fraud_currency_mismatch",
+                            "stripe_event_id": event_id,
+                            "provisioned": False,
+                            "updated_at": datetime.now(timezone.utc)
+                        }},
+                        upsert=True
+                    )
+                action_taken = "fraud_currency_mismatch_rejected"
+            else:
+                # Validation confirmed! ONLY NOW provision access to the purchased resource
+                plan = product.get("product_id") or metadata_dict.get("plan", "pro")
+                if invitee_email:
+                    invitee_user = await database.users.find_one({"email": invitee_email})
+                    if invitee_user:
+                        await activate_user_subscription(invitee_user["user_id"], plan, stripe_event_id=event_id)
+                    await database.team_members.update_many(
+                        {"email": invitee_email},
+                        {"$set": {"subscription_tier": plan, "last_stripe_event_id": event_id}}
+                    )
+                else:
+                    if user_id:
+                        await activate_user_subscription(user_id, plan, stripe_event_id=event_id)
+
+                card_brand, card_last4 = await extract_stripe_card_details(session_id) if session_id else (None, None)
+                if session_id:
+                    await database.payment_transactions.update_one(
+                        {"session_id": session_id},
+                        {"$set": {
+                            "stripe_event_id": event_id,
+                            "payment_status": "paid",
+                            "provisioned": True,
+                            "amount": product.get("amount", float(expected_cents) / 100.0),
+                            "currency": expected_currency,
+                            "product_id": product.get("product_id"),
+                            "plan": plan,
+                            "invitee_email": invitee_email,
+                            "card_brand": card_brand,
+                            "card_last4": card_last4,
+                            "provisioned_at": datetime.now(timezone.utc),
+                            "updated_at": datetime.now(timezone.utc)
+                        }},
+                        upsert=True
+                    )
+                action_taken = "subscription_activated"
 
     elif event_type in ("invoice.payment_succeeded", "payment_intent.succeeded"):
         metadata_dict = extract_metadata(data_obj)
@@ -4260,10 +4406,13 @@ async def stripe_webhook(request: Request):
                 "transaction_id": f"txn_wh_{uuid.uuid4().hex[:12]}",
                 "stripe_event_id": event_id,
                 "user_id": user_doc["user_id"],
+                "product_id": resolved_plan,
                 "plan": resolved_plan,
                 "amount": float(plan_info["amount"]),
                 "currency": plan_info.get("currency", "usd"),
                 "payment_status": "paid",
+                "provisioned": True,
+                "provisioned_at": datetime.now(timezone.utc),
                 "type": event_type,
                 "created_at": datetime.now(timezone.utc)
             })

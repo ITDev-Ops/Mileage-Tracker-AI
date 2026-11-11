@@ -102,6 +102,8 @@ class MockCollection:
 class MockDB:
     def __init__(self):
         self.users = MockCollection()
+        self.products = MockCollection()
+        self.subscription_plans = MockCollection()
         self.payment_transactions = MockCollection()
         self.alerts = MockCollection()
         self.team_members = MockCollection()
