@@ -195,18 +195,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const parseAuthResult = (url: string): Record<string, string> => {
     const params: Record<string, string> = {};
     try {
-      const hashIdx = url.indexOf('#');
-      const queryIdx = url.indexOf('?');
-      const fragment = hashIdx !== -1 ? url.substring(hashIdx + 1) : '';
-      const query = queryIdx !== -1 ? url.substring(queryIdx + 1, hashIdx !== -1 ? hashIdx : undefined) : '';
-      const search = fragment || query;
-      if (search) {
-        search.split('&').forEach((part) => {
+      const parseSection = (str: string) => {
+        if (!str) return;
+        str.split('&').forEach((part) => {
           const [k, v] = part.split('=');
           if (k) {
             params[decodeURIComponent(k)] = decodeURIComponent(v || '');
           }
         });
+      };
+
+      const queryIdx = url.indexOf('?');
+      const hashIdx = url.indexOf('#');
+
+      if (queryIdx !== -1) {
+        const queryEnd = hashIdx !== -1 && hashIdx > queryIdx ? hashIdx : undefined;
+        parseSection(url.substring(queryIdx + 1, queryEnd));
+      }
+      if (hashIdx !== -1) {
+        parseSection(url.substring(hashIdx + 1));
       }
     } catch (err) {
       console.warn('[GoogleAuth] Error parsing callback URL:', err);
