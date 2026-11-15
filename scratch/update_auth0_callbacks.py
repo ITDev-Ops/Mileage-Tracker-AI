@@ -18,8 +18,8 @@ AUTH0_DOMAIN = "dev-j470s7j0sap6h6us.us.auth0.com"
 CLIENT_ID = "lDGAMwvArDFK38vWl6mH8f1HXSDJlNYb"
 
 ALLOWED_CALLBACKS = [
-    "mileagetracker://",
     "mileagetracker://auth",
+    "mileagetracker://callback",
     "exp://localhost:8081",
     "exp://localhost:8081/--",
     "exp://localhost:8081/--/auth",
@@ -35,16 +35,16 @@ ALLOWED_CALLBACKS = [
     "http://localhost:8081",
     "http://localhost:19006",
     "http://localhost:3000",
-    "https://ai-mile-tracker-f2fed3697be0.herokuapp.com"
+    "https://ai-mile-tracker-f2fed3697be0.herokuapp.com",
+    "https://globalsysnetcyber.com"
 ]
 
 ALLOWED_LOGOUTS = [
-    "mileagetracker://",
-    "exp://localhost:8081",
     "https://auth.expo.io/@multisystems/mileage-tracker-ai",
-    "com.multisystems.mileagetrackerai://dev-j470s7j0sap6h6us.us.auth0.com/ios/com.multisystems.mileagetrackerai/callback",
     "http://localhost:8081",
-    "https://ai-mile-tracker-f2fed3697be0.herokuapp.com"
+    "http://localhost:3000",
+    "https://ai-mile-tracker-f2fed3697be0.herokuapp.com",
+    "https://globalsysnetcyber.com"
 ]
 
 ALLOWED_ORIGINS = [
@@ -115,3 +115,4 @@ if __name__ == "__main__":
     else:
         print("Please provide the Auth0 Management API Token as an argument:")
         print("  python scratch/update_auth0_callbacks.py <TOKEN>")
+
