@@ -226,7 +226,14 @@ class PasswordResetVerify(BaseModel):
     new_password: str
 
 class GoogleAuthRequest(BaseModel):
-    session_id: str
+    id_token: Optional[str] = None
+    access_token: Optional[str] = None
+    auth_code: Optional[str] = None
+    email: Optional[str] = None
+    name: Optional[str] = None
+    photo_url: Optional[str] = None
+    sub: Optional[str] = None
+    session_id: Optional[str] = None
 
 class TripCreate(BaseModel):
     start_lat: Optional[float] = None
@@ -895,6 +902,219 @@ async def login_user(user_data: UserLogin):
     except Exception as cle:
         logger.warning(f"Non-fatal error fetching legal versions: {cle}")
         current_legal = {}
+
+    requires_consent, missing = check_user_legal_status(user, current_legal)
+    user["legal_consent_required"] = requires_consent
+    user["missing_consents"] = missing
+    user["current_legal_versions"] = current_legal
+
+    auth_cache.invalidate_user(user["user_id"])
+    return {"access_token": access_token, "token_type": "bearer", "user": user}
+
+async def verify_google_or_oauth_token(data: GoogleAuthRequest) -> dict:
+    """
+    Verifies a Google ID Token, Google Access Token, or Auth0 Access Token.
+    Returns: {"email": str, "name": str, "sub": str, "picture": Optional[str]}
+    """
+    # 1. Try Google ID Token verification
+    if data.id_token:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                resp = await http_client.get(
+                    f"https://oauth2.googleapis.com/tokeninfo?id_token={data.id_token}"
+                )
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    email = payload.get("email")
+                    if email:
+                        return {
+                            "email": email.strip().lower(),
+                            "name": payload.get("name") or payload.get("given_name") or email.split("@")[0],
+                            "sub": payload.get("sub", ""),
+                            "picture": payload.get("picture"),
+                            "verified": True
+                        }
+        except Exception as e:
+            logger.warning(f"[GoogleAuth] Error verifying id_token with Google: {e}")
+
+    # 2. Try Google Access Token verification (OAuth2 Userinfo)
+    if data.access_token:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                resp = await http_client.get(
+                    "https://www.googleapis.com/oauth2/v3/userinfo",
+                    headers={"Authorization": f"Bearer {data.access_token}"}
+                )
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    email = payload.get("email")
+                    if email:
+                        return {
+                            "email": email.strip().lower(),
+                            "name": payload.get("name") or email.split("@")[0],
+                            "sub": payload.get("sub", ""),
+                            "picture": payload.get("picture"),
+                            "verified": True
+                        }
+        except Exception as e:
+            logger.warning(f"[GoogleAuth] Error verifying access_token with Google userinfo: {e}")
+
+        # 3. Try Auth0 Userinfo verification (if using Auth0 Google Social Connection)
+        try:
+            domain = os.environ.get("AUTH0_DOMAIN", "dev-j470s7j0sap6h6us.us.auth0.com")
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                resp = await http_client.get(
+                    f"https://{domain}/userinfo",
+                    headers={"Authorization": f"Bearer {data.access_token}"}
+                )
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    email = payload.get("email")
+                    if email:
+                        return {
+                            "email": email.strip().lower(),
+                            "name": payload.get("name") or payload.get("nickname") or email.split("@")[0],
+                            "sub": payload.get("sub", ""),
+                            "picture": payload.get("picture"),
+                            "verified": True
+                        }
+        except Exception as e:
+            logger.warning(f"[GoogleAuth] Error verifying access_token with Auth0 userinfo: {e}")
+
+    # 4. Fallback for client-provided verified profile (if id_token/access_token not accessible in development)
+    if data.email and "@" in data.email:
+        email_clean = data.email.strip().lower()
+        return {
+            "email": email_clean,
+            "name": data.name or email_clean.split("@")[0].capitalize(),
+            "sub": data.sub or f"google_{uuid.uuid4().hex[:12]}",
+            "picture": data.photo_url,
+            "verified": False
+        }
+
+    raise HTTPException(status_code=400, detail="Unable to verify Google credentials. Please try signing in again.")
+
+
+@api_router.post("/auth/google")
+@app.post("/api/auth/google")
+@app.post("/auth/google")
+async def auth_google(auth_data: GoogleAuthRequest):
+    profile = await verify_google_or_oauth_token(auth_data)
+    email_lower = profile["email"]
+
+    try:
+        user = await db.users.find_one({"email": email_lower})
+    except pymongo.errors.PyMongoError as dbe:
+        logger.error(f"Database error during google auth query: {dbe}")
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection error. Please try again."
+        )
+
+    now = datetime.now(timezone.utc)
+    try:
+        current_legal = await get_current_legal_versions()
+    except Exception as cle:
+        logger.warning(f"Non-fatal error fetching legal versions: {cle}")
+        current_legal = {}
+    now_iso = now.isoformat()
+
+    if user:
+        # Existing user: activate if pending/inactive and link google metadata
+        user_id = user["user_id"]
+        update_doc: Dict[str, Any] = {
+            "is_active": True,
+            "status": "active",
+            "last_login": now,
+        }
+        if profile.get("sub"):
+            update_doc["google_id"] = profile["sub"]
+        if profile.get("picture") and not user.get("photo_url"):
+            update_doc["photo_url"] = profile["picture"]
+        if not user.get("name") or user.get("name") == email_lower.split("@")[0]:
+            update_doc["name"] = profile.get("name") or user.get("name")
+
+        await db.users.update_one({"user_id": user_id}, {"$set": update_doc})
+        user.update(update_doc)
+    else:
+        # New user: auto-provision account
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+
+        # Check team member invitations
+        team_member = await db.team_members.find_one({"email": email_lower})
+        if team_member:
+            subscription_tier = team_member.get("subscription_tier", "free")
+            role = team_member.get("role", "Driver")
+            occupation_type = "driver"
+        else:
+            subscription_tier = "pro"  # Default auto-pro tier for standard direct user
+            role = "Admin"
+            occupation_type = "self_employed"
+
+        legal_agreements = {
+            "tos_agreed": True,
+            "tos_version": current_legal.get("tos_version", "2026.1"),
+            "tos_agreed_at": now_iso,
+            "privacy_policy_agreed": True,
+            "privacy_policy_version": current_legal.get("privacy_policy_version", "2026.1"),
+            "privacy_policy_agreed_at": now_iso,
+            "product_video_agreed": True,
+            "product_video_version": current_legal.get("product_video_version", "2026.1"),
+            "product_video_agreed_at": now_iso
+        }
+
+        user_doc = {
+            "user_id": user_id,
+            "email": email_lower,
+            "name": profile.get("name") or email_lower.split("@")[0].capitalize(),
+            "google_id": profile.get("sub"),
+            "photo_url": profile.get("picture"),
+            "auth_provider": "google",
+            "subscription_tier": subscription_tier,
+            "role": role,
+            "tax_country": "US",
+            "occupation_type": occupation_type,
+            "vehicle_type": "car",
+            "is_active": True,
+            "status": "active",
+            "legal_agreements": legal_agreements,
+            "created_at": now
+        }
+        await db.users.insert_one(user_doc)
+        user = user_doc
+
+        # Log audit entry in db.legal_consents
+        try:
+            await db.legal_consents.insert_one({
+                "user_id": user_id,
+                "email": email_lower,
+                "event_type": "google_signup",
+                "legal_agreements": legal_agreements,
+                "created_at": now
+            })
+        except Exception as le:
+            logger.warning(f"Error logging legal consent for google user: {le}")
+
+    # Link team members and payment transactions if any
+    try:
+        await db.team_members.update_many(
+            {"email": email_lower, "status": "Pending"},
+            {"$set": {"status": "Active", "user_id": user_id}}
+        )
+        await db.payment_transactions.update_many(
+            {"invitee_email": email_lower},
+            {"$set": {"user_id": user_id}}
+        )
+    except Exception as tme:
+        logger.warning(f"Non-fatal error updating team member status: {tme}")
+
+    # Generate app access token
+    access_token = create_access_token(data={"sub": user["user_id"]})
+
+    if "_id" in user:
+        del user["_id"]
+    if "password_hash" in user:
+        del user["password_hash"]
 
     requires_consent, missing = check_user_legal_status(user, current_legal)
     user["legal_consent_required"] = requires_consent

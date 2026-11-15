@@ -1,7 +1,12 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Platform, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as WebBrowser from 'expo-web-browser';
+import * as AuthSession from 'expo-auth-session';
 import { API } from '../services/api';
+
+// Complete any pending web-based auth sessions
+WebBrowser.maybeCompleteAuthSession();
 
 export interface User {
   user_id: string;
@@ -26,7 +31,7 @@ interface AuthContextType {
   login: (email?: string, password?: string) => Promise<void>;
   register: (name?: string, email?: string, password?: string, token?: string, legalConsent?: Record<string, any>) => Promise<void>;
   acceptLegalTerms: (consentData: { tos_agreed: boolean; privacy_policy_agreed: boolean; product_video_agreed: boolean }) => Promise<void>;
-  loginWithGoogle: () => Promise<void>;
+  loginWithGoogle: () => Promise<User | null>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -187,8 +192,97 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const loginWithGoogle = async () => {
-    Alert.alert('Coming Soon', 'Google Authentication will be implemented in a future update.');
+  const parseAuthResult = (url: string): Record<string, string> => {
+    const params: Record<string, string> = {};
+    try {
+      const hashIdx = url.indexOf('#');
+      const queryIdx = url.indexOf('?');
+      const fragment = hashIdx !== -1 ? url.substring(hashIdx + 1) : '';
+      const query = queryIdx !== -1 ? url.substring(queryIdx + 1, hashIdx !== -1 ? hashIdx : undefined) : '';
+      const search = fragment || query;
+      if (search) {
+        search.split('&').forEach((part) => {
+          const [k, v] = part.split('=');
+          if (k) {
+            params[decodeURIComponent(k)] = decodeURIComponent(v || '');
+          }
+        });
+      }
+    } catch (err) {
+      console.warn('[GoogleAuth] Error parsing callback URL:', err);
+    }
+    return params;
+  };
+
+  const loginWithGoogle = async (): Promise<User | null> => {
+    setLoading(true);
+    authLog('loginWithGoogle: Starting Google OAuth flow...');
+    try {
+      const redirectUri = AuthSession.makeRedirectUri({
+        scheme: 'mileagetracker',
+        preferLocalhost: true,
+      });
+      authLog('loginWithGoogle: redirectUri generated:', redirectUri);
+
+      const auth0Domain = process.env.EXPO_PUBLIC_AUTH0_DOMAIN || 'dev-j470s7j0sap6h6us.us.auth0.com';
+      const auth0ClientId = process.env.EXPO_PUBLIC_AUTH0_CLIENT_ID || 'lDGAMwvArDFK38vWl6mH8f1HXSDJlNYb';
+      const googleClientId = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID || process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+
+      let authUrl = '';
+      if (googleClientId) {
+        // Direct Google OAuth 2.0 flow
+        const scope = encodeURIComponent('openid email profile');
+        authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(googleClientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token%20id_token&scope=${scope}&nonce=${Date.now()}`;
+      } else {
+        // Auth0 Google Social Connection flow
+        const scope = encodeURIComponent('openid profile email');
+        authUrl = `https://${auth0Domain}/authorize?client_id=${encodeURIComponent(auth0ClientId)}&response_type=token%20id_token&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scope}&connection=google-oauth2&nonce=${Date.now()}`;
+      }
+
+      authLog('loginWithGoogle: opening browser auth session with URL:', authUrl);
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+      authLog('loginWithGoogle: browser session result type:', result.type);
+
+      if (result.type === 'success' && result.url) {
+        authLog('loginWithGoogle: callback URL received:', result.url);
+        const params = parseAuthResult(result.url);
+
+        const idToken = params.id_token;
+        const accessToken = params.access_token;
+        const code = params.code;
+
+        if (!idToken && !accessToken && !code) {
+          throw new Error('Google authentication did not return credentials. Please try again.');
+        }
+
+        // Send tokens to backend to verify and authenticate
+        authLog('loginWithGoogle: verifying tokens with backend...');
+        const response = await API.authGoogle({
+          id_token: idToken,
+          access_token: accessToken,
+          auth_code: code,
+        });
+
+        await persistSession(response.access_token, response.user);
+        authLog('loginWithGoogle: user successfully authenticated with Google:', response.user?.email);
+        return response.user;
+      } else if (result.type === 'cancel' || result.type === 'dismiss') {
+        authLog('loginWithGoogle: user cancelled or dismissed Google Sign-In');
+        return null;
+      } else {
+        authLog('loginWithGoogle: session unfulfilled:', result.type);
+        return null;
+      }
+    } catch (error: any) {
+      authLog('loginWithGoogle: ERROR:', error.message || error);
+      Alert.alert(
+        'Google Sign-In Error',
+        error.message || 'Unable to complete Google sign-in. Please try again or use email/password.'
+      );
+      throw error;
+    } finally {
+      setLoading(false);
+    }
   };
 
   const logout = async () => {

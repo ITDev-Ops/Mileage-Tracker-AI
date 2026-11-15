@@ -70,7 +70,23 @@ export default function SignUpScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  const { register } = useAuth();
+  const { register, loginWithGoogle } = useAuth();
+  const [googleLoading, setGoogleLoading] = useState(false);
+
+  const handleGoogleSignUp = async () => {
+    setGoogleLoading(true);
+    try {
+      const authUser = await loginWithGoogle();
+      if (authUser) {
+        console.log('[SignUp] Google signup/login successful, navigating to dashboard...');
+        router.replace('/(tabs)/dashboard');
+      }
+    } catch (e: any) {
+      console.warn('[SignUp] Google auth error:', e.message || e);
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
 
   const handleSignUp = async () => {
     if (!isAllAgreed) {
@@ -339,6 +355,33 @@ export default function SignUpScreen() {
               </Text>
             )}
           </TouchableOpacity>
+
+          {/* Divider & Google Sign Up (for direct signups) */}
+          {!params.token && (
+            <>
+              <View style={styles.divider}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>or</Text>
+                <View style={styles.dividerLine} />
+              </View>
+
+              <TouchableOpacity
+                style={[styles.googleBtn, (loading || googleLoading) && styles.disabledBtn]}
+                onPress={handleGoogleSignUp}
+                disabled={loading || googleLoading}
+                activeOpacity={0.8}
+              >
+                {googleLoading ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <>
+                    <Text style={styles.googleIcon}>G</Text>
+                    <Text style={styles.googleBtnText}>Continue with Google</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </>
+          )}
         </View>
 
         {/* Footer */}
@@ -427,6 +470,18 @@ const styles = StyleSheet.create({
   footer: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 24, marginBottom: 16 },
   footerText: { color: '#A1A1AA', fontSize: 14 },
   footerLink: { color: '#10B981', fontSize: 14, fontWeight: '700' },
+
+  divider: { flexDirection: 'row', alignItems: 'center', marginVertical: 20, gap: 12 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: '#3F3F46' },
+  dividerText: { color: '#71717A', fontSize: 14 },
+
+  googleBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
+    backgroundColor: '#27272A', borderRadius: 12,
+    height: 52,
+  },
+  googleIcon: { color: '#4285F4', fontSize: 18, fontWeight: '800' },
+  googleBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '600' },
   
   termsText: { color: '#71717A', fontSize: 12, textAlign: 'center', paddingHorizontal: 20, lineHeight: 18 },
 });

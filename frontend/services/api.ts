@@ -134,6 +134,9 @@ class APIService {
   async authRegister(data: Record<string, unknown>) {
     return this.request('/auth/register', { method: 'POST', body: JSON.stringify(data) });
   }
+  async authGoogle(data: Record<string, unknown>) {
+    return this.request('/auth/google', { method: 'POST', body: JSON.stringify(data) });
+  }
   async validateInvitationToken(token: string) {
     return this.request(`/auth/validate-token?token=${token}`, {});
   }

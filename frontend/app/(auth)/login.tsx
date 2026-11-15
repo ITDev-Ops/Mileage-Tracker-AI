@@ -14,6 +14,7 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const { login, loginWithGoogle } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -34,6 +35,21 @@ export default function LoginScreen() {
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    setGoogleLoading(true);
+    try {
+      const authUser = await loginWithGoogle();
+      if (authUser) {
+        console.log('[Login] Google auth successful, navigating to dashboard...');
+        router.push('/(tabs)/dashboard');
+      }
+    } catch (e: any) {
+      console.warn('[Login] Google auth error:', e.message || e);
+    } finally {
+      setGoogleLoading(false);
     }
   };
 
@@ -107,9 +123,20 @@ export default function LoginScreen() {
           </View>
 
           {/* Google Login */}
-          <TouchableOpacity style={styles.googleBtn} onPress={loginWithGoogle} activeOpacity={0.8}>
-            <Text style={styles.googleIcon}>G</Text>
-            <Text style={styles.googleBtnText}>Continue with Google</Text>
+          <TouchableOpacity
+            style={[styles.googleBtn, (loading || googleLoading) && styles.disabledBtn]}
+            onPress={handleGoogleLogin}
+            disabled={loading || googleLoading}
+            activeOpacity={0.8}
+          >
+            {googleLoading ? (
+              <ActivityIndicator color="#FFFFFF" size="small" />
+            ) : (
+              <>
+                <Text style={styles.googleIcon}>G</Text>
+                <Text style={styles.googleBtnText}>Continue with Google</Text>
+              </>
+            )}
           </TouchableOpacity>
         </View>
 
