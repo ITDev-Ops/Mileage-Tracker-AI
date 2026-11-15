@@ -120,6 +120,9 @@ async def health_check():
 
 @app.on_event("startup")
 async def startup_db_client():
+    if os.environ.get("TESTING") == "true":
+        logger.info("TESTING mode active; skipping MongoDB connection and background tasks.")
+        return
     global client, db
     
     # Configure custom DNS resolver to bypass DNS lookup issues with MongoDB Atlas

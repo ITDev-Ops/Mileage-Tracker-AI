@@ -197,3 +197,4 @@ def test_google_auth_invited_team_member(setup_mock_db):
     tm = [t for t in setup_mock_db.team_members.docs if t["email"] == "invited.member@company.org"][0]
     assert tm["status"] == "Active"
     assert tm["user_id"] == data["user"]["user_id"]
+

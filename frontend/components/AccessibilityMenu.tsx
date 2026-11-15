@@ -19,26 +19,6 @@ import {
   AccessibilityProfile,
 } from '../context/AccessibilityContext';
 
-// Tax & Mileage Dictionary database for the built-in accessible dictionary
-const DICTIONARY_ENTRIES: Record<string, string> = {
-  'Standard Mileage Rate':
-    'The IRS standard amount (67 cents/mile for 2024, 70 cents/mile for 2025/2026) you can deduct for every qualified business mile driven instead of calculating actual car expenses.',
-  'Business Trip':
-    'A drive taken specifically for work or commercial purposes, such as client meetings, supply runs, job sites, or delivery routes. 100% tax-deductible under IRS rules.',
-  'Personal Trip':
-    'Everyday personal travel, such as commuting between home and a permanent work office, grocery shopping, or vacation. Not deductible.',
-  'Medical Mile':
-    'Miles driven for healthcare visits, pharmacy pickups, or doctor appointments. Deductible at the special IRS medical mileage rate (21 cents/mile).',
-  'Charity Mile':
-    'Miles driven for volunteer work or non-profit organizations. Deductible at a fixed IRS statutory rate (14 cents/mile).',
-  'CPA':
-    'Certified Public Accountant. A licensed tax professional who prepares and files your tax returns.',
-  'Odometer':
-    'The dashboard gauge measuring the total cumulative distance your vehicle has traveled over its lifespan.',
-  'Auto-Tracking':
-    'Automatic GPS trip detection that records departure, arrival, route polyline, and distance without having to manually start or stop a timer.',
-};
-
 export const AccessibilityMenu: React.FC = () => {
   const {
     isMenuOpen,
@@ -90,7 +70,6 @@ export const AccessibilityMenu: React.FC = () => {
   // Modals for sub-dialogs
   const [langPickerVisible, setLangPickerVisible] = useState(false);
   const [infoModalContent, setInfoModalContent] = useState<{ title: string; message: string } | null>(null);
-  const [dictSearchQuery, setDictSearchQuery] = useState('');
 
   if (!isMenuOpen) {
     return null;
@@ -120,13 +99,6 @@ export const AccessibilityMenu: React.FC = () => {
       </View>
     );
   };
-
-  // Filter dictionary entries
-  const filteredDictEntries = Object.entries(DICTIONARY_ENTRIES).filter(([term, def]) => {
-    if (!dictSearchQuery.trim()) return true;
-    const q = dictSearchQuery.toLowerCase();
-    return term.toLowerCase().includes(q) || def.toLowerCase().includes(q);
-  });
 
   return (
     <Modal
@@ -674,56 +646,6 @@ export const AccessibilityMenu: React.FC = () => {
             </View>
           </View>
         </Modal>
-
-        {/* --- SUB-MODAL 3: Accessible Tax & Mileage Dictionary --- */}
-        <Modal
-          visible={dictionaryOpen}
-          transparent={true}
-          animationType="slide"
-          onRequestClose={() => setDictionaryOpen(false)}
-        >
-          <SafeAreaView style={styles.dictSafeArea}>
-            <View style={styles.dictHeader}>
-              <View style={styles.dictHeaderLeft}>
-                <MaterialCommunityIcons name="book-open-page-variant" size={24} color="#FFFFFF" />
-                <Text style={styles.dictHeaderTitle}>Mileage & Tax Dictionary</Text>
-              </View>
-              <TouchableOpacity
-                onPress={() => setDictionaryOpen(false)}
-                style={styles.closeButton}
-              >
-                <Ionicons name="close" size={24} color="#FFFFFF" />
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.dictSearchBox}>
-              <Ionicons name="search" size={20} color="#6B7280" />
-              <TextInput
-                style={styles.dictSearchInput}
-                placeholder="Search terms (e.g. Standard Rate, CPA, Medical)..."
-                placeholderTextColor="#9CA3AF"
-                value={dictSearchQuery}
-                onChangeText={setDictSearchQuery}
-                clearButtonMode="while-editing"
-              />
-            </View>
-
-            <ScrollView style={styles.dictList} contentContainerStyle={styles.dictListContent}>
-              {filteredDictEntries.length === 0 ? (
-                <View style={styles.emptyDictContainer}>
-                  <Text style={styles.emptyDictText}>No definitions match "{dictSearchQuery}"</Text>
-                </View>
-              ) : (
-                filteredDictEntries.map(([term, definition]) => (
-                  <View key={term} style={styles.dictEntryCard}>
-                    <Text style={styles.dictTermText}>{term}</Text>
-                    <Text style={styles.dictDefText}>{definition}</Text>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-          </SafeAreaView>
-        </Modal>
       </SafeAreaView>
     </Modal>
   );
@@ -1213,3 +1135,4 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
   },
 });
+
