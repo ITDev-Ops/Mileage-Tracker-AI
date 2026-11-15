@@ -223,6 +223,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         preferLocalhost: true,
       });
       authLog('loginWithGoogle: redirectUri generated:', redirectUri);
+      console.log(`[GoogleAuth] Active Redirect URI: ${redirectUri}`);
+      console.log('[GoogleAuth] Ensure this URL is in Auth0 Dashboard -> Allowed Callback URLs');
 
       const auth0Domain = process.env.EXPO_PUBLIC_AUTH0_DOMAIN || 'dev-j470s7j0sap6h6us.us.auth0.com';
       const auth0ClientId = process.env.EXPO_PUBLIC_AUTH0_CLIENT_ID || 'lDGAMwvArDFK38vWl6mH8f1HXSDJlNYb';
