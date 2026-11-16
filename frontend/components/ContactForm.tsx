@@ -21,9 +21,8 @@ export default function ContactForm({ onSuccess, mailerUrl }: ContactFormProps) 
   const [loading, setLoading] = useState(false);
 
   // Target URL defaults to standard mobile backend mailing endpoint or prop override
-  const targetEndpoint = mailerUrl || (process.env.EXPO_PUBLIC_BACKEND_URL 
-    ? `${process.env.EXPO_PUBLIC_BACKEND_URL.replace(/\/api\/?$/, '')}/php_mailer/process.php`
-    : 'http://localhost:8088/process.php');
+  const baseUrl = (process.env.EXPO_PUBLIC_BACKEND_URL || 'https://ai-mile-tracker-f2fed3697be0.herokuapp.com').replace(/\/api\/?$/, '');
+  const targetEndpoint = mailerUrl || `${baseUrl}/api/support/contact`;
 
   const handleSubmit = async () => {
     const trimmedEmail = email.trim();
@@ -41,8 +40,7 @@ export default function ContactForm({ onSuccess, mailerUrl }: ContactFormProps) 
     setLoading(true);
 
     try {
-      // 1. Format payload as application/x-www-form-urlencoded
-      const payload: Record<string, string> = {
+      const payload = {
         email: trimmedEmail,
         subject: subject,
         message: trimmedMessage,
@@ -50,32 +48,29 @@ export default function ContactForm({ onSuccess, mailerUrl }: ContactFormProps) 
         subscribe_newsletter: honeypot // Honeypot trap field
       };
 
-      const formBody = Object.keys(payload)
-        .map(key => encodeURIComponent(key) + '=' + encodeURIComponent(payload[key]))
-        .join('&');
-
-      // 2. Perform non-blocking asynchronous transmission
+      // Perform non-blocking asynchronous transmission
       const response = await fetch(targetEndpoint, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          'Content-Type': 'application/json',
           'Accept': 'application/json'
         },
-        body: formBody,
+        body: JSON.stringify(payload),
       });
 
-      const result = await response.json();
+      const result = await response.json().catch(() => ({}));
 
-      if (result.status === 'success') {
+      if (response.ok && (result.status === 'success' || !result.status)) {
+        const successMsg = result.message || 'Your message has been delivered securely to our support team.';
         if (Platform.OS === 'web') {
-          alert('🎉 ' + result.message);
+          alert('🎉 ' + successMsg);
         } else {
-          Alert.alert('Success', result.message);
+          Alert.alert('Success', successMsg);
         }
         setMessage('');
         if (onSuccess) onSuccess();
       } else {
-        const errorMsg = result.message || 'Could not process message.';
+        const errorMsg = result.message || result.detail || 'Could not process message.';
         if (Platform.OS === 'web') {
           alert('Error: ' + errorMsg);
         } else {

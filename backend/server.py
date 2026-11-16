@@ -1188,6 +1188,129 @@ def send_password_reset_email(to_email: str, code: str):
     server.send_message(msg)
     server.quit()
 
+def send_support_email(sender_email: str, subject: str, message: str, email_type: str = "general", client_ip: str = "0.0.0.0"):
+    """Sends support notification email to support team using SMTP."""
+    smtp_host = os.environ.get("SMTP2_HOST", os.environ.get("SMTP_HOST", "smtp.gmail.com"))
+    smtp_port = int(os.environ.get("SMTP2_PORT", os.environ.get("SMTP_PORT", "587")))
+    smtp_user = os.environ.get("SMTP2_USER", "avoid.do.not.reply@gmail.com")
+    smtp_pass = os.environ.get("SMTP2_PASS", "vhcy qrxp gqfv tzpo")
+    smtp_from = os.environ.get("SMTP2_USER", "avoid.do.not.reply@gmail.com")
+
+    support_recipient = os.environ.get("SUPPORT_EMAIL", "support@mileagetracker.ai")
+    if not support_recipient or "@" not in support_recipient:
+        support_recipient = smtp_user
+
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    import smtplib
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"[Support Ticket] {subject}"
+        msg["From"] = f"Mileage Tracker AI Support <{smtp_from}>"
+        msg["To"] = support_recipient
+        msg["Reply-To"] = sender_email
+
+        html_support = f"""
+        <div style='font-family: Arial, sans-serif; background: #09090B; color: #FFFFFF; padding: 25px; border-radius: 12px; max-width: 600px; margin: 0 auto;'>
+            <h2 style='color: #10B981; margin-bottom: 6px;'>Mileage Tracker AI - Support Request</h2>
+            <p style='color: #A1A1AA; font-size: 13px;'>New customer inquiry received via Mobile App</p>
+            <hr style='border: none; border-top: 1px solid #27272A; margin: 15px 0;' />
+            <p style='color: #E4E4E7; font-size: 14px;'><strong>Sender:</strong> <a href='mailto:{sender_email}' style='color: #10B981;'>{sender_email}</a></p>
+            <p style='color: #E4E4E7; font-size: 14px;'><strong>Type:</strong> {email_type}</p>
+            <p style='color: #E4E4E7; font-size: 14px;'><strong>Client IP:</strong> {client_ip}</p>
+            <p style='color: #E4E4E7; font-size: 14px;'><strong>Subject:</strong> {subject}</p>
+            <hr style='border: none; border-top: 1px solid #27272A; margin: 15px 0;' />
+            <div style='background: #18181B; padding: 18px; border-radius: 8px; border: 1px solid #27272A; color: #FFFFFF; font-size: 14px; line-height: 1.6; white-space: pre-wrap;'>
+{message}
+            </div>
+            <p style='color: #71717A; font-size: 12px; margin-top: 20px;'>Reply directly to this email to respond to {sender_email}.</p>
+        </div>
+        """
+        msg.attach(MIMEText(f"Support Request from {sender_email}\nSubject: {subject}\n\n{message}", "plain"))
+        msg.attach(MIMEText(html_support, "html"))
+
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.send_message(msg)
+        server.quit()
+        logger.info(f"[SupportEmail] Dispatched ticket notification from {sender_email} to {support_recipient}")
+    except Exception as e:
+        logger.error(f"[SupportEmail] Error delivering support email: {e}")
+
+@api_router.post("/support/contact")
+@api_router.post("/contact")
+@app.post("/api/support/contact")
+@app.post("/support/contact")
+@app.post("/api/contact")
+@app.post("/contact")
+@app.post("/php_mailer/process.php")
+@api_router.post("/php_mailer/process.php")
+async def support_contact_endpoint(request: Request, background_tasks: BackgroundTasks):
+    content_type = request.headers.get("content-type", "")
+    body = {}
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+    elif "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+        try:
+            form = await request.form()
+            body = dict(form)
+        except Exception:
+            body = {}
+    else:
+        try:
+            body = await request.json()
+        except Exception:
+            try:
+                form = await request.form()
+                body = dict(form)
+            except Exception:
+                body = dict(request.query_params)
+
+    honeypot = str(body.get("subscribe_newsletter") or "").strip()
+    if honeypot:
+        logger.info(f"[SupportBot] Honeypot triggered by {request.client.host if request.client else 'unknown'}")
+        return {"status": "success", "message": "Your message has been delivered securely."}
+
+    raw_email = str(body.get("email") or "").strip().lower()
+    raw_message = str(body.get("message") or "").strip()
+    subject = str(body.get("subject") or "Support Request").strip()
+    email_type = str(body.get("type") or "general").strip()
+
+    if not raw_email or "@" not in raw_email or not raw_message:
+        raise HTTPException(status_code=400, detail="A valid email address and message are required.")
+
+    client_ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "0.0.0.0")
+
+    ticket_id = f"ticket_{uuid.uuid4().hex[:10]}"
+    ticket_doc = {
+        "ticket_id": ticket_id,
+        "email": raw_email,
+        "subject": subject,
+        "message": raw_message,
+        "type": email_type,
+        "client_ip": client_ip,
+        "status": "open",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    try:
+        if db is not None:
+            await db.support_tickets.insert_one(ticket_doc)
+            logger.info(f"[SupportTicket] Created ticket {ticket_id} for {raw_email}")
+    except Exception as e:
+        logger.warning(f"[SupportTicket] Failed to save ticket to DB: {e}")
+
+    background_tasks.add_task(send_support_email, raw_email, subject, raw_message, email_type, client_ip)
+
+    return {
+        "status": "success",
+        "message": "Your message has been delivered securely to our support team."
+    }
+
 @api_router.post("/auth/request-password-reset")
 @api_router.post("/request-password-reset")
 @app.post("/api/auth/request-password-reset")
