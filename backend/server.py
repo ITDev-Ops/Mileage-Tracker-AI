@@ -1189,16 +1189,20 @@ def send_password_reset_email(to_email: str, code: str):
     server.quit()
 
 def send_support_email(sender_email: str, subject: str, message: str, email_type: str = "general", client_ip: str = "0.0.0.0"):
-    """Sends support notification email to support team using SMTP."""
+    """Sends support notification email to support team (multisystemllc@gmail.com & multisystemsbiz@gmail.com) using SMTP."""
     smtp_host = os.environ.get("SMTP2_HOST", os.environ.get("SMTP_HOST", "smtp.gmail.com"))
     smtp_port = int(os.environ.get("SMTP2_PORT", os.environ.get("SMTP_PORT", "587")))
     smtp_user = os.environ.get("SMTP2_USER", "avoid.do.not.reply@gmail.com")
     smtp_pass = os.environ.get("SMTP2_PASS", "vhcy qrxp gqfv tzpo")
     smtp_from = os.environ.get("SMTP2_USER", "avoid.do.not.reply@gmail.com")
 
-    support_recipient = os.environ.get("SUPPORT_EMAIL", "support@mileagetracker.ai")
-    if not support_recipient or "@" not in support_recipient:
-        support_recipient = smtp_user
+    default_support_recipients = ["multisystemllc@gmail.com", "multisystemsbiz@gmail.com"]
+    env_support = os.environ.get("SUPPORT_EMAIL", "")
+    if env_support:
+        recipients = [e.strip() for e in env_support.replace(";", ",").split(",") if "@" in e]
+        support_recipients = recipients if recipients else default_support_recipients
+    else:
+        support_recipients = default_support_recipients
 
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
@@ -1208,7 +1212,7 @@ def send_support_email(sender_email: str, subject: str, message: str, email_type
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"[Support Ticket] {subject}"
         msg["From"] = f"Mileage Tracker AI Support <{smtp_from}>"
-        msg["To"] = support_recipient
+        msg["To"] = ", ".join(support_recipients)
         msg["Reply-To"] = sender_email
 
         html_support = f"""
@@ -1233,9 +1237,9 @@ def send_support_email(sender_email: str, subject: str, message: str, email_type
         server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
         server.starttls()
         server.login(smtp_user, smtp_pass)
-        server.send_message(msg)
+        server.send_message(msg, to_addrs=support_recipients)
         server.quit()
-        logger.info(f"[SupportEmail] Dispatched ticket notification from {sender_email} to {support_recipient}")
+        logger.info(f"[SupportEmail] Dispatched ticket notification from {sender_email} to {support_recipients}")
     except Exception as e:
         logger.error(f"[SupportEmail] Error delivering support email: {e}")
 

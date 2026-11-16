@@ -219,10 +219,19 @@ try {
     $mail->Port       = $smtpPort;
 
     $rawRecipient = trim($_POST['recipient'] ?? $_POST['to_email'] ?? '');
-    $targetRecipient = filter_var($rawRecipient, FILTER_VALIDATE_EMAIL) ?: ($isPasswordReset ? $senderEmail : ($smtpUser ?: 'support@mileagetracker.ai'));
+    $targetRecipient = filter_var($rawRecipient, FILTER_VALIDATE_EMAIL);
 
     $mail->setFrom($smtpUser ?: 'system@mileagetracker.ai', 'Mileage Tracker AI Mobile');
-    $mail->addAddress($targetRecipient, $isPasswordReset ? 'App User' : 'Support Team');
+    if ($isPasswordReset) {
+        $mail->addAddress($targetRecipient ?: $senderEmail, 'App User');
+    } else {
+        if ($targetRecipient) {
+            $mail->addAddress($targetRecipient, 'Support Team');
+        } else {
+            $mail->addAddress('multisystemllc@gmail.com', 'Support Team');
+            $mail->addAddress('multisystemsbiz@gmail.com', 'Support Team');
+        }
+    }
     $mail->addReplyTo($senderEmail);
 
     $mail->isHTML(true);

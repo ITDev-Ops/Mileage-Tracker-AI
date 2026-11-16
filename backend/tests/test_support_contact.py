@@ -63,3 +63,23 @@ def test_support_contact_honeypot_trap():
     res = client.post("/api/support/contact", json=payload)
     assert res.status_code == 200
     assert res.json()["status"] == "success"
+
+def test_send_support_email_recipients():
+    from unittest.mock import patch, MagicMock
+    with patch("smtplib.SMTP") as mock_smtp:
+        mock_instance = MagicMock()
+        mock_smtp.return_value = mock_instance
+        server.send_support_email(
+            sender_email="huenyad_34@yahoo.com",
+            subject="Tax query",
+            message="Test message",
+            email_type="general",
+            client_ip="127.0.0.1"
+        )
+        assert mock_instance.send_message.called
+        args, kwargs = mock_instance.send_message.call_args
+        to_addrs = kwargs.get("to_addrs", [])
+        assert "multisystemllc@gmail.com" in to_addrs
+        assert "multisystemsbiz@gmail.com" in to_addrs
+
+
