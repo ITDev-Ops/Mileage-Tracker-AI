@@ -4368,25 +4368,40 @@ async def process_recurring_subscriptions(
                             period_end_ts = getattr(item_data[0], "current_period_end", None)
                         stripe_period_end = ensure_utc_datetime(period_end_ts)
 
+                        # Detect plan tier directly from Stripe Price ID
+                        detected_plan = u.get("subscription_tier") or "business"
+                        for item in item_data:
+                            item_price = getattr(item, "price", None)
+                            price_id = getattr(item_price, "id", None)
+                            if price_id == os.environ.get("STRIPE_PRICE_BUSINESS", "price_1Uecp5C77I4sxNvuGehhqp1Y"):
+                                detected_plan = "business"
+                                break
+                            elif price_id == os.environ.get("STRIPE_PRICE_PRO", "price_1UcDupC77I4sxNvuPlSut81z"):
+                                detected_plan = "pro"
+                                break
+
                         if sub_status == "active":
+                            update_set = {
+                                "subscription_status": "active",
+                                "subscription_tier": detected_plan,
+                                "payment_failure_count": 0,
+                                "dunning_emails_sent": 0,
+                                "first_failure_at": None,
+                                "retry_at": None,
+                                "grace_period_ends_at": None,
+                                "payment_failure_reason": None,
+                                "updated_at": now
+                            }
                             if stripe_period_end and (not next_billing or next_billing < stripe_period_end):
-                                await database.users.update_one(
-                                    {"user_id": user_id},
-                                    {"$set": {
-                                        "subscription_status": "active",
-                                        "next_billing_date": stripe_period_end,
-                                        "payment_failure_count": 0,
-                                        "dunning_emails_sent": 0,
-                                        "first_failure_at": None,
-                                        "retry_at": None,
-                                        "grace_period_ends_at": None,
-                                        "payment_failure_reason": None,
-                                        "updated_at": now
-                                    }}
-                                )
-                                auth_cache.invalidate_user(user_id)
-                                results.append({"user_id": user_id, "action": "synced_with_stripe", "status": "active", "next_billing_date": str(stripe_period_end)})
-                                continue
+                                update_set["next_billing_date"] = stripe_period_end
+
+                            await database.users.update_one(
+                                {"user_id": user_id},
+                                {"$set": update_set}
+                            )
+                            auth_cache.invalidate_user(user_id)
+                            results.append({"user_id": user_id, "action": "synced_with_stripe", "tier": detected_plan, "status": "active", "next_billing_date": str(stripe_period_end)})
+                            continue
                         elif sub_status in ("past_due", "unpaid"):
                             fail_res = await handle_failed_payment_attempt(
                                 database, u, failure_reason="Stripe card charge declined", stripe_event_id=f"evt_sync_{uuid.uuid4().hex[:12]}", now=now
@@ -5424,9 +5439,27 @@ async def stripe_webhook(request: Request):
                 period_end_dt = ensure_utc_datetime(p_end)
 
         if user_doc:
-            resolved_plan = plan or user_doc.get("subscription_tier", "pro")
-            if resolved_plan == "free":
-                resolved_plan = "pro"
+            resolved_plan = plan
+            if not resolved_plan and lines_data:
+                for line in lines_data:
+                    line_price = _get_field(line, "price")
+                    line_price_id = _get_field(line_price, "id") if line_price else None
+                    if line_price_id == os.environ.get("STRIPE_PRICE_BUSINESS", "price_1Uecp5C77I4sxNvuGehhqp1Y"):
+                        resolved_plan = "business"
+                        break
+                    elif line_price_id == os.environ.get("STRIPE_PRICE_PRO", "price_1UcDupC77I4sxNvuPlSut81z"):
+                        resolved_plan = "pro"
+                        break
+
+            amount_paid_raw = float(_get_field(data_obj, "amount_paid", 0)) / 100.0
+            if not resolved_plan:
+                if amount_paid_raw >= 15.0:
+                    resolved_plan = "business"
+                elif user_doc.get("subscription_tier") in ("business", "pro"):
+                    resolved_plan = user_doc.get("subscription_tier")
+                else:
+                    resolved_plan = "business"
+
             await activate_user_subscription(
                 user_doc["user_id"], resolved_plan,
                 stripe_event_id=event_id,
@@ -5510,18 +5543,36 @@ async def stripe_webhook(request: Request):
 
         if user_doc:
             new_status = "active" if sub_status == "active" else ("past_due" if sub_status in ("past_due", "unpaid") else ("cancelled" if sub_status == "canceled" else user_doc.get("subscription_status", "active")))
+            sub_items = _get_field(data_obj, "items")
+            sub_items_data = _get_field(sub_items, "data") if sub_items else []
+            updated_plan = metadata_dict.get("plan")
+            if not updated_plan and sub_items_data:
+                for item in sub_items_data:
+                    item_price = _get_field(item, "price")
+                    price_id = _get_field(item_price, "id") if item_price else None
+                    if price_id == os.environ.get("STRIPE_PRICE_BUSINESS", "price_1Uecp5C77I4sxNvuGehhqp1Y"):
+                        updated_plan = "business"
+                        break
+                    elif price_id == os.environ.get("STRIPE_PRICE_PRO", "price_1UcDupC77I4sxNvuPlSut81z"):
+                        updated_plan = "pro"
+                        break
+            if not updated_plan:
+                updated_plan = user_doc.get("subscription_tier") or "business"
+
+            update_fields = {
+                "subscription_status": new_status,
+                "subscription_tier": updated_plan,
+                "stripe_subscription_id": sub_id,
+                "stripe_customer_id": customer_id or user_doc.get("stripe_customer_id"),
+                "last_stripe_event_id": event_id,
+                "updated_at": datetime.now(timezone.utc)
+            }
             await database.users.update_one(
                 {"user_id": user_doc["user_id"]},
-                {"$set": {
-                    "subscription_status": new_status,
-                    "stripe_subscription_id": sub_id,
-                    "stripe_customer_id": customer_id or user_doc.get("stripe_customer_id"),
-                    "last_stripe_event_id": event_id,
-                    "updated_at": datetime.now(timezone.utc)
-                }}
+                {"$set": update_fields}
             )
             auth_cache.invalidate_user(user_doc["user_id"])
-            action_taken = f"subscription_updated_{new_status}"
+            action_taken = f"subscription_updated_{new_status}_{updated_plan}"
 
     elif event_type == "customer.subscription.deleted":
         metadata_dict = extract_metadata(data_obj)
