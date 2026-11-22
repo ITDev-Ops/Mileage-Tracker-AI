@@ -5704,6 +5704,7 @@ async def retry_payment(
     await activate_user_subscription(user_id, tier)
     updated_user = await db.users.find_one({"user_id": user_id})
     
+    plan_info = SUBSCRIPTION_PLANS.get(tier, {"amount": 9.99, "currency": "usd"})
     txn_doc = {
         "transaction_id": f"txn_retry_{uuid.uuid4().hex[:12]}",
         "user_id": user_id,
