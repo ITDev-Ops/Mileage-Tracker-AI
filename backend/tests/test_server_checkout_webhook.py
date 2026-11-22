@@ -43,13 +43,18 @@ class MockCollection:
     async def count_documents(self, *args, **kwargs):
         return 0
 
-    def find(self, filter_dict=None):
+    def find(self, filter_dict=None, *args, **kwargs):
         matched = []
         filter_dict = filter_dict or {}
         for d in self.docs:
             match = True
             for k, v in filter_dict.items():
-                if isinstance(v, dict) and "$ne" in v:
+                if k == "$or":
+                    sub_match = any(all(d.get(sk) == sv for sk, sv in cond.items()) for cond in v)
+                    if not sub_match:
+                        match = False
+                        break
+                elif isinstance(v, dict) and "$ne" in v:
                     if d.get(k) == v["$ne"]:
                         match = False
                         break
@@ -117,6 +122,7 @@ class MockDB:
         self.webhook_events = MockCollection()
         self.alerts = MockCollection()
         self.system_settings = MockCollection()
+        self.receipts = MockCollection()
 
 
 def generate_stripe_signature(payload_bytes: bytes, secret: str, timestamp: int = None) -> str:
@@ -461,3 +467,117 @@ def test_webhook_verified_payment_provisions_access_and_enforces_idempotency(tes
     # Duplicate delivery attempt: rejected with 409
     dup_resp = client.post("/api/webhook/stripe", content=raw_bytes, headers={"Stripe-Signature": sig})
     assert dup_resp.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_automatic_receipt_generation_and_idempotency(test_setup):
+    client = test_setup["client"]
+    mock_db = test_setup["db"]
+    user_id = test_setup["user_id"]
+    email = test_setup["email"]
+    user_doc = {
+        "user_id": user_id,
+        "email": email,
+        "name": "Jane Subscriber",
+        "subscription_tier": "pro",
+        "subscription_status": "active"
+    }
+    await mock_db.users.insert_one(user_doc)
+
+    txn = {
+        "transaction_id": "txn_test_12345",
+        "user_id": user_id,
+        "plan": "pro",
+        "amount": 9.99,
+        "currency": "usd",
+        "card_brand": "Visa",
+        "card_last4": "4242",
+        "payment_status": "paid",
+        "provisioned": True
+    }
+    await mock_db.payment_transactions.insert_one(txn)
+
+    # 1. Generate and send receipt
+    receipt = await server.send_payment_receipt(
+        database=mock_db,
+        transaction=txn,
+        user_doc=user_doc
+    )
+
+    assert receipt is not None
+    assert receipt["receipt_number"].startswith("RCT-")
+    assert receipt["customer_email"] == email
+    assert receipt["amount"] == 9.99
+    assert receipt["currency"] == "USD"
+    assert receipt["card_brand"] == "Visa"
+    assert receipt["card_last4"] == "4242"
+    assert receipt["email_sent"] is True
+
+    # Verify receipt stored in database
+    db_receipt = await mock_db.receipts.find_one({"receipt_number": receipt["receipt_number"]})
+    assert db_receipt is not None
+    assert db_receipt["payment_status"] == "paid"
+
+    # 2. Idempotency test: Second call with same transaction must return existing receipt and not duplicate
+    receipt2 = await server.send_payment_receipt(
+        database=mock_db,
+        transaction=txn,
+        user_doc=user_doc
+    )
+    assert receipt2["receipt_number"] == receipt["receipt_number"]
+    assert len(mock_db.receipts.docs) == 1
+
+
+@pytest.mark.anyio
+async def test_receipt_api_endpoints(test_setup):
+    client = test_setup["client"]
+    mock_db = test_setup["db"]
+    headers = test_setup["headers"]
+    user_id = test_setup["user_id"]
+    email = test_setup["email"]
+
+    user_doc = await mock_db.users.find_one({"user_id": user_id})
+
+    # Generate a confirmed receipt
+    txn = {
+        "transaction_id": "txn_api_test_999",
+        "user_id": user_id,
+        "plan": "business",
+        "amount": 19.99,
+        "currency": "usd",
+        "card_brand": "Mastercard",
+        "card_last4": "8888",
+        "payment_status": "paid"
+    }
+    receipt = await server.send_payment_receipt(
+        database=mock_db,
+        transaction=txn,
+        user_doc=user_doc
+    )
+    receipt_num = receipt["receipt_number"]
+
+    # Test GET /api/payments/receipts
+    list_resp = client.get("/api/payments/receipts", headers=headers)
+    assert list_resp.status_code == 200
+    data = list_resp.json()
+    assert data["count"] >= 1
+    assert data["receipts"][0]["receipt_number"] == receipt_num
+
+    # Test GET /api/payments/receipts/{receipt_id}
+    detail_resp = client.get(f"/api/payments/receipts/{receipt_num}", headers=headers)
+    assert detail_resp.status_code == 200
+    assert detail_resp.json()["amount"] == 19.99
+
+    # Test GET /api/payments/receipts/{receipt_id}/html
+    html_resp = client.get(f"/api/payments/receipts/{receipt_num}/html")
+    assert html_resp.status_code == 200
+    assert "text/html" in html_resp.headers["content-type"]
+    assert receipt_num in html_resp.text
+    assert "Mileage Tracker AI" in html_resp.text
+    assert "VERIFIED &amp; PAID" in html_resp.text
+
+    # Test POST /api/payments/receipts/{receipt_id}/resend
+    resend_resp = client.post(f"/api/payments/receipts/{receipt_num}/resend", headers=headers)
+    assert resend_resp.status_code == 200
+    assert resend_resp.json()["status"] == "success"
+

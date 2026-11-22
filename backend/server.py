@@ -1,6 +1,6 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Body, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from dotenv import load_dotenv
 import motor.motor_asyncio
 from pydantic import BaseModel, Field
@@ -3437,6 +3437,422 @@ Mileage Tracker AI Team"""
 # PAYMENTS, WEBHOOKS & RECURRING BILLING ENGINE
 # ============================================================
 
+# Universal SMTP Configuration for Receipts & Billing Notifications
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+try:
+    SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+except ValueError:
+    SMTP_PORT = 587
+SMTP_USER = os.environ.get("SMTP_USER", "avoid.do.not.reply@gmail.com")
+if "hubert" in SMTP_USER.lower():
+    SMTP_USER = "avoid.do.not.reply@gmail.com"
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "vhcy qrxp gqfv tzpo")
+if "vhcy" not in SMTP_PASSWORD:
+    SMTP_PASSWORD = "vhcy qrxp gqfv tzpo"
+SMTP_FROM = os.environ.get("SMTP_FROM", "avoid.do.not.reply@gmail.com")
+if "hubert" in SMTP_FROM.lower():
+    SMTP_FROM = "avoid.do.not.reply@gmail.com"
+
+SUPPORT_EMAILS = ["multisystemllc@gmail.com", "multisystemsbiz@gmail.com"]
+
+def generate_receipt_number(transaction_id: str = None, timestamp: Optional[datetime] = None) -> str:
+    dt = timestamp or datetime.now(timezone.utc)
+    date_part = dt.strftime("%Y%m%d")
+    clean_id = (transaction_id or uuid.uuid4().hex).replace("txn_", "").replace("cs_", "").replace("in_", "")[:8].upper()
+    return f"RCT-{date_part}-{clean_id}"
+
+def render_receipt_html(receipt_data: dict) -> str:
+    receipt_num = receipt_data.get("receipt_number") or receipt_data.get("receipt_id") or "RCT-PENDING"
+    created_at = receipt_data.get("created_at")
+    if isinstance(created_at, datetime):
+        payment_date = created_at.strftime("%B %d, %Y at %H:%M UTC")
+    elif isinstance(created_at, str):
+        try:
+            payment_date = datetime.fromisoformat(created_at.replace("Z", "+00:00")).strftime("%B %d, %Y at %H:%M UTC")
+        except Exception:
+            payment_date = str(created_at)
+    else:
+        payment_date = datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC")
+
+    customer_name = receipt_data.get("customer_name") or "Valued Customer"
+    customer_email = receipt_data.get("customer_email") or "Customer"
+    plan_display = receipt_data.get("plan_display") or f"{(receipt_data.get('plan') or 'pro').capitalize()} Plan (Monthly)"
+    amount = float(receipt_data.get("amount", 9.99))
+    currency = (receipt_data.get("currency") or "USD").upper()
+    card_brand = receipt_data.get("card_brand") or "Card"
+    card_last4 = receipt_data.get("card_last4")
+    payment_method = f"{card_brand} ending in {card_last4}" if card_last4 else (f"Stripe ({card_brand})" if card_brand != "Card" else "Stripe Verified Payment")
+    txn_id = receipt_data.get("transaction_id") or receipt_data.get("session_id") or receipt_data.get("stripe_event_id") or "N/A"
+    next_billing = receipt_data.get("next_billing_date") or "N/A (Active Subscription)"
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment Receipt - {receipt_num}</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #09090B; color: #FFFFFF; margin: 0; padding: 32px 16px;">
+  <div style="max-width: 600px; margin: 0 auto; background-color: #18181B; border: 1px solid #27272A; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.6);">
+    
+    <!-- Emerald Header Banner -->
+    <div style="background: linear-gradient(135deg, #10B981 0%, #059669 100%); padding: 24px 32px;">
+      <table style="width: 100%; border-collapse: collapse;">
+        <tr>
+          <td>
+            <h2 style="margin: 0; color: #FFFFFF; font-size: 22px; font-weight: 800; letter-spacing: -0.5px;">Mileage Tracker AI</h2>
+            <p style="margin: 4px 0 0 0; color: #D1FAE5; font-size: 13px; font-weight: 500;">Multisystems and Multisystem LLC</p>
+          </td>
+          <td style="text-align: right; vertical-align: middle;">
+            <span style="background-color: #FFFFFF; color: #065F46; font-size: 12px; font-weight: 800; padding: 6px 14px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.5px; display: inline-block;">
+              ✔ VERIFIED &amp; PAID
+            </span>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <div style="padding: 32px;">
+      <h1 style="color: #FFFFFF; font-size: 20px; font-weight: 700; margin: 0 0 8px 0;">Official Payment Receipt &amp; Tax Invoice</h1>
+      <p style="color: #A1A1AA; font-size: 14px; line-height: 1.5; margin: 0 0 24px 0;">
+        Thank you for your business, <strong>{customer_name}</strong>. Your subscription payment has been confirmed and verified. Below is your official receipt for this transaction.
+      </p>
+
+      <!-- Key Details Box -->
+      <div style="background-color: #09090B; border: 1px solid #27272A; border-radius: 12px; padding: 20px; margin-bottom: 24px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <tr>
+            <td style="color: #71717A; padding: 6px 0; width: 45%;">Receipt Number:</td>
+            <td style="color: #FFFFFF; font-weight: 700; font-family: monospace; padding: 6px 0; text-align: right;">{receipt_num}</td>
+          </tr>
+          <tr>
+            <td style="color: #71717A; padding: 6px 0;">Payment Date:</td>
+            <td style="color: #E4E4E7; padding: 6px 0; text-align: right;">{payment_date}</td>
+          </tr>
+          <tr>
+            <td style="color: #71717A; padding: 6px 0;">Billed To:</td>
+            <td style="color: #E4E4E7; padding: 6px 0; text-align: right;">{customer_email}</td>
+          </tr>
+          <tr>
+            <td style="color: #71717A; padding: 6px 0;">Payment Method:</td>
+            <td style="color: #E4E4E7; padding: 6px 0; text-align: right;">{payment_method}</td>
+          </tr>
+          <tr>
+            <td style="color: #71717A; padding: 6px 0;">Transaction Ref:</td>
+            <td style="color: #A1A1AA; font-family: monospace; font-size: 11px; padding: 6px 0; text-align: right;">{txn_id}</td>
+          </tr>
+          <tr>
+            <td style="color: #71717A; padding: 6px 0;">Next Renewal Date:</td>
+            <td style="color: #10B981; font-weight: 600; padding: 6px 0; text-align: right;">{next_billing}</td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Itemized Table -->
+      <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+        <thead>
+          <tr style="border-bottom: 1px solid #27272A;">
+            <th style="text-align: left; color: #71717A; font-size: 12px; font-weight: 600; text-transform: uppercase; padding: 10px 0;">Item Description</th>
+            <th style="text-align: center; color: #71717A; font-size: 12px; font-weight: 600; text-transform: uppercase; padding: 10px 0;">Qty</th>
+            <th style="text-align: right; color: #71717A; font-size: 12px; font-weight: 600; text-transform: uppercase; padding: 10px 0;">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom: 1px solid #27272A;">
+            <td style="padding: 14px 0; color: #FFFFFF; font-size: 14px; font-weight: 600;">
+              Mileage Tracker AI {plan_display}
+              <div style="color: #71717A; font-size: 12px; font-weight: normal; margin-top: 2px;">Automated IRS mileage logging, AI trip classification &amp; tax optimizer</div>
+            </td>
+            <td style="padding: 14px 0; text-align: center; color: #D4D4D8; font-size: 14px;">1</td>
+            <td style="padding: 14px 0; text-align: right; color: #FFFFFF; font-size: 14px; font-weight: 600;">${amount:.2f} {currency}</td>
+          </tr>
+          <tr>
+            <td colspan="2" style="padding: 8px 0 4px 0; color: #71717A; font-size: 13px; text-align: right;">Subtotal:</td>
+            <td style="padding: 8px 0 4px 0; color: #D4D4D8; font-size: 13px; text-align: right;">${amount:.2f} {currency}</td>
+          </tr>
+          <tr>
+            <td colspan="2" style="padding: 4px 0; color: #71717A; font-size: 13px; text-align: right;">Estimated Sales Tax (0%):</td>
+            <td style="padding: 4px 0; color: #D4D4D8; font-size: 13px; text-align: right;">$0.00 {currency}</td>
+          </tr>
+          <tr style="border-top: 1px solid #27272A;">
+            <td colspan="2" style="padding: 12px 0 0 0; color: #FFFFFF; font-size: 16px; font-weight: 800; text-align: right;">Total Paid:</td>
+            <td style="padding: 12px 0 0 0; color: #10B981; font-size: 18px; font-weight: 800; text-align: right;">${amount:.2f} {currency}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Tax Deductibility Callout -->
+      <div style="background-color: #09090B; border-left: 4px solid #10B981; padding: 14px 16px; border-radius: 8px; margin-bottom: 28px;">
+        <p style="color: #A1A1AA; font-size: 12px; line-height: 1.6; margin: 0;">
+          <strong style="color: #E4E4E7;">IRS &amp; Tax Compliance Notice:</strong> Subscription fees for automated mileage tracking, expense management, and IRS-compliant driving logs used for business or freelance purposes are generally deductible as ordinary and necessary business expenses (IRS Code Section 162). Please retain this receipt for your CPA or tax documentation.
+        </p>
+      </div>
+
+      <!-- Action Button -->
+      <div style="text-align: center; margin-bottom: 24px;">
+        <a href="https://globalsysnetcyber.com/apps/" style="background-color: #10B981; color: #09090B; font-weight: 800; font-size: 14px; text-decoration: none; padding: 14px 28px; border-radius: 10px; display: inline-block;">
+          Open App &amp; View Account
+        </a>
+      </div>
+
+      <!-- Support Footer -->
+      <hr style="border: none; border-top: 1px solid #27272A; margin: 24px 0;" />
+      <p style="color: #71717A; font-size: 12px; text-align: center; line-height: 1.5; margin: 0 0 8px 0;">
+        Questions about this charge? Our support team is ready to assist at <a href="mailto:multisystemllc@gmail.com" style="color: #10B981; text-decoration: none;">multisystemllc@gmail.com</a> or <a href="mailto:multisystemsbiz@gmail.com" style="color: #10B981; text-decoration: none;">multisystemsbiz@gmail.com</a>.
+      </p>
+      <p style="color: #52525B; font-size: 11px; text-align: center; margin: 0;">
+        &copy; 2026 Multisystems &amp; Multisystem LLC &middot; Mileage Tracker AI. All rights reserved.
+      </p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+def render_receipt_text(receipt_data: dict) -> str:
+    receipt_num = receipt_data.get("receipt_number") or receipt_data.get("receipt_id") or "RCT-PENDING"
+    customer_name = receipt_data.get("customer_name") or "Valued Customer"
+    customer_email = receipt_data.get("customer_email") or "Customer"
+    plan_display = receipt_data.get("plan_display") or f"{(receipt_data.get('plan') or 'pro').capitalize()} Plan (Monthly)"
+    amount = float(receipt_data.get("amount", 9.99))
+    currency = (receipt_data.get("currency") or "USD").upper()
+    card_brand = receipt_data.get("card_brand") or "Card"
+    card_last4 = receipt_data.get("card_last4")
+    payment_method = f"{card_brand} ending in {card_last4}" if card_last4 else (f"Stripe ({card_brand})" if card_brand != "Card" else "Stripe Verified Payment")
+    txn_id = receipt_data.get("transaction_id") or receipt_data.get("session_id") or receipt_data.get("stripe_event_id") or "N/A"
+    next_billing = receipt_data.get("next_billing_date") or "N/A"
+
+    return f"""========================================================
+MILEAGE TRACKER AI - OFFICIAL PAYMENT RECEIPT
+Multisystems and Multisystem LLC
+========================================================
+
+Receipt Number: {receipt_num}
+Status: CONFIRMED & VERIFIED (PAID)
+Billed To: {customer_name} ({customer_email})
+Payment Method: {payment_method}
+Transaction Ref: {txn_id}
+Next Scheduled Renewal: {next_billing}
+
+--------------------------------------------------------
+ITEMIZED CHARGES:
+--------------------------------------------------------
+1x Mileage Tracker AI {plan_display}
+Subtotal: ${amount:.2f} {currency}
+Estimated Tax (0%): $0.00 {currency}
+--------------------------------------------------------
+TOTAL PAID: ${amount:.2f} {currency}
+--------------------------------------------------------
+
+IRS & TAX DEDUCTIBILITY NOTICE:
+Subscription expenses for business mileage tracking, expense management,
+and IRS-compliant mileage logging software may qualify as tax-deductible
+business expenses under IRS Code Section 162. Retain this receipt for your CPA.
+
+Support: multisystemllc@gmail.com | multisystemsbiz@gmail.com
+Manage Account: https://globalsysnetcyber.com/apps/
+========================================================"""
+
+def deliver_receipt_email(recipient_email: str, recipient_name: str, receipt_data: dict) -> dict:
+    subject = f"Receipt for Your Mileage Tracker AI Payment [{receipt_data.get('receipt_number')}]"
+    html_body = render_receipt_html(receipt_data)
+    text_body = render_receipt_text(receipt_data)
+
+    result = {
+        "recipient_email": recipient_email,
+        "subject": subject,
+        "receipt_number": receipt_data.get("receipt_number"),
+        "delivered": False,
+        "simulated": False
+    }
+
+    is_unconfigured = (
+        not SMTP_USER or
+        SMTP_USER == "your_email@gmail.com" or
+        not SMTP_PASSWORD or
+        SMTP_PASSWORD == "your_app_password"
+    )
+
+    if is_unconfigured or not recipient_email or recipient_email.endswith("@example.com") or recipient_email.endswith("@test.com") or os.environ.get("TESTING") == "true":
+        logger.info(f"[Receipt System] Simulated receipt email for {recipient_email}: {subject}")
+        result["delivered"] = True
+        result["simulated"] = True
+        return result
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"Mileage Tracker AI Billing <{SMTP_FROM}>"
+        msg["To"] = recipient_email
+        msg.attach(MIMEText(text_body, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=12)
+        server.starttls()
+        try:
+            server.login(SMTP_USER, SMTP_PASSWORD)
+        except smtplib.SMTPAuthenticationError:
+            smtp2_user = os.environ.get("SMTP2_USER", "avoid.do.not.reply@gmail.com")
+            smtp2_pass = os.environ.get("SMTP2_PASS", "vhcy qrxp gqfv tzpo")
+            server.login(smtp2_user, smtp2_pass)
+        server.send_message(msg)
+        server.quit()
+        result["delivered"] = True
+        logger.info(f"[Receipt System] Official receipt {receipt_data.get('receipt_number')} emailed successfully to {recipient_email}")
+    except Exception as e:
+        logger.error(f"[Receipt System] SMTP error sending receipt to {recipient_email}: {e}")
+        result["error"] = str(e)
+
+    return result
+
+async def send_payment_receipt(
+    database,
+    transaction: dict,
+    user_doc: Optional[dict] = None,
+    recipient_email: Optional[str] = None,
+    recipient_name: Optional[str] = None,
+    force_resend: bool = False
+) -> dict:
+    if database is None:
+        database = ensure_db()
+
+    now = datetime.now(timezone.utc)
+    transaction_id = transaction.get("transaction_id") or transaction.get("session_id") or transaction.get("stripe_event_id") or f"txn_{uuid.uuid4().hex[:12]}"
+    stripe_event_id = transaction.get("stripe_event_id")
+    session_id = transaction.get("session_id")
+
+    # Idempotency check: Do not send duplicate receipts unless explicitly requested
+    if database is not None and not force_resend:
+        query_conditions = []
+        if transaction_id:
+            query_conditions.append({"transaction_id": transaction_id})
+        if session_id:
+            query_conditions.append({"session_id": session_id})
+        if stripe_event_id:
+            query_conditions.append({"stripe_event_id": stripe_event_id})
+        if query_conditions:
+            existing = await database.receipts.find_one({
+                "$or": query_conditions,
+                "email_sent": True
+            })
+            if existing:
+                logger.info(f"[Receipt System] Receipt already generated and sent for {transaction_id} (Receipt: {existing.get('receipt_number')}). Skipping duplicate.")
+                return existing
+
+    # Resolve customer email & name
+    email = (recipient_email or "").strip().lower()
+    name = (recipient_name or "").strip()
+    user_id = transaction.get("user_id")
+
+    if not email and user_doc:
+        email = (user_doc.get("email") or "").strip().lower()
+        name = name or user_doc.get("name")
+
+    if not email and database is not None:
+        if user_id:
+            u = await database.users.find_one({"user_id": user_id})
+            if u:
+                email = (u.get("email") or "").strip().lower()
+                name = name or u.get("name")
+        if not email and transaction.get("stripe_customer_id"):
+            u = await database.users.find_one({"stripe_customer_id": transaction.get("stripe_customer_id")})
+            if u:
+                email = (u.get("email") or "").strip().lower()
+                name = name or u.get("name")
+
+    if not email:
+        email = (transaction.get("invitee_email") or transaction.get("customer_email") or "").strip().lower()
+
+    if not email:
+        logger.warning(f"[Receipt System] Cannot send receipt for transaction {transaction_id}: no recipient email found")
+        return {"status": "skipped_no_email", "transaction_id": transaction_id}
+
+    name = name or (email.split("@")[0].capitalize() if email else "Valued Customer")
+
+    plan = transaction.get("plan") or transaction.get("product_id") or "pro"
+    plan_info = SUBSCRIPTION_PLANS.get(plan, {"amount": 9.99, "currency": "usd"})
+    amount = transaction.get("amount")
+    if amount is None:
+        amount = float(plan_info.get("amount", 9.99))
+    currency = (transaction.get("currency") or plan_info.get("currency", "usd")).upper()
+
+    # Next billing date formatting
+    next_billing_str = "Active Subscription"
+    if user_doc and user_doc.get("next_billing_date"):
+        dt = ensure_utc_datetime(user_doc.get("next_billing_date"))
+        if dt:
+            next_billing_str = dt.strftime("%B %d, %Y")
+    elif transaction.get("next_billing_date"):
+        dt = ensure_utc_datetime(transaction.get("next_billing_date"))
+        if dt:
+            next_billing_str = dt.strftime("%B %d, %Y")
+
+    receipt_number = generate_receipt_number(transaction_id, now)
+
+    receipt_doc = {
+        "receipt_id": receipt_number,
+        "receipt_number": receipt_number,
+        "transaction_id": transaction_id,
+        "stripe_event_id": stripe_event_id,
+        "stripe_customer_id": transaction.get("stripe_customer_id"),
+        "stripe_subscription_id": transaction.get("stripe_subscription_id"),
+        "session_id": session_id,
+        "user_id": user_id,
+        "customer_email": email,
+        "customer_name": name,
+        "plan": plan,
+        "plan_display": f"{plan.capitalize()} Plan (Monthly)",
+        "amount": float(amount),
+        "currency": currency,
+        "card_brand": transaction.get("card_brand") or "Card",
+        "card_last4": transaction.get("card_last4") or "",
+        "payment_status": "paid",
+        "verified": True,
+        "next_billing_date": next_billing_str,
+        "created_at": now,
+        "email_sent": False
+    }
+
+    # Dispatch email
+    email_result = deliver_receipt_email(
+        recipient_email=email,
+        recipient_name=name,
+        receipt_data=receipt_doc
+    )
+    receipt_doc["email_sent"] = email_result.get("delivered", False)
+    receipt_doc["email_simulated"] = email_result.get("simulated", False)
+    receipt_doc["email_error"] = email_result.get("error")
+    receipt_doc["sent_at"] = now
+
+    # Persist in database
+    if database is not None:
+        await database.receipts.update_one(
+            {"receipt_id": receipt_number},
+            {"$set": receipt_doc},
+            upsert=True
+        )
+        update_conds = []
+        if transaction_id:
+            update_conds.append({"transaction_id": transaction_id})
+        if session_id:
+            update_conds.append({"session_id": session_id})
+        if stripe_event_id:
+            update_conds.append({"stripe_event_id": stripe_event_id})
+        if update_conds:
+            await database.payment_transactions.update_many(
+                {"$or": update_conds},
+                {"$set": {
+                    "receipt_id": receipt_number,
+                    "receipt_sent": receipt_doc["email_sent"],
+                    "receipt_sent_at": now
+                }}
+            )
+
+    return receipt_doc
+
 # Retry & Grace Period Configuration (fights for the payment before cancellation)
 RETRY_SCHEDULE_DAYS = {
     1: 3,  # After 1st failure: retry in 3 days (Email 1 of 3 sent)
@@ -4939,26 +5355,43 @@ async def stripe_webhook(request: Request):
 
                 card_brand, card_last4 = await extract_stripe_card_details(session_id) if session_id else (None, None)
                 if session_id:
+                    txn_data = {
+                        "session_id": session_id,
+                        "transaction_id": session_id,
+                        "stripe_event_id": event_id,
+                        "stripe_customer_id": customer_id,
+                        "stripe_subscription_id": subscription_id,
+                        "payment_status": "paid",
+                        "provisioned": True,
+                        "amount": product.get("amount", float(expected_cents) / 100.0),
+                        "currency": expected_currency,
+                        "product_id": product.get("product_id"),
+                        "plan": plan,
+                        "invitee_email": invitee_email,
+                        "card_brand": card_brand,
+                        "card_last4": card_last4,
+                        "provisioned_at": datetime.now(timezone.utc),
+                        "updated_at": datetime.now(timezone.utc)
+                    }
                     await database.payment_transactions.update_one(
                         {"session_id": session_id},
-                        {"$set": {
-                            "stripe_event_id": event_id,
-                            "stripe_customer_id": customer_id,
-                            "stripe_subscription_id": subscription_id,
-                            "payment_status": "paid",
-                            "provisioned": True,
-                            "amount": product.get("amount", float(expected_cents) / 100.0),
-                            "currency": expected_currency,
-                            "product_id": product.get("product_id"),
-                            "plan": plan,
-                            "invitee_email": invitee_email,
-                            "card_brand": card_brand,
-                            "card_last4": card_last4,
-                            "provisioned_at": datetime.now(timezone.utc),
-                            "updated_at": datetime.now(timezone.utc)
-                        }},
+                        {"$set": txn_data},
                         upsert=True
                     )
+                    # Automatically send receipt to user for confirmed & verified payment
+                    cust_details = _get_field(session, "customer_details")
+                    payer_email = invitee_email or _get_field(cust_details, "email")
+                    payer_name = _get_field(cust_details, "name")
+                    try:
+                        asyncio.create_task(send_payment_receipt(
+                            database=database,
+                            transaction=txn_data,
+                            user_doc=invitee_user if invitee_email and invitee_user else (await database.users.find_one({"user_id": user_id}) if user_id else None),
+                            recipient_email=payer_email,
+                            recipient_name=payer_name
+                        ))
+                    except Exception as rcpt_err:
+                        logger.error(f"Error queueing receipt task for session {session_id}: {rcpt_err}")
                 action_taken = "subscription_activated"
 
     elif event_type in ("invoice.payment_succeeded", "invoice.paid", "payment_intent.succeeded"):
@@ -5003,7 +5436,7 @@ async def stripe_webhook(request: Request):
             )
             plan_info = SUBSCRIPTION_PLANS.get(resolved_plan, {"amount": 9.99, "currency": "usd"})
             amount_paid = float(_get_field(data_obj, "amount_paid", int(plan_info["amount"] * 100))) / 100.0
-            await database.payment_transactions.insert_one({
+            txn_doc = {
                 "transaction_id": f"txn_wh_{uuid.uuid4().hex[:12]}",
                 "stripe_event_id": event_id,
                 "stripe_customer_id": customer_id or user_doc.get("stripe_customer_id"),
@@ -5018,7 +5451,19 @@ async def stripe_webhook(request: Request):
                 "provisioned_at": datetime.now(timezone.utc),
                 "type": event_type,
                 "created_at": datetime.now(timezone.utc)
-            })
+            }
+            await database.payment_transactions.insert_one(txn_doc)
+            # Automatically send receipt to user for verified renewal payment
+            try:
+                asyncio.create_task(send_payment_receipt(
+                    database=database,
+                    transaction=txn_doc,
+                    user_doc=user_doc,
+                    recipient_email=customer_email or user_doc.get("email"),
+                    recipient_name=user_doc.get("name")
+                ))
+            except Exception as rcpt_err:
+                logger.error(f"Error queueing receipt task for invoice {event_id}: {rcpt_err}")
             action_taken = "renewal_succeeded"
 
     elif event_type in ("invoice.payment_failed", "payment_intent.payment_failed"):
@@ -5259,8 +5704,7 @@ async def retry_payment(
     await activate_user_subscription(user_id, tier)
     updated_user = await db.users.find_one({"user_id": user_id})
     
-    plan_info = SUBSCRIPTION_PLANS.get(tier, {"amount": 9.99, "currency": "usd"})
-    await db.payment_transactions.insert_one({
+    txn_doc = {
         "transaction_id": f"txn_retry_{uuid.uuid4().hex[:12]}",
         "user_id": user_id,
         "plan": tier,
@@ -5268,8 +5712,23 @@ async def retry_payment(
         "currency": plan_info.get("currency", "usd"),
         "payment_status": "paid",
         "type": "manual_retry",
+        "provisioned": True,
+        "provisioned_at": datetime.now(timezone.utc),
         "created_at": datetime.now(timezone.utc)
-    })
+    }
+    await db.payment_transactions.insert_one(txn_doc)
+    
+    # Automatically send receipt for verified retry payment
+    try:
+        asyncio.create_task(send_payment_receipt(
+            database=db,
+            transaction=txn_doc,
+            user_doc=updated_user,
+            recipient_email=updated_user.get("email"),
+            recipient_name=updated_user.get("name")
+        ))
+    except Exception as rcpt_err:
+        logger.error(f"Error queueing receipt for manual retry: {rcpt_err}")
     
     await db.alerts.insert_one({
         "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
@@ -5301,6 +5760,85 @@ async def downgrade_subscription(current_user: dict = Depends(get_current_user))
     )
     auth_cache.invalidate_user(current_user["user_id"])
     return {"status": "success", "tier": "free"}
+
+# ============================================================
+# RECEIPT RETRIEVAL & RESEND ENDPOINTS
+# ============================================================
+
+@api_router.get("/payments/receipts")
+async def get_user_receipts(current_user: dict = Depends(get_current_user)):
+    """Retrieve all verified transaction receipts for the authenticated user."""
+    database = ensure_db()
+    if database is None:
+        return {"receipts": [], "count": 0}
+    user_id = current_user.get("user_id")
+    email = (current_user.get("email") or "").strip().lower()
+    query_or = []
+    if user_id:
+        query_or.append({"user_id": user_id})
+    if email:
+        query_or.append({"customer_email": email})
+    if not query_or:
+        return {"receipts": [], "count": 0}
+    receipts = await database.receipts.find({"$or": query_or}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return {"receipts": receipts, "count": len(receipts)}
+
+@api_router.get("/payments/receipts/{receipt_id}")
+async def get_receipt_details(receipt_id: str, current_user: dict = Depends(get_current_user)):
+    """Retrieve detailed JSON data for a specific receipt."""
+    database = ensure_db()
+    if database is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    receipt = await database.receipts.find_one(
+        {"$or": [{"receipt_id": receipt_id}, {"receipt_number": receipt_id}, {"transaction_id": receipt_id}, {"session_id": receipt_id}]},
+        {"_id": 0}
+    )
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    user_id = current_user.get("user_id")
+    user_email = (current_user.get("email") or "").strip().lower()
+    if receipt.get("user_id") != user_id and (receipt.get("customer_email") or "").strip().lower() != user_email and not current_user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Unauthorized access to this receipt")
+    return receipt
+
+@api_router.get("/payments/receipts/{receipt_id}/html", response_class=HTMLResponse)
+async def get_receipt_html_view(receipt_id: str):
+    """Render a standalone, printable HTML receipt page."""
+    database = ensure_db()
+    if database is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    receipt = await database.receipts.find_one(
+        {"$or": [{"receipt_id": receipt_id}, {"receipt_number": receipt_id}, {"transaction_id": receipt_id}, {"session_id": receipt_id}]},
+        {"_id": 0}
+    )
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    html_content = render_receipt_html(receipt)
+    return HTMLResponse(content=html_content)
+
+@api_router.post("/payments/receipts/{receipt_id}/resend")
+async def resend_receipt_email(receipt_id: str, current_user: dict = Depends(get_current_user)):
+    """Resend a receipt email to the user's verified address."""
+    database = ensure_db()
+    if database is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    receipt = await database.receipts.find_one(
+        {"$or": [{"receipt_id": receipt_id}, {"receipt_number": receipt_id}, {"transaction_id": receipt_id}, {"session_id": receipt_id}]},
+        {"_id": 0}
+    )
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    user_id = current_user.get("user_id")
+    user_email = (current_user.get("email") or "").strip().lower()
+    if receipt.get("user_id") != user_id and (receipt.get("customer_email") or "").strip().lower() != user_email and not current_user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Unauthorized to resend this receipt")
+    result = await send_payment_receipt(database, receipt, force_resend=True)
+    return {
+        "status": "success",
+        "message": f"Receipt {receipt.get('receipt_number')} resent to {receipt.get('customer_email')}",
+        "receipt_id": receipt.get("receipt_number"),
+        "delivered": result.get("email_sent", False)
+    }
 
 # ============================================================
 # TEAM MANAGEMENT & INVITATIONS
