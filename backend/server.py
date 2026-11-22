@@ -322,7 +322,7 @@ DEFAULT_PRODUCTS = {
         "currency": "usd",
         "interval": "month",
         "mode": "subscription",
-        "stripe_price_id": os.environ.get("STRIPE_PRICE_PRO", "price_pro_monthly"),
+        "stripe_price_id": os.environ.get("STRIPE_PRICE_PRO", "price_1UcDupC77I4sxNvuPlSut81z"),
         "features": ["Unlimited trips", "AI auto-classification", "Receipt OCR scanning", "PDF + CSV tax reports", "AI Tax Optimizer"],
         "is_active": True
     },
@@ -335,7 +335,7 @@ DEFAULT_PRODUCTS = {
         "currency": "usd",
         "interval": "month",
         "mode": "subscription",
-        "stripe_price_id": os.environ.get("STRIPE_PRICE_BUSINESS", "price_business_monthly"),
+        "stripe_price_id": os.environ.get("STRIPE_PRICE_BUSINESS", "price_1Uecp5C77I4sxNvuGehhqp1Y"),
         "features": ["Everything in Pro", "Priority Support", "Team Management", "Admin Dashboard", "API Access", "Fleet Tracking", "Custom Reports"],
         "is_active": True
     }
@@ -413,6 +413,13 @@ async def ensure_stripe_price_id(stripe_module, product: dict, is_mock: bool = F
         return mock_id
 
     price_id = product.get("stripe_price_id")
+    if not price_id or price_id in ("price_pro_monthly", "price_business_monthly"):
+        pid = product.get("product_id", "").lower()
+        if pid == "pro":
+            price_id = os.environ.get("STRIPE_PRICE_PRO", "price_1UcDupC77I4sxNvuPlSut81z")
+        elif pid == "business":
+            price_id = os.environ.get("STRIPE_PRICE_BUSINESS", "price_1Uecp5C77I4sxNvuGehhqp1Y")
+
     # If a real Stripe price ID is saved (and not a dummy placeholder), verify it exists on Stripe
     if price_id and price_id.startswith("price_") and price_id not in ("price_pro_monthly", "price_business_monthly"):
         try:
@@ -625,8 +632,15 @@ PRODUCT_VIDEO_URL = "https://globalsysnetcyber.com/apps/"
 def ensure_db():
     global client, db
     if db is None:
+        if os.environ.get("TESTING") == "true":
+            return db
         import certifi
-        client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
+        client = motor.motor_asyncio.AsyncIOMotorClient(
+            MONGO_URI, 
+            tlsCAFile=certifi.where(),
+            serverSelectionTimeoutMS=2000,
+            connectTimeoutMS=2000
+        )
         db = client[DB_NAME]
     return db
 
@@ -3585,10 +3599,34 @@ def send_failed_payment_email(
 
     return email_record
 
-async def activate_user_subscription(user_id: str, plan: str, stripe_event_id: Optional[str] = None):
+def ensure_utc_datetime(dt):
+    if dt is None:
+        return None
+    if isinstance(dt, (int, float)):
+        try:
+            return datetime.fromtimestamp(dt, timezone.utc)
+        except Exception:
+            return None
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
+        except Exception:
+            return None
+    if isinstance(dt, datetime):
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return None
+
+async def activate_user_subscription(
+    user_id: str,
+    plan: str,
+    stripe_event_id: Optional[str] = None,
+    stripe_customer_id: Optional[str] = None,
+    stripe_subscription_id: Optional[str] = None,
+    next_billing_date: Optional[datetime] = None
+):
     database = ensure_db()
     now = datetime.now(timezone.utc)
-    next_billing = now + timedelta(days=30)
+    next_billing = ensure_utc_datetime(next_billing_date) or (now + timedelta(days=30))
     update_data = {
         "subscription_tier": plan,
         "subscription_status": "active",
@@ -3604,6 +3642,10 @@ async def activate_user_subscription(user_id: str, plan: str, stripe_event_id: O
     }
     if stripe_event_id:
         update_data["last_stripe_event_id"] = stripe_event_id
+    if stripe_customer_id:
+        update_data["stripe_customer_id"] = stripe_customer_id
+    if stripe_subscription_id:
+        update_data["stripe_subscription_id"] = stripe_subscription_id
     await database.users.update_one({"user_id": user_id}, {"$set": update_data})
     auth_cache.invalidate_user(user_id)
 
@@ -3628,12 +3670,7 @@ async def handle_failed_payment_attempt(
     attempt_num = current_failures + 1
     evt_id = stripe_event_id or f"evt_dunning_{uuid.uuid4().hex[:16]}"
 
-    first_failure_at = user_doc.get("first_failure_at")
-    if isinstance(first_failure_at, str):
-        try:
-            first_failure_at = datetime.fromisoformat(first_failure_at.replace("Z", "+00:00"))
-        except Exception:
-            first_failure_at = None
+    first_failure_at = ensure_utc_datetime(user_doc.get("first_failure_at"))
     if not first_failure_at or current_failures == 0:
         first_failure_at = now
 
@@ -3850,25 +3887,143 @@ async def process_recurring_subscriptions(
     users = await database.users.find(query).to_list(1000)
     results = []
 
+    is_live_env = (
+        STRIPE_API_KEY and 
+        STRIPE_API_KEY.startswith("sk_") and 
+        STRIPE_API_KEY != 'sk_test_emergent' and 
+        os.environ.get("TESTING") != "true" and 
+        not simulate_outcome
+    )
+
     for u in users:
         user_id = u["user_id"]
-        email = u.get("email", "")
+        email = (u.get("email") or "").strip().lower()
         plan = u.get("subscription_tier", "pro")
         status = u.get("subscription_status", "active")
-        next_billing = u.get("next_billing_date")
-        retry_at = u.get("retry_at")
-        grace_ends = u.get("grace_period_ends_at")
+        next_billing = ensure_utc_datetime(u.get("next_billing_date"))
+        retry_at = ensure_utc_datetime(u.get("retry_at"))
+        grace_ends = ensure_utc_datetime(u.get("grace_period_ends_at"))
+        stripe_cust_id = u.get("stripe_customer_id")
+        stripe_sub_id = u.get("stripe_subscription_id")
 
-        if isinstance(next_billing, str):
-            try: next_billing = datetime.fromisoformat(next_billing.replace('Z', '+00:00'))
-            except Exception: next_billing = None
-        if isinstance(retry_at, str):
-            try: retry_at = datetime.fromisoformat(retry_at.replace('Z', '+00:00'))
-            except Exception: retry_at = None
-        if isinstance(grace_ends, str):
-            try: grace_ends = datetime.fromisoformat(grace_ends.replace('Z', '+00:00'))
-            except Exception: grace_ends = None
+        # In live production environment: Synchronize directly with Stripe Subscription API
+        if is_live_env:
+            try:
+                import stripe
+                stripe.api_key = STRIPE_API_KEY
 
+                # 1. Discover Stripe Customer by email if not set on user
+                if not stripe_cust_id and email:
+                    try:
+                        matched_custs = stripe.Customer.list(email=email, limit=1).data
+                        if matched_custs:
+                            stripe_cust_id = matched_custs[0].id
+                            await database.users.update_one(
+                                {"user_id": user_id},
+                                {"$set": {"stripe_customer_id": stripe_cust_id}}
+                            )
+                            u["stripe_customer_id"] = stripe_cust_id
+                    except Exception as ce:
+                        logger.warning(f"Error checking Stripe customer for {email}: {ce}")
+
+                # 2. Discover Stripe Subscription by customer if not set on user
+                if stripe_cust_id and not stripe_sub_id:
+                    try:
+                        active_subs = stripe.Subscription.list(customer=stripe_cust_id, status="active", limit=1).data
+                        if active_subs:
+                            stripe_sub_id = active_subs[0].id
+                            await database.users.update_one(
+                                {"user_id": user_id},
+                                {"$set": {"stripe_subscription_id": stripe_sub_id}}
+                            )
+                            u["stripe_subscription_id"] = stripe_sub_id
+                    except Exception as se:
+                        logger.warning(f"Error checking Stripe subscription for {stripe_cust_id}: {se}")
+
+                # 3. Synchronize status with real Stripe Subscription
+                if stripe_sub_id:
+                    try:
+                        sub = stripe.Subscription.retrieve(stripe_sub_id)
+                        sub_status = getattr(sub, "status", None)
+                        sub_items = getattr(sub, "items", None)
+                        item_data = getattr(sub_items, "data", []) if sub_items else []
+                        period_end_ts = getattr(sub, "current_period_end", None)
+                        if not period_end_ts and item_data:
+                            period_end_ts = getattr(item_data[0], "current_period_end", None)
+                        stripe_period_end = ensure_utc_datetime(period_end_ts)
+
+                        if sub_status == "active":
+                            if stripe_period_end and (not next_billing or next_billing < stripe_period_end):
+                                await database.users.update_one(
+                                    {"user_id": user_id},
+                                    {"$set": {
+                                        "subscription_status": "active",
+                                        "next_billing_date": stripe_period_end,
+                                        "payment_failure_count": 0,
+                                        "dunning_emails_sent": 0,
+                                        "first_failure_at": None,
+                                        "retry_at": None,
+                                        "grace_period_ends_at": None,
+                                        "payment_failure_reason": None,
+                                        "updated_at": now
+                                    }}
+                                )
+                                auth_cache.invalidate_user(user_id)
+                                results.append({"user_id": user_id, "action": "synced_with_stripe", "status": "active", "next_billing_date": str(stripe_period_end)})
+                                continue
+                        elif sub_status in ("past_due", "unpaid"):
+                            fail_res = await handle_failed_payment_attempt(
+                                database, u, failure_reason="Stripe card charge declined", stripe_event_id=f"evt_sync_{uuid.uuid4().hex[:12]}", now=now
+                            )
+                            results.append(fail_res)
+                            continue
+                        elif sub_status in ("canceled", "incomplete_expired"):
+                            await database.users.update_one(
+                                {"user_id": user_id},
+                                {"$set": {"subscription_tier": "free", "subscription_status": "cancelled", "updated_at": now}}
+                            )
+                            auth_cache.invalidate_user(user_id)
+                            results.append({"user_id": user_id, "action": "downgraded_canceled_subscription", "status": "cancelled"})
+                            continue
+                    except Exception as sub_err:
+                        logger.error(f"Error checking Stripe subscription {stripe_sub_id}: {sub_err}")
+
+                # 4. If subscriber has Stripe Customer with saved card but no subscription,
+                # create the Stripe subscription to bill them automatically on schedule
+                elif stripe_cust_id and (not next_billing or now >= next_billing or force_user_id):
+                    try:
+                        pms = stripe.PaymentMethod.list(customer=stripe_cust_id, type="card").data
+                        if pms:
+                            prod_info = await get_product_from_db(database, plan)
+                            price_id = await ensure_stripe_price_id(stripe, prod_info) if prod_info else None
+                            if price_id:
+                                created_sub = stripe.Subscription.create(
+                                    customer=stripe_cust_id,
+                                    items=[{"price": price_id}],
+                                    default_payment_method=pms[0].id,
+                                    metadata={"user_id": user_id, "plan": plan}
+                                )
+                                new_sub_id = created_sub.id
+                                new_period_end_ts = getattr(created_sub, "current_period_end", None)
+                                if not new_period_end_ts and hasattr(created_sub, "items") and created_sub.items.data:
+                                    new_period_end_ts = getattr(created_sub.items.data[0], "current_period_end", None)
+                                new_end = ensure_utc_datetime(new_period_end_ts) or (now + timedelta(days=30))
+                                
+                                await activate_user_subscription(
+                                    user_id, plan,
+                                    stripe_customer_id=stripe_cust_id,
+                                    stripe_subscription_id=new_sub_id,
+                                    next_billing_date=new_end
+                                )
+                                results.append({"user_id": user_id, "action": "created_stripe_subscription", "subscription_id": new_sub_id, "status": "active"})
+                                continue
+                    except Exception as create_sub_err:
+                        logger.error(f"Could not auto-create Stripe subscription for customer {stripe_cust_id}: {create_sub_err}")
+
+            except Exception as live_err:
+                logger.error(f"Live Stripe billing sync error for user {user_id}: {live_err}")
+
+        # Simulated / Fallback flow (for automated tests or offline recovery)
         # Case 1: Active subscription whose next_billing_date has arrived
         if status == "active":
             if not next_billing or now >= next_billing or force_user_id:
@@ -4111,34 +4266,78 @@ async def create_checkout(data: PaymentCheckout, request: Request, current_user:
         }
 
     try:
-        # Create Stripe Checkout Session referencing ONLY the locked Stripe Price ID
-        # No raw amounts or currency can be overridden by client
-        session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            mode=product.get('mode', 'subscription' if product.get('interval') in ('month', 'year') else 'payment'),
-            line_items=[{
+        checkout_mode = product.get('mode', 'subscription' if product.get('interval') in ('month', 'year') else 'payment')
+        stripe_cust_id = current_user.get("stripe_customer_id")
+        user_email = (current_user.get("email") or "").strip().lower()
+
+        if stripe_cust_id:
+            try:
+                stripe.Customer.retrieve(stripe_cust_id)
+            except Exception:
+                stripe_cust_id = None
+
+        if not stripe_cust_id and user_email:
+            try:
+                existing_c = stripe.Customer.list(email=user_email, limit=1).data
+                if existing_c:
+                    stripe_cust_id = existing_c[0].id
+                else:
+                    new_c = stripe.Customer.create(
+                        email=user_email,
+                        name=current_user.get("name") or user_email,
+                        metadata={"user_id": current_user["user_id"]}
+                    )
+                    stripe_cust_id = new_c.id
+                await database.users.update_one(
+                    {"user_id": current_user["user_id"]},
+                    {"$set": {"stripe_customer_id": stripe_cust_id}}
+                )
+                current_user["stripe_customer_id"] = stripe_cust_id
+            except Exception as ce:
+                logger.warning(f"Could not prepare Stripe customer for {user_email}: {ce}")
+
+        checkout_kwargs = {
+            "payment_method_types": ['card'],
+            "mode": checkout_mode,
+            "line_items": [{
                 'price': stripe_price_id,  # Locked inside Stripe's system
                 'quantity': 1,
             }],
-            customer_email=current_user.get("email"),
-            success_url=success_url,
-            cancel_url=cancel_url,
-            metadata={
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+            "metadata": {
                 "user_id": current_user["user_id"],
                 "product_id": resolved_id,
                 "plan": resolved_id,
                 "stripe_price_id": stripe_price_id,
                 "expected_amount_cents": str(verified_amount_cents),
                 "currency": verified_currency,
-                "email": current_user.get("email", ""),
+                "email": user_email,
                 "invitee_email": invitee_email or ""
             }
-        )
+        }
+        if checkout_mode == "subscription":
+            checkout_kwargs["subscription_data"] = {
+                "metadata": {
+                    "user_id": current_user["user_id"],
+                    "product_id": resolved_id,
+                    "plan": resolved_id,
+                    "email": user_email
+                }
+            }
+
+        if stripe_cust_id:
+            checkout_kwargs["customer"] = stripe_cust_id
+        else:
+            checkout_kwargs["customer_email"] = user_email
+
+        session = stripe.checkout.Session.create(**checkout_kwargs)
 
         await database.payment_transactions.insert_one({
             "transaction_id": f"txn_{uuid.uuid4().hex[:12]}",
             "user_id": current_user["user_id"],
             "session_id": session.id,
+            "stripe_customer_id": stripe_cust_id or getattr(session, "customer", None),
             "product_id": resolved_id,
             "plan": resolved_id,
             "stripe_price_id": stripe_price_id,
@@ -4165,7 +4364,7 @@ async def extract_stripe_card_details(session_id: str):
     card_brand = None
     card_last4 = None
     
-    if session_id.startswith("cs_test_mock_"):
+    if session_id.startswith("cs_test_mock_") or os.environ.get("TESTING") == "true":
         return "Visa", "4242"
         
     try:
@@ -4641,6 +4840,8 @@ async def stripe_webhook(request: Request):
         session = data_obj
         session_id = _get_field(session, "id")
         payment_status = _get_field(session, "payment_status")
+        customer_id = _get_field(session, "customer")
+        subscription_id = _get_field(session, "subscription")
         metadata_dict = extract_metadata(session)
 
         # Confirm payment event status
@@ -4717,14 +4918,24 @@ async def stripe_webhook(request: Request):
                 if invitee_email:
                     invitee_user = await database.users.find_one({"email": invitee_email})
                     if invitee_user:
-                        await activate_user_subscription(invitee_user["user_id"], plan, stripe_event_id=event_id)
+                        await activate_user_subscription(
+                            invitee_user["user_id"], plan,
+                            stripe_event_id=event_id,
+                            stripe_customer_id=customer_id,
+                            stripe_subscription_id=subscription_id
+                        )
                     await database.team_members.update_many(
                         {"email": invitee_email},
                         {"$set": {"subscription_tier": plan, "last_stripe_event_id": event_id}}
                     )
                 else:
                     if user_id:
-                        await activate_user_subscription(user_id, plan, stripe_event_id=event_id)
+                        await activate_user_subscription(
+                            user_id, plan,
+                            stripe_event_id=event_id,
+                            stripe_customer_id=customer_id,
+                            stripe_subscription_id=subscription_id
+                        )
 
                 card_brand, card_last4 = await extract_stripe_card_details(session_id) if session_id else (None, None)
                 if session_id:
@@ -4732,6 +4943,8 @@ async def stripe_webhook(request: Request):
                         {"session_id": session_id},
                         {"$set": {
                             "stripe_event_id": event_id,
+                            "stripe_customer_id": customer_id,
+                            "stripe_subscription_id": subscription_id,
                             "payment_status": "paid",
                             "provisioned": True,
                             "amount": product.get("amount", float(expected_cents) / 100.0),
@@ -4748,32 +4961,58 @@ async def stripe_webhook(request: Request):
                     )
                 action_taken = "subscription_activated"
 
-    elif event_type in ("invoice.payment_succeeded", "payment_intent.succeeded"):
+    elif event_type in ("invoice.payment_succeeded", "invoice.paid", "payment_intent.succeeded"):
         metadata_dict = extract_metadata(data_obj)
         user_id = metadata_dict.get("user_id")
+        customer_id = _get_field(data_obj, "customer")
+        subscription_id = _get_field(data_obj, "subscription")
         customer_email = (_get_field(data_obj, "customer_email") or metadata_dict.get("email") or "").strip().lower()
         plan = metadata_dict.get("plan")
 
         user_doc = None
         if user_id:
             user_doc = await database.users.find_one({"user_id": user_id})
-        elif customer_email:
+        if not user_doc and subscription_id:
+            user_doc = await database.users.find_one({"stripe_subscription_id": subscription_id})
+        if not user_doc and customer_id:
+            user_doc = await database.users.find_one({"stripe_customer_id": customer_id})
+        if not user_doc and customer_email:
             user_doc = await database.users.find_one({"email": customer_email})
+
+        # Calculate period end from invoice lines if available
+        invoice_lines = _get_field(data_obj, "lines")
+        lines_data = _get_field(invoice_lines, "data") if invoice_lines else []
+        period_end_dt = None
+        if lines_data:
+            first_line = lines_data[0]
+            period_obj = _get_field(first_line, "period")
+            if period_obj:
+                p_end = _get_field(period_obj, "end")
+                period_end_dt = ensure_utc_datetime(p_end)
 
         if user_doc:
             resolved_plan = plan or user_doc.get("subscription_tier", "pro")
             if resolved_plan == "free":
                 resolved_plan = "pro"
-            await activate_user_subscription(user_doc["user_id"], resolved_plan, stripe_event_id=event_id)
+            await activate_user_subscription(
+                user_doc["user_id"], resolved_plan,
+                stripe_event_id=event_id,
+                stripe_customer_id=customer_id or user_doc.get("stripe_customer_id"),
+                stripe_subscription_id=subscription_id or user_doc.get("stripe_subscription_id"),
+                next_billing_date=period_end_dt
+            )
             plan_info = SUBSCRIPTION_PLANS.get(resolved_plan, {"amount": 9.99, "currency": "usd"})
+            amount_paid = float(_get_field(data_obj, "amount_paid", int(plan_info["amount"] * 100))) / 100.0
             await database.payment_transactions.insert_one({
                 "transaction_id": f"txn_wh_{uuid.uuid4().hex[:12]}",
                 "stripe_event_id": event_id,
+                "stripe_customer_id": customer_id or user_doc.get("stripe_customer_id"),
+                "stripe_subscription_id": subscription_id or user_doc.get("stripe_subscription_id"),
                 "user_id": user_doc["user_id"],
                 "product_id": resolved_plan,
                 "plan": resolved_plan,
-                "amount": float(plan_info["amount"]),
-                "currency": plan_info.get("currency", "usd"),
+                "amount": amount_paid,
+                "currency": _get_field(data_obj, "currency") or plan_info.get("currency", "usd"),
                 "payment_status": "paid",
                 "provisioned": True,
                 "provisioned_at": datetime.now(timezone.utc),
@@ -4785,13 +5024,19 @@ async def stripe_webhook(request: Request):
     elif event_type in ("invoice.payment_failed", "payment_intent.payment_failed"):
         metadata_dict = extract_metadata(data_obj)
         user_id = metadata_dict.get("user_id")
+        customer_id = _get_field(data_obj, "customer")
+        subscription_id = _get_field(data_obj, "subscription")
         customer_email = (_get_field(data_obj, "customer_email") or metadata_dict.get("email") or "").strip().lower()
         failure_reason = _get_field(data_obj, "failure_message") or metadata_dict.get("failure_reason") or "Card declined / insufficient funds"
 
         user_doc = None
         if user_id:
             user_doc = await database.users.find_one({"user_id": user_id})
-        elif customer_email:
+        if not user_doc and subscription_id:
+            user_doc = await database.users.find_one({"stripe_subscription_id": subscription_id})
+        if not user_doc and customer_id:
+            user_doc = await database.users.find_one({"stripe_customer_id": customer_id})
+        if not user_doc and customer_email:
             user_doc = await database.users.find_one({"email": customer_email})
 
         if user_doc:
@@ -4803,14 +5048,50 @@ async def stripe_webhook(request: Request):
             )
             action_taken = dunning_res["action"]
 
+    elif event_type == "customer.subscription.updated":
+        sub_id = _get_field(data_obj, "id")
+        customer_id = _get_field(data_obj, "customer")
+        sub_status = _get_field(data_obj, "status")
+        metadata_dict = extract_metadata(data_obj)
+        user_id = metadata_dict.get("user_id")
+
+        user_doc = None
+        if user_id:
+            user_doc = await database.users.find_one({"user_id": user_id})
+        if not user_doc and sub_id:
+            user_doc = await database.users.find_one({"stripe_subscription_id": sub_id})
+        if not user_doc and customer_id:
+            user_doc = await database.users.find_one({"stripe_customer_id": customer_id})
+
+        if user_doc:
+            new_status = "active" if sub_status == "active" else ("past_due" if sub_status in ("past_due", "unpaid") else ("cancelled" if sub_status == "canceled" else user_doc.get("subscription_status", "active")))
+            await database.users.update_one(
+                {"user_id": user_doc["user_id"]},
+                {"$set": {
+                    "subscription_status": new_status,
+                    "stripe_subscription_id": sub_id,
+                    "stripe_customer_id": customer_id or user_doc.get("stripe_customer_id"),
+                    "last_stripe_event_id": event_id,
+                    "updated_at": datetime.now(timezone.utc)
+                }}
+            )
+            auth_cache.invalidate_user(user_doc["user_id"])
+            action_taken = f"subscription_updated_{new_status}"
+
     elif event_type == "customer.subscription.deleted":
         metadata_dict = extract_metadata(data_obj)
         user_id = metadata_dict.get("user_id")
+        sub_id = _get_field(data_obj, "id")
+        customer_id = _get_field(data_obj, "customer")
         customer_email = (_get_field(data_obj, "customer_email") or metadata_dict.get("email") or "").strip().lower()
         user_doc = None
         if user_id:
             user_doc = await database.users.find_one({"user_id": user_id})
-        elif customer_email:
+        if not user_doc and sub_id:
+            user_doc = await database.users.find_one({"stripe_subscription_id": sub_id})
+        if not user_doc and customer_id:
+            user_doc = await database.users.find_one({"stripe_customer_id": customer_id})
+        if not user_doc and customer_email:
             user_doc = await database.users.find_one({"email": customer_email})
         if user_doc:
             await database.users.update_one(
