@@ -37,7 +37,7 @@ export default function AIAssistantScreen() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [sessionId] = useState(`chat_${Date.now()}`);
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<React.ElementRef<typeof ScrollView>>(null);
   const { token } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();

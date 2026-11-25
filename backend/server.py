@@ -4038,7 +4038,9 @@ async def activate_user_subscription(
     stripe_event_id: Optional[str] = None,
     stripe_customer_id: Optional[str] = None,
     stripe_subscription_id: Optional[str] = None,
-    next_billing_date: Optional[datetime] = None
+    next_billing_date: Optional[datetime] = None,
+    card_brand: Optional[str] = None,
+    card_last4: Optional[str] = None
 ):
     database = ensure_db()
     now = datetime.now(timezone.utc)
@@ -4062,6 +4064,10 @@ async def activate_user_subscription(
         update_data["stripe_customer_id"] = stripe_customer_id
     if stripe_subscription_id:
         update_data["stripe_subscription_id"] = stripe_subscription_id
+    if card_brand:
+        update_data["card_brand"] = card_brand
+    if card_last4:
+        update_data["card_last4"] = card_last4
     await database.users.update_one({"user_id": user_id}, {"$set": update_data})
     auth_cache.invalidate_user(user_id)
 
@@ -4479,6 +4485,12 @@ async def process_recurring_subscriptions(
                     )
                     auth_cache.invalidate_user(user_id)
                     plan_info = SUBSCRIPTION_PLANS.get(plan, {"amount": 9.99, "currency": "usd"})
+                    card_tx = await database.payment_transactions.find_one(
+                        {"user_id": user_id, "payment_status": "paid", "card_last4": {"$exists": True, "$ne": None, "$ne": ""}},
+                        sort=[("created_at", -1)]
+                    )
+                    u_card_brand = u.get("card_brand") or (card_tx.get("card_brand") if card_tx else None)
+                    u_card_last4 = u.get("card_last4") or (card_tx.get("card_last4") if card_tx else None)
                     await database.payment_transactions.insert_one({
                         "transaction_id": f"txn_rec_{uuid.uuid4().hex[:12]}",
                         "stripe_event_id": evt_id,
@@ -4487,6 +4499,8 @@ async def process_recurring_subscriptions(
                         "amount": float(plan_info["amount"]),
                         "currency": plan_info.get("currency", "usd"),
                         "payment_status": "paid",
+                        "card_brand": u_card_brand,
+                        "card_last4": u_card_last4,
                         "type": "recurring_renewal",
                         "created_at": now
                     })
@@ -4529,6 +4543,12 @@ async def process_recurring_subscriptions(
                     )
                     auth_cache.invalidate_user(user_id)
                     plan_info = SUBSCRIPTION_PLANS.get(plan, {"amount": 9.99, "currency": "usd"})
+                    card_tx = await database.payment_transactions.find_one(
+                        {"user_id": user_id, "payment_status": "paid", "card_last4": {"$exists": True, "$ne": None, "$ne": ""}},
+                        sort=[("created_at", -1)]
+                    )
+                    u_card_brand = u.get("card_brand") or (card_tx.get("card_brand") if card_tx else None)
+                    u_card_last4 = u.get("card_last4") or (card_tx.get("card_last4") if card_tx else None)
                     await database.payment_transactions.insert_one({
                         "transaction_id": f"txn_retry_{uuid.uuid4().hex[:12]}",
                         "stripe_event_id": evt_id,
@@ -4537,6 +4557,8 @@ async def process_recurring_subscriptions(
                         "amount": float(plan_info["amount"]),
                         "currency": plan_info.get("currency", "usd"),
                         "payment_status": "paid",
+                        "card_brand": u_card_brand,
+                        "card_last4": u_card_last4,
                         "type": "recurring_retry_recovery",
                         "created_at": now
                     })
@@ -4801,7 +4823,10 @@ async def extract_stripe_card_details(session_id: str):
     try:
         import stripe
         stripe.api_key = STRIPE_API_KEY
-        session = stripe.checkout.Session.retrieve(session_id, expand=['payment_intent.payment_method'])
+        session = stripe.checkout.Session.retrieve(
+            session_id,
+            expand=['payment_intent.payment_method', 'subscription.default_payment_method', 'customer']
+        )
         
         payment_intent = session.get("payment_intent")
         if payment_intent:
@@ -4821,6 +4846,33 @@ async def extract_stripe_card_details(session_id: str):
                 if card:
                     card_brand = card.get("brand")
                     card_last4 = card.get("last4")
+
+        # Fallback to subscription default payment method
+        if not card_last4:
+            subscription = session.get("subscription")
+            if subscription:
+                sub = stripe.Subscription.retrieve(subscription, expand=['default_payment_method']) if isinstance(subscription, str) else subscription
+                default_pm = sub.get("default_payment_method") if sub else None
+                if default_pm:
+                    pm = stripe.PaymentMethod.retrieve(default_pm) if isinstance(default_pm, str) else default_pm
+                    card = pm.get("card") if pm else None
+                    if card:
+                        card_brand = card.get("brand")
+                        card_last4 = card.get("last4")
+
+        # Fallback to customer default payment method
+        if not card_last4:
+            customer = session.get("customer")
+            if customer:
+                cus = stripe.Customer.retrieve(customer, expand=['invoice_settings.default_payment_method']) if isinstance(customer, str) else customer
+                inv_settings = cus.get("invoice_settings") if cus else {}
+                default_pm = inv_settings.get("default_payment_method") if inv_settings else None
+                if default_pm:
+                    pm = stripe.PaymentMethod.retrieve(default_pm) if isinstance(default_pm, str) else default_pm
+                    card = pm.get("card") if pm else None
+                    if card:
+                        card_brand = card.get("brand")
+                        card_last4 = card.get("last4")
     except Exception as e:
         logger.error(f"Error extracting card details from Stripe: {e}")
         
@@ -5346,6 +5398,7 @@ async def stripe_webhook(request: Request):
             else:
                 # Validation confirmed! ONLY NOW provision access to the purchased resource
                 plan = product.get("product_id") or metadata_dict.get("plan", "pro")
+                card_brand, card_last4 = await extract_stripe_card_details(session_id) if session_id else (None, None)
                 if invitee_email:
                     invitee_user = await database.users.find_one({"email": invitee_email})
                     if invitee_user:
@@ -5353,7 +5406,9 @@ async def stripe_webhook(request: Request):
                             invitee_user["user_id"], plan,
                             stripe_event_id=event_id,
                             stripe_customer_id=customer_id,
-                            stripe_subscription_id=subscription_id
+                            stripe_subscription_id=subscription_id,
+                            card_brand=card_brand,
+                            card_last4=card_last4
                         )
                     await database.team_members.update_many(
                         {"email": invitee_email},
@@ -5365,10 +5420,10 @@ async def stripe_webhook(request: Request):
                             user_id, plan,
                             stripe_event_id=event_id,
                             stripe_customer_id=customer_id,
-                            stripe_subscription_id=subscription_id
+                            stripe_subscription_id=subscription_id,
+                            card_brand=card_brand,
+                            card_last4=card_last4
                         )
-
-                card_brand, card_last4 = await extract_stripe_card_details(session_id) if session_id else (None, None)
                 if session_id:
                     txn_data = {
                         "session_id": session_id,
@@ -5469,6 +5524,13 @@ async def stripe_webhook(request: Request):
             )
             plan_info = SUBSCRIPTION_PLANS.get(resolved_plan, {"amount": 9.99, "currency": "usd"})
             amount_paid = float(_get_field(data_obj, "amount_paid", int(plan_info["amount"] * 100))) / 100.0
+            card_tx = await database.payment_transactions.find_one(
+                {"user_id": user_doc["user_id"], "payment_status": "paid", "card_last4": {"$exists": True, "$ne": None, "$ne": ""}},
+                sort=[("created_at", -1)]
+            )
+            u_card_brand = user_doc.get("card_brand") or (card_tx.get("card_brand") if card_tx else None)
+            u_card_last4 = user_doc.get("card_last4") or (card_tx.get("card_last4") if card_tx else None)
+
             txn_doc = {
                 "transaction_id": f"txn_wh_{uuid.uuid4().hex[:12]}",
                 "stripe_event_id": event_id,
@@ -5480,6 +5542,8 @@ async def stripe_webhook(request: Request):
                 "amount": amount_paid,
                 "currency": _get_field(data_obj, "currency") or plan_info.get("currency", "usd"),
                 "payment_status": "paid",
+                "card_brand": u_card_brand,
+                "card_last4": u_card_last4,
                 "provisioned": True,
                 "provisioned_at": datetime.now(timezone.utc),
                 "type": event_type,
@@ -5691,8 +5755,26 @@ async def get_subscription(current_user: dict = Depends(get_current_user)):
         },
         sort=[("created_at", -1)]
     )
-    card_brand = latest_paid.get("card_brand") if latest_paid else None
-    card_last4 = latest_paid.get("card_last4") if latest_paid else None
+    card_brand = current_user.get("card_brand")
+    card_last4 = current_user.get("card_last4")
+    if not card_last4:
+        paid_with_card = await db.payment_transactions.find_one(
+            {
+                "$or": [
+                    {"user_id": current_user["user_id"]},
+                    {"invitee_email": current_user.get("email", "").strip().lower()}
+                ],
+                "payment_status": "paid",
+                "card_last4": {"$exists": True, "$ne": None, "$ne": ""}
+            },
+            sort=[("created_at", -1)]
+        )
+        if paid_with_card:
+            card_brand = card_brand or paid_with_card.get("card_brand")
+            card_last4 = paid_with_card.get("card_last4")
+        elif latest_paid:
+            card_brand = card_brand or latest_paid.get("card_brand")
+            card_last4 = latest_paid.get("card_last4")
     
     tier = current_user.get("subscription_tier", "free")
     status = current_user.get("subscription_status", "active" if tier != "free" else "cancelled")
@@ -6059,10 +6141,25 @@ async def get_team_stats(current_user: dict = Depends(get_current_user)):
         if isinstance(created, datetime):
             renewal_dt = created + timedelta(days=30)
             renewal_date = renewal_dt.strftime("%B %d, %Y")
-        brand = last_payment.get("card_brand") or "Visa"
-        last4 = last_payment.get("card_last4") or "4242"
-        brand_cap = brand.capitalize() if brand else "Visa"
+
+    card_tx = await db.payment_transactions.find_one(
+        {
+            "$or": [
+                {"user_id": current_user["user_id"]},
+                {"invitee_email": current_user.get("email", "").strip().lower()}
+            ],
+            "payment_status": "paid",
+            "card_last4": {"$exists": True, "$ne": None, "$ne": ""}
+        },
+        sort=[("created_at", -1)]
+    )
+    brand = current_user.get("card_brand") or (card_tx.get("card_brand") if card_tx else (last_payment.get("card_brand") if last_payment else None))
+    last4 = current_user.get("card_last4") or (card_tx.get("card_last4") if card_tx else (last_payment.get("card_last4") if last_payment else None))
+    if last4:
+        brand_cap = brand.capitalize() if brand else "Card"
         payment_method = f"{brand_cap} ending in {last4}"
+    elif last_payment:
+        payment_method = "Active Payment Method"
         
     # Fetch dynamic alerts for the admin
     db_alerts = await db.alerts.find({"owner_id": current_user["user_id"]}).sort("created_at", -1).limit(10).to_list(10)

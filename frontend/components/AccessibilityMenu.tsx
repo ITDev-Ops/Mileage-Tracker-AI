@@ -108,7 +108,7 @@ export const AccessibilityMenu: React.FC = () => {
       onRequestClose={closeMenu}
     >
       <SafeAreaView style={styles.safeArea}>
-        <StatusBar barStyle="light-content" backgroundColor="#47554E" />
+        <StatusBar barStyle="light-content" />
 
         {/* 1. TOP HEADER (Dark olive/slate #47554E) */}
         <View style={styles.header}>
