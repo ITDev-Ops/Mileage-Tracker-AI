@@ -3,6 +3,7 @@
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
+    "postinstall": "node -e \"try{const f=require('fs');['ws','@expo/ws-tunnel/node_modules/ws'].forEach(m=>{try{const p=require.resolve(m);let c=f.readFileSync(p,'utf8');if(!c.includes('WebSocket.WebSocket')){f.writeFileSync(p,c.replace('module.exports = WebSocket;', 'WebSocket.WebSocket = WebSocket;\\nWebSocket.default = WebSocket;\\nmodule.exports = WebSocket;'));}}catch(e){}})}catch(e){}\"",
     "start": "expo start --clear --tunnel --port 3000",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo start --android",
